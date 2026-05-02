@@ -60,6 +60,35 @@ npm run build
 
 GitHub delivery exists as a placeholder adapter. Copy and download are the reliable v0 delivery paths.
 
+## Downstream Agent Kit
+
+NOOS Shuttle is not only a browser extension. The extension creates handoff files; downstream coding agents need a stable protocol for consuming them.
+
+This repo includes a NOOS consume-handoff skill:
+
+```text
+.noos/skills/noos-consume-handoff/SKILL.md
+```
+
+Install it for Codex and Claude Code:
+
+```sh
+scripts/install-noos-consumer.sh
+```
+
+The installer copies the skill to:
+
+- `~/.codex/skills/noos-consume-handoff`
+- `~/.claude/skills/noos-consume-handoff`
+- `.claude/skills/noos-consume-handoff`
+
+Repository entry files:
+
+- `AGENTS.md` tells Codex-style agents to check `.noos/handoffs/active/`.
+- `CLAUDE.md` tells Claude Code to use the same NOOS consume-handoff protocol.
+
+See `docs/noos-downstream-integration.md` for the installation model and product design.
+
 ## Language
 
 NOOS Shuttle supports Chinese and English in the popover UI and prompt template.

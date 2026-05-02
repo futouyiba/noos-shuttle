@@ -1,0 +1,7 @@
+interface:
+  display_name: "NOOS Consume Handoff"
+  short_description: "Consume active NOOS handoffs"
+  default_prompt: "Use $noos-consume-handoff to read the active NOOS handoff and continue the task."
+
+policy:
+  allow_implicit_invocation: true
