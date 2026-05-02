@@ -1,0 +1,9 @@
+{
+  "schema_version": "0.1",
+  "local_inbox_dirs": ["~/NOOS/inbox", "~/Downloads"],
+  "default_agent": "codex",
+  "github": {
+    "auth_provider": "gh",
+    "default_account": null
+  }
+}

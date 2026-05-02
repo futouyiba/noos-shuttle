@@ -4,3 +4,6 @@ dist/
 coverage/
 .tmp/
 output/
+.noos/local.json
+__pycache__/
+*.pyc

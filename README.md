@@ -70,6 +70,12 @@ This repo includes a NOOS consume-handoff skill:
 .noos/skills/noos-consume-handoff/SKILL.md
 ```
 
+The skill includes a resolver script that helps downstream agents find the handoff handle:
+
+```sh
+python3 .noos/skills/noos-consume-handoff/scripts/resolve_handoff.py --repo-root . --include-inbox
+```
+
 Install it for Codex and Claude Code:
 
 ```sh

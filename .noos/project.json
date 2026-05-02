@@ -1,0 +1,13 @@
+{
+  "schema_version": "0.1",
+  "project": "noos-shuttle",
+  "handoff_dirs": {
+    "active": ".noos/handoffs/active",
+    "done": ".noos/handoffs/done"
+  },
+  "github": {
+    "repo": "futouyiba/noos-shuttle",
+    "default_branch": "main",
+    "handoff_path": ".noos/handoffs/active"
+  }
+}

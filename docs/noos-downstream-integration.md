@@ -6,7 +6,8 @@ The recommended downstream model is:
 
 ```text
 handoff file = task data
-skill = consumption protocol
+resolver = handoff handle discovery
+skill = resolver + consumption protocol
 prompt = generation protocol or one-off instruction
 ```
 
@@ -23,6 +24,36 @@ A skill is better for downstream agents because it defines a reusable protocol:
 - when to ask clarifying questions
 - how to summarize completion
 - when to move or preserve handoff files
+
+## Handoff Resolver
+
+Downstream agents need to resolve a handoff handle before they can consume the task.
+
+Resolution order:
+
+```text
+inline handoff in current conversation
+  -> explicit file path
+  -> repo .noos/handoffs/active
+  -> clipboard, when requested
+  -> local inbox/download directories
+  -> configured GitHub repo/path
+  -> progressive setup
+```
+
+The resolver is bundled with the skill:
+
+```text
+.noos/skills/noos-consume-handoff/scripts/resolve_handoff.py
+```
+
+Example:
+
+```sh
+python3 .noos/skills/noos-consume-handoff/scripts/resolve_handoff.py --repo-root . --include-inbox
+```
+
+It returns JSON candidates with source type, path, title, date, size, and validation warnings.
 
 ## Current Skill
 
@@ -43,6 +74,70 @@ Install from this repository:
 ```sh
 scripts/install-noos-consumer.sh
 ```
+
+The installer creates or preserves:
+
+- `~/.noos/config.json`
+- `.noos/project.json`
+- `.noos/local.json.example`
+
+It does not write tokens or overwrite existing config.
+
+## Config Layers
+
+User-level config, not tied to one repo:
+
+```text
+~/.noos/config.json
+```
+
+Stores inbox directories and preferred auth provider:
+
+```json
+{
+  "schema_version": "0.1",
+  "local_inbox_dirs": ["~/NOOS/inbox", "~/Downloads"],
+  "default_agent": "codex",
+  "github": {
+    "auth_provider": "gh",
+    "default_account": null
+  }
+}
+```
+
+Project-level config, safe to commit:
+
+```text
+.noos/project.json
+```
+
+Stores repo handoff directories and GitHub handle:
+
+```json
+{
+  "schema_version": "0.1",
+  "project": "noos-shuttle",
+  "handoff_dirs": {
+    "active": ".noos/handoffs/active",
+    "done": ".noos/handoffs/done"
+  },
+  "github": {
+    "repo": "futouyiba/noos-shuttle",
+    "default_branch": "main",
+    "handoff_path": ".noos/handoffs/active"
+  }
+}
+```
+
+Project-local config, ignored by git:
+
+```text
+.noos/local.json
+```
+
+Stores machine-specific choices such as the last consumed handoff or preferred local inbox.
+
+Authentication stays outside NOOS config. Use `gh auth login` for GitHub.
 
 ## Installation Model
 
@@ -116,7 +211,8 @@ This resolves the missing middle:
 ```text
 ChatGPT conversation
   -> NOOS Shuttle creates handoff
-  -> handoff enters repository
+  -> handoff enters clipboard, download folder, or repository
+  -> resolver finds the handoff handle
   -> installed skill consumes handoff
   -> coding agent executes
   -> result summary closes the loop
