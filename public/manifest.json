@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "NOOS Shuttle",
+  "description": "Package ChatGPT conversations into agent-ready NOOS Thread handoffs.",
+  "version": "0.1.0",
+  "permissions": ["clipboardWrite", "downloads"],
+  "host_permissions": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
+  "background": {
+    "service_worker": "assets/service-worker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
+      "js": ["assets/content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
