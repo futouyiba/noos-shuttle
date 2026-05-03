@@ -7,3 +7,5 @@ output/
 .noos/local.json
 __pycache__/
 *.pyc
+target/
+apps/noos-hub/src-tauri/gen/

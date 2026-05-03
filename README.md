@@ -1,106 +1,208 @@
 # NOOS Shuttle
 
-NOOS Shuttle packages AI conversations into agent-ready handoff threads.
+NOOS Shuttle 是一套 AI 上下文穿梭工具。它的目标不是只做一个 Chrome 插件，而是在不同 Chatbox、Agent、Coding Agent 和创作工具之间建立一套可传递、可保存、可消费的 handoff 协议。
 
-Canonical names:
+当前 v0 重点：
 
-- Product name: NOOS Shuttle
-- Local project folder: `noos-shuttle`
-- GitHub repository name: `noos-shuttle`
-- Browser extension name: NOOS Shuttle
+- 在 ChatGPT 网页里生成和捕获 NOOS handoff
+- 支持中文/英文提示词和 UI
+- 将 handoff 复制、下载或放入本地/仓库工作区
+- 为 Codex、Claude Code 等下游 coding agent 安装消费 handoff 的 skill
+- 提供初步的 NOOS install / doctor 脚本
+- 提供 Tauri 桌面版 NOOS Hub 雏形，用来查看本机 adapter 状态和触发安装动作
 
-Current focus: v0 browser extension design for generating, capturing, validating, previewing, copying, and downloading structured NOOS Thread handoffs from ChatGPT.
+## 快速安装
 
-## Local Prototype
-
-NOOS Shuttle v0 is implemented as a Chrome-compatible Manifest V3 extension.
-
-Install dependencies:
+安装依赖：
 
 ```sh
 npm install
 ```
 
-Build the extension:
+检查当前 NOOS 环境：
 
 ```sh
-npm run build
+scripts/noos-doctor.sh
 ```
 
-Load it locally:
-
-1. Open `chrome://extensions`.
-2. Enable Developer mode.
-3. Choose "Load unpacked".
-4. Select the generated `dist/` directory.
-5. Open `https://chatgpt.com/` and look for the floating `NS` button.
-
-Development loop:
+启动桌面版 NOOS Hub：
 
 ```sh
-npm run dev
+npm install
+npm --prefix apps/noos-hub install
+npm run hub:run
 ```
 
-Verification:
+NOOS Hub 是一个 Tauri 桌面 App：界面用 Web 技术实现，系统能力由 Rust 后端调用本地脚本和检查本机状态。
+
+安装下游 agent 消费能力：
 
 ```sh
-npm run typecheck
-npm test
-npm run build
+scripts/noos-install.sh consumers
 ```
 
-## v0 Workflow
+这会安装 `noos-consume-handoff` skill 到：
 
-1. Click the floating `NS` button on ChatGPT.
-2. Click `生成交接稿` / `Draft Handoff` to insert the handoff prompt.
-3. Review and send the prompt in ChatGPT.
-4. After ChatGPT responds, click `收取交接稿` / `Collect Handoff`.
-5. Preview warnings if any.
-6. Copy the captured handoff or download it as markdown.
+- `~/.codex/skills/noos-consume-handoff`
+- `~/.claude/skills/noos-consume-handoff`
+- 当前项目的 `.claude/skills/noos-consume-handoff`
 
-GitHub delivery exists as a placeholder adapter. Copy and download are the reliable v0 delivery paths.
+## 安装浏览器插件
 
-## Downstream Agent Kit
+Chrome 出于安全限制，普通脚本不能把 unpacked extension 静默安装进你的日常 Chrome profile。NOOS Shuttle 提供两种 v0 安装方式。
 
-NOOS Shuttle is not only a browser extension. The extension creates handoff files; downstream coding agents need a stable protocol for consuming them.
+### 方式一：一键启动 NOOS 专用浏览器
 
-This repo includes a NOOS consume-handoff skill:
+```sh
+scripts/noos-install.sh browser --mode dev-profile
+```
+
+这个命令会：
+
+1. 构建扩展
+2. 创建或复用 `~/.noos/chrome-profile`
+3. 启动一个带 NOOS Shuttle 扩展的 Chrome / Chrome for Testing
+4. 打开 `https://chatgpt.com/`
+
+优点：最接近一键可用。  
+注意：这是独立 Chrome profile，可能需要重新登录 ChatGPT。
+
+### 方式二：安装到日常 Chrome
+
+```sh
+scripts/noos-install.sh browser --mode manual-unpacked
+```
+
+这个命令会：
+
+1. 构建扩展
+2. 打开 `chrome://extensions`
+3. 打开 `dist/` 目录
+
+然后你需要手动：
+
+1. 打开 Chrome 扩展页的 Developer Mode
+2. 点击 `Load unpacked`
+3. 选择本项目的 `dist/` 目录
+4. 打开 `https://chatgpt.com/`，检查右下角是否出现 `NS` 按钮
+
+这是 Chrome 对日常 profile 中 unpacked extension 的安全要求。
+
+## ChatGPT 工作流
+
+1. 在 ChatGPT 打开 NOOS Shuttle 的 `NS` 浮动按钮。
+2. 点击 `生成交接稿` / `Draft Handoff`。
+3. 检查提示词后发送给 ChatGPT。
+4. ChatGPT 输出 handoff 后，点击 `收取交接稿` / `Collect Handoff`。
+5. 预览校验提醒。
+6. 复制或下载 handoff markdown。
+
+中文浏览器默认使用中文 UI 和中文提示词；英文可在 `设置 / Settings` 中切换。
+
+## 下游 Agent Kit
+
+浏览器插件负责生成和捕获 handoff；下游 coding agent 需要 resolver 和 skill 来找到并消费 handoff。
+
+核心 skill：
 
 ```text
 .noos/skills/noos-consume-handoff/SKILL.md
 ```
 
-The skill includes a resolver script that helps downstream agents find the handoff handle:
+Resolver 脚本：
 
 ```sh
 python3 .noos/skills/noos-consume-handoff/scripts/resolve_handoff.py --repo-root . --include-inbox
 ```
 
-Install it for Codex and Claude Code:
+Resolver 支持：
 
-```sh
-scripts/install-noos-consumer.sh
+- 当前对话里直接粘贴的 handoff
+- 显式文件路径
+- 当前 repo 的 `.noos/handoffs/active/`
+- 剪贴板
+- `~/NOOS/inbox`、`~/Downloads` 等本地 inbox
+- 配置好的 GitHub repo/path
+
+项目入口文件：
+
+- `AGENTS.md` 告诉 Codex 类 agent 检查 `.noos/handoffs/active/`
+- `CLAUDE.md` 告诉 Claude Code 使用同一套 NOOS handoff 消费协议
+
+## NOOS Hub 目录
+
+用户级：
+
+```text
+~/.noos/
+  config.json
+  inbox/
+  outbox/
+  logs/
+  cache/
+  chrome-profile/
 ```
 
-The installer copies the skill to:
+项目级：
 
-- `~/.codex/skills/noos-consume-handoff`
-- `~/.claude/skills/noos-consume-handoff`
-- `.claude/skills/noos-consume-handoff`
+```text
+.noos/
+  project.json
+  local.json
+  handoffs/
+    active/
+    done/
+  context/
+    briefs/
+  skills/
+```
 
-Repository entry files:
+`.noos/local.json` 是本机配置，已被 git ignore。不要把 token 写进 NOOS config；GitHub 登录状态交给 `gh auth login`。
 
-- `AGENTS.md` tells Codex-style agents to check `.noos/handoffs/active/`.
-- `CLAUDE.md` tells Claude Code to use the same NOOS consume-handoff protocol.
+## 开发和验证
 
-See `docs/noos-downstream-integration.md` for the installation model and product design.
+构建扩展：
 
-## Language
+```sh
+npm run build
+```
 
-NOOS Shuttle supports Chinese and English in the popover UI and prompt template.
+开发监听：
 
-- Default language follows the browser language.
-- Chinese browsers default to Chinese UI and Chinese handoff prompts.
-- English is available from `设置` / `Settings`.
-- The NOOS markers and YAML frontmatter keys remain stable in English for machine parsing.
-- Chinese handoff bodies are validated with Chinese section headings such as `## 意图`, `## 背景摘要`, and `## 验收标准`.
+```sh
+npm run dev
+```
+
+完整验证：
+
+```sh
+npm run typecheck
+npm test
+npm run build
+npm run hub:build
+bash -n scripts/noos-install.sh
+bash -n scripts/noos-doctor.sh
+```
+
+## 文档
+
+- `docs/noos-install-architecture.md`：整体安装架构
+- `docs/noos-downstream-integration.md`：下游 agent 集成设计
+- `docs/noos-thread-format.md`：NOOS Thread v0.1 格式
+- `docs/noos-shuttle-v0-design-breakdown.md`：v0 设计拆解
+
+## English Summary
+
+NOOS Shuttle packages AI conversations into portable handoff threads and helps downstream coding agents consume them.
+
+The browser extension captures ChatGPT handoffs. The workspace kit installs `.noos/`, `AGENTS.md`, `CLAUDE.md`, and the `noos-consume-handoff` skill for Codex and Claude Code.
+
+Useful commands:
+
+```sh
+npm install
+scripts/noos-install.sh consumers
+scripts/noos-install.sh browser --mode dev-profile
+scripts/noos-install.sh browser --mode manual-unpacked
+scripts/noos-doctor.sh
+```

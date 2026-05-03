@@ -7,6 +7,11 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite build --watch",
+    "hub:dev": "npm --prefix apps/noos-hub run tauri:dev",
+    "hub:build": "npm run hub:web:build && cargo build --manifest-path apps/noos-hub/src-tauri/Cargo.toml",
+    "hub:bundle": "npm --prefix apps/noos-hub run tauri:build",
+    "hub:run": "npm run hub:web:build && cargo run --manifest-path apps/noos-hub/src-tauri/Cargo.toml",
+    "hub:web:build": "npm --prefix apps/noos-hub run build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
