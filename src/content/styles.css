@@ -12,8 +12,8 @@
 .shuttle {
   position: fixed;
   z-index: 2147483647;
-  right: 18px;
-  bottom: 84px;
+  width: 44px;
+  height: 44px;
   color: #17201a;
 }
 
@@ -27,11 +27,17 @@
   box-shadow: 0 8px 22px rgba(16, 24, 20, 0.22);
   cursor: pointer;
   font: 700 13px/1 system-ui, sans-serif;
+  touch-action: none;
+  user-select: none;
 }
 
 .fab--captured,
 .fab--saved {
   background: #1d6b4f;
+}
+
+.fab--waiting {
+  background: #245a78;
 }
 
 .fab--warning,
@@ -54,6 +60,16 @@
   border-radius: 8px;
   background: #fbfdfb;
   box-shadow: 0 18px 48px rgba(16, 24, 20, 0.22);
+}
+
+.shuttle[data-dock="left"] .popover {
+  right: auto;
+  left: 0;
+}
+
+.shuttle[data-vertical="top"] .popover {
+  top: 54px;
+  bottom: auto;
 }
 
 .header {
@@ -89,6 +105,59 @@
   background: #ffffff;
   color: #344039;
   cursor: pointer;
+}
+
+.primary-actions {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px 0;
+}
+
+.primary-action {
+  min-height: 46px;
+  border: 0;
+  border-radius: 7px;
+  background: #245a78;
+  color: #ffffff;
+  cursor: pointer;
+  font: 800 14px/1.2 system-ui, sans-serif;
+  box-shadow: 0 8px 18px rgba(36, 90, 120, 0.18);
+}
+
+.primary-action:hover:not(:disabled) {
+  background: #1d4b66;
+}
+
+.cancel-action {
+  min-height: 32px;
+  border: 1px solid rgba(36, 90, 120, 0.2);
+  border-radius: 6px;
+  background: #f4f9fb;
+  color: #1d4b66;
+  cursor: pointer;
+  font: 700 12px/1.2 system-ui, sans-serif;
+}
+
+.cancel-action:hover {
+  border-color: rgba(36, 90, 120, 0.42);
+  background: #eaf4f8;
+}
+
+.delivery-field {
+  display: grid;
+  gap: 5px;
+  color: #5c665f;
+  font: 700 11px/1.25 system-ui, sans-serif;
+}
+
+.delivery-field select {
+  width: 100%;
+  min-height: 32px;
+  border: 1px solid rgba(23, 32, 26, 0.14);
+  border-radius: 6px;
+  background: #ffffff;
+  color: #17201a;
+  font: 600 12px/1.2 system-ui, sans-serif;
 }
 
 .actions {
@@ -178,6 +247,119 @@ button:disabled {
   margin: 6px 0 0;
   padding-left: 18px;
   font: 400 11px/1.35 system-ui, sans-serif;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(12, 18, 15, 0.28);
+}
+
+.modal {
+  width: min(420px, calc(100vw - 36px));
+  max-height: min(640px, calc(100vh - 36px));
+  overflow: auto;
+  border: 1px solid rgba(23, 32, 26, 0.14);
+  border-radius: 8px;
+  background: #fbfdfb;
+  box-shadow: 0 24px 72px rgba(16, 24, 20, 0.3);
+  color: #17201a;
+}
+
+.modal-header {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 14px;
+  border-bottom: 1px solid rgba(23, 32, 26, 0.1);
+}
+
+.modal-header strong {
+  display: block;
+  font: 800 14px/1.25 system-ui, sans-serif;
+}
+
+.modal p {
+  margin: 0;
+  padding: 12px 14px;
+  color: #4b5750;
+  font: 400 12px/1.45 system-ui, sans-serif;
+}
+
+.thread-list {
+  display: grid;
+  gap: 8px;
+  padding: 0 14px 14px;
+}
+
+.thread-list button {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  min-height: 48px;
+  padding: 10px;
+  border: 1px solid rgba(23, 32, 26, 0.12);
+  border-radius: 7px;
+  background: #ffffff;
+  color: #17201a;
+  cursor: pointer;
+  text-align: left;
+}
+
+.thread-list button:hover {
+  border-color: rgba(36, 90, 120, 0.42);
+  background: #f4f9fb;
+}
+
+.thread-list strong {
+  font: 800 12px/1.25 system-ui, sans-serif;
+}
+
+.thread-list span {
+  color: #5c665f;
+  font: 500 11px/1.3 system-ui, sans-serif;
+}
+
+.modal-warnings {
+  margin: 0 14px 12px;
+  padding: 10px;
+  border: 1px solid rgba(139, 90, 17, 0.24);
+  border-radius: 7px;
+  background: #fff8ed;
+  color: #5f3b06;
+}
+
+.modal-warnings ul {
+  margin: 0;
+  padding-left: 18px;
+  font: 500 11px/1.4 system-ui, sans-serif;
+}
+
+.modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  padding: 0 14px 14px;
+}
+
+.modal-actions button {
+  min-height: 32px;
+  border: 1px solid rgba(23, 32, 26, 0.14);
+  border-radius: 6px;
+  background: #ffffff;
+  color: #17201a;
+  cursor: pointer;
+  font: 700 12px/1.2 system-ui, sans-serif;
+}
+
+.modal-actions button:hover {
+  border-color: rgba(29, 107, 79, 0.45);
+  background: #f2faf6;
 }
 
 .github-note {
