@@ -59,11 +59,11 @@ npm run hub:launch
 scripts/noos-install.sh consumers
 ```
 
-这会安装 `noos-consume-handoff` skill 到：
+这会安装 `noos-consume-handoff`、`noos-transfer-handoff` 和 `noos-hub-launcher` skills 到：
 
-- `~/.codex/skills/noos-consume-handoff`
-- `~/.claude/skills/noos-consume-handoff`
-- 当前项目的 `.claude/skills/noos-consume-handoff`
+- `~/.codex/skills/<skill-name>`
+- `~/.claude/skills/<skill-name>`
+- 当前项目的 `.claude/skills/<skill-name>`
 
 ## 安装浏览器插件
 
@@ -125,6 +125,7 @@ scripts/noos-install.sh browser --mode manual-unpacked
 
 ```text
 .noos/skills/noos-consume-handoff/SKILL.md
+.noos/skills/noos-transfer-handoff/SKILL.md
 ```
 
 Resolver 脚本：
@@ -141,6 +142,15 @@ Resolver 支持：
 - 剪贴板
 - `~/NOOS/inbox`、`~/Downloads` 等本地 inbox
 - 配置好的 GitHub repo/path
+
+Agent 转移能力：
+
+```sh
+python3 .noos/skills/noos-transfer-handoff/scripts/plan_transfer.py --repo-root . --list-agents
+python3 .noos/skills/noos-transfer-handoff/scripts/plan_transfer.py --repo-root . --target claude-code
+```
+
+`noos-transfer-handoff` 会读取 `.noos/agent-registry.json`，根据目标 agent 的能力选择 `local_file`、`repo`、`clipboard`、`browser_extension` 或 `prompt` 交付方式，并生成目标 agent 可直接消费的指令。
 
 项目入口文件：
 
@@ -165,6 +175,7 @@ Resolver 支持：
 
 ```text
 .noos/
+  agent-registry.json
   project.json
   local.json
   handoffs/

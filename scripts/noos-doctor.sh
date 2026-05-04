@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude}"
 NOOS_HOME="${NOOS_HOME:-$HOME/.noos}"
-SKILL_NAME="noos-consume-handoff"
+SKILL_NAMES=("noos-consume-handoff" "noos-transfer-handoff" "noos-hub-launcher")
 
 ok() {
   printf "ok      %s\n" "$1"
@@ -49,15 +49,18 @@ check_file "$NOOS_HOME/config.json" "User config"
 echo
 check_dir "$ROOT_DIR/.noos" "Project .noos"
 check_file "$ROOT_DIR/.noos/project.json" "Project config"
+check_file "$ROOT_DIR/.noos/agent-registry.json" "Agent registry"
 check_dir "$ROOT_DIR/.noos/handoffs/active" "Active handoffs"
 check_dir "$ROOT_DIR/.noos/handoffs/done" "Done handoffs"
 check_file "$ROOT_DIR/AGENTS.md" "Codex entry"
 check_file "$ROOT_DIR/CLAUDE.md" "Claude Code entry"
 
 echo
-check_file "$CODEX_HOME/skills/$SKILL_NAME/SKILL.md" "Codex user skill"
-check_file "$CLAUDE_HOME/skills/$SKILL_NAME/SKILL.md" "Claude Code user skill"
-check_file "$ROOT_DIR/.claude/skills/$SKILL_NAME/SKILL.md" "Claude project skill"
+for skill_name in "${SKILL_NAMES[@]}"; do
+  check_file "$CODEX_HOME/skills/$skill_name/SKILL.md" "Codex user skill: $skill_name"
+  check_file "$CLAUDE_HOME/skills/$skill_name/SKILL.md" "Claude Code user skill: $skill_name"
+  check_file "$ROOT_DIR/.claude/skills/$skill_name/SKILL.md" "Claude project skill: $skill_name"
+done
 
 echo
 if command -v node >/dev/null 2>&1; then

@@ -1,0 +1,7 @@
+interface:
+  display_name: "NOOS Transfer Handoff"
+  short_description: "Transfer NOOS handoffs between agents"
+  default_prompt: "Use $noos-transfer-handoff to transfer the latest NOOS handoff to another agent."
+
+policy:
+  allow_implicit_invocation: true

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SKILL_NAMES=("noos-consume-handoff" "noos-hub-launcher")
+SKILL_NAMES=("noos-consume-handoff" "noos-transfer-handoff" "noos-hub-launcher")
 USER_NOOS_DIR="$HOME/.noos"
 USER_CONFIG="$USER_NOOS_DIR/config.json"
 USER_CONFIG_EXAMPLE="$ROOT_DIR/.noos/config.example.json"

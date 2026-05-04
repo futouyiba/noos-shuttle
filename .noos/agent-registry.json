@@ -1,0 +1,117 @@
+{
+  "schema_version": "0.1",
+  "agents": {
+    "codex": {
+      "display_name": "Codex",
+      "category": "coding_agent",
+      "aliases": ["codex", "codex app", "openai codex"],
+      "produce": ["skill", "local_file", "repo"],
+      "consume": ["skill", "local_file", "repo", "clipboard"],
+      "install": ["skill"],
+      "delivery_preference": ["local_file", "repo", "clipboard"],
+      "skill": "noos-consume-handoff",
+      "handoff_roots": [".noos/handoffs/active"],
+      "notes": "Best path is a local NOOS handoff plus the noos-consume-handoff skill."
+    },
+    "claude-code": {
+      "display_name": "Claude Code",
+      "category": "coding_agent",
+      "aliases": ["claude code", "claude-code", "claude cli"],
+      "produce": ["skill", "local_file", "repo"],
+      "consume": ["skill", "local_file", "repo", "clipboard"],
+      "install": ["skill", "project_skill"],
+      "delivery_preference": ["local_file", "repo", "clipboard"],
+      "skill": "noos-consume-handoff",
+      "handoff_roots": [".noos/handoffs/active"],
+      "notes": "Install both user and project-local Claude skills when possible."
+    },
+    "kiro": {
+      "display_name": "Kiro",
+      "category": "coding_agent",
+      "aliases": ["kiro", "kuro"],
+      "produce": ["local_file", "prompt"],
+      "consume": ["local_file", "clipboard", "prompt"],
+      "install": ["rules_or_prompt"],
+      "delivery_preference": ["local_file", "clipboard", "prompt"],
+      "handoff_roots": [".noos/handoffs/active"],
+      "notes": "Use file or clipboard handoff until a native skill/rules adapter is available."
+    },
+    "cursor": {
+      "display_name": "Cursor",
+      "category": "coding_agent",
+      "aliases": ["cursor"],
+      "produce": ["local_file", "prompt"],
+      "consume": ["local_file", "clipboard", "prompt"],
+      "install": ["rules_or_prompt"],
+      "delivery_preference": ["local_file", "clipboard", "prompt"],
+      "handoff_roots": [".noos/handoffs/active"],
+      "notes": "Prefer a local file reference plus a short pasteable consume instruction."
+    },
+    "opencode": {
+      "display_name": "OpenCode",
+      "category": "coding_agent",
+      "aliases": ["opencode", "open code"],
+      "produce": ["local_file", "repo"],
+      "consume": ["local_file", "repo", "clipboard"],
+      "install": ["rules_or_prompt"],
+      "delivery_preference": ["local_file", "repo", "clipboard"],
+      "handoff_roots": [".noos/handoffs/active"],
+      "notes": "Treat as a local coding agent until a native skill adapter exists."
+    },
+    "chatgpt-web": {
+      "display_name": "ChatGPT Web",
+      "category": "web_chatbox",
+      "aliases": ["chatgpt", "chatgpt web", "chat.openai.com"],
+      "produce": ["browser_extension"],
+      "consume": ["browser_extension", "clipboard", "prompt"],
+      "install": ["browser_extension"],
+      "delivery_preference": ["browser_extension", "clipboard"],
+      "url_patterns": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
+      "notes": "Use the browser extension when available; otherwise paste the generated consume prompt."
+    },
+    "claude-web": {
+      "display_name": "Claude Web",
+      "category": "web_chatbox",
+      "aliases": ["claude", "claude web", "claude.ai"],
+      "produce": ["browser_extension"],
+      "consume": ["browser_extension", "clipboard", "prompt"],
+      "install": ["browser_extension"],
+      "delivery_preference": ["browser_extension", "clipboard"],
+      "url_patterns": ["https://claude.ai/*"],
+      "notes": "Use the browser extension when available; otherwise paste the generated consume prompt."
+    },
+    "claude-desktop": {
+      "display_name": "Claude Desktop",
+      "category": "desktop_chatbox",
+      "aliases": ["claude desktop", "claude design", "claude desktop/design"],
+      "produce": ["clipboard", "local_file"],
+      "consume": ["clipboard", "local_file", "prompt"],
+      "install": ["mcp_or_prompt"],
+      "delivery_preference": ["clipboard", "local_file", "prompt"],
+      "handoff_roots": [".noos/handoffs/active"],
+      "notes": "Use clipboard or a local file reference unless a dedicated MCP/desktop adapter is configured."
+    },
+    "gemini-web": {
+      "display_name": "Gemini Web",
+      "category": "web_chatbox",
+      "aliases": ["gemini", "gemini web", "google ai studio"],
+      "produce": ["browser_extension"],
+      "consume": ["browser_extension", "clipboard", "prompt"],
+      "install": ["browser_extension"],
+      "delivery_preference": ["browser_extension", "clipboard"],
+      "url_patterns": ["https://gemini.google.com/*", "https://aistudio.google.com/*"],
+      "notes": "Use the browser extension when available; otherwise paste the generated consume prompt."
+    },
+    "deepseek-web": {
+      "display_name": "DeepSeek Web",
+      "category": "web_chatbox",
+      "aliases": ["deepseek", "deepseek web"],
+      "produce": ["browser_extension"],
+      "consume": ["browser_extension", "clipboard", "prompt"],
+      "install": ["browser_extension"],
+      "delivery_preference": ["browser_extension", "clipboard"],
+      "url_patterns": ["https://chat.deepseek.com/*"],
+      "notes": "Use the browser extension when available; otherwise paste the generated consume prompt."
+    }
+  }
+}
