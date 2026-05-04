@@ -109,9 +109,9 @@ scripts/noos-install.sh browser --mode manual-unpacked
 ## ChatGPT 工作流
 
 1. 在 ChatGPT 打开 NOOS Shuttle 的 `NS` 浮动按钮。
-2. 点击 `生成交接稿` / `Draft Handoff`。
+2. 如需拆开操作，点击 `单独生成` / `Generate Only`。
 3. 检查提示词后发送给 ChatGPT。
-4. ChatGPT 输出 handoff 后，点击 `收取交接稿` / `Collect Handoff`。
+4. ChatGPT 输出 handoff 后，点击 `单独收取` / `Collect Only`。
 5. 预览校验提醒。
 6. 复制或下载 handoff markdown。
 

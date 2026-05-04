@@ -6,7 +6,7 @@ import { COPY, type ShuttleLocale, getStoredLocale, storeLocale } from "../share
 import { ClipboardAdapter } from "../storage/ClipboardAdapter";
 import { DownloadAdapter } from "../storage/DownloadAdapter";
 import { GitHubAdapter } from "../storage/GitHubAdapter";
-import { getPageText, insertIntoChatInput, submitChatInput } from "./chatgpt-dom";
+import { getPageText, insertIntoChatInput, isChatbotGenerating, submitChatInput } from "./chatgpt-dom";
 import styles from "./styles.css?inline";
 
 type ShuttleState = "idle" | "prompt-ready" | "waiting" | "captured" | "needs-choice" | "warning" | "saved" | "error";
@@ -32,6 +32,9 @@ interface ViewState {
 interface ActiveWait {
   observer: MutationObserver;
   timeoutId: number;
+  fallbackStartId: number;
+  quietTimerId: number | null;
+  hasStartedGenerating: boolean;
 }
 
 interface ShuttlePosition {
@@ -40,6 +43,8 @@ interface ShuttlePosition {
 }
 
 const WAIT_FOR_HANDOFF_TIMEOUT_MS = 120_000;
+const GENERATION_START_GRACE_MS = 1_500;
+const GENERATION_QUIET_MS = 1_200;
 const FAB_SIZE = 44;
 const EDGE_GAP = 12;
 const clipboardAdapter = new ClipboardAdapter();
@@ -425,8 +430,11 @@ async function generateAndCollect(app: HTMLElement): Promise<void> {
   if (!sent) {
     viewState.message = copy.sendNotFound;
     render(app);
+    return;
   }
 
+  viewState.message = copy.generationSubmitted;
+  render(app);
   waitForGeneratedHandoff(app, baselineBegin);
 }
 
@@ -482,14 +490,62 @@ function waitForGeneratedHandoff(app: HTMLElement, baselineBegin: number): void 
     return true;
   };
 
-  if (tryCapture()) {
-    return;
-  }
+  let quietTimerId: number | null = null;
+  let hasStartedGenerating = false;
+
+  const completeAfterQuietPeriod = () => {
+    if (!activeWait || !hasStartedGenerating || isChatbotGenerating()) {
+      return;
+    }
+
+    if (quietTimerId !== null) {
+      window.clearTimeout(quietTimerId);
+    }
+    quietTimerId = window.setTimeout(() => {
+      if (!activeWait || isChatbotGenerating()) {
+        return;
+      }
+      viewState.message = copy.waitingForHandoff;
+      render(app);
+      tryCapture();
+    }, GENERATION_QUIET_MS);
+    if (activeWait) {
+      activeWait.quietTimerId = quietTimerId;
+    }
+  };
+
+  const observeGenerationState = () => {
+    if (!activeWait) {
+      return;
+    }
+
+    if (isChatbotGenerating()) {
+      hasStartedGenerating = true;
+      activeWait.hasStartedGenerating = true;
+      if (quietTimerId !== null) {
+        window.clearTimeout(quietTimerId);
+        quietTimerId = null;
+        activeWait.quietTimerId = null;
+      }
+      viewState.message = copy.waitingForGenerationStart;
+      return;
+    }
+
+    completeAfterQuietPeriod();
+  };
 
   const observer = new MutationObserver(() => {
-    tryCapture();
+    observeGenerationState();
   });
-  observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+  observer.observe(document.body, { attributes: true, childList: true, subtree: true, characterData: true });
+  const fallbackStartId = window.setTimeout(() => {
+    if (!activeWait || hasStartedGenerating) {
+      return;
+    }
+    hasStartedGenerating = true;
+    activeWait.hasStartedGenerating = true;
+    completeAfterQuietPeriod();
+  }, GENERATION_START_GRACE_MS);
   const timeoutId = window.setTimeout(() => {
     cancelActiveWait();
     viewState.state = "error";
@@ -497,7 +553,8 @@ function waitForGeneratedHandoff(app: HTMLElement, baselineBegin: number): void 
     viewState.message = copy.waitingTimedOut;
     render(app);
   }, WAIT_FOR_HANDOFF_TIMEOUT_MS);
-  activeWait = { observer, timeoutId };
+  activeWait = { observer, timeoutId, fallbackStartId, quietTimerId, hasStartedGenerating };
+  observeGenerationState();
 }
 
 function cancelActiveWait(): void {
@@ -507,6 +564,10 @@ function cancelActiveWait(): void {
 
   activeWait.observer.disconnect();
   window.clearTimeout(activeWait.timeoutId);
+  window.clearTimeout(activeWait.fallbackStartId);
+  if (activeWait.quietTimerId !== null) {
+    window.clearTimeout(activeWait.quietTimerId);
+  }
   activeWait = null;
 }
 

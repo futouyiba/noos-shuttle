@@ -15,6 +15,15 @@ const SEND_BUTTON_SELECTORS = [
   "form button[type='submit']"
 ];
 
+const GENERATION_ACTIVE_SELECTORS = [
+  "[data-testid='stop-button']",
+  "[data-testid='composer-stop-button']",
+  "button[aria-label='Stop generating']",
+  "button[aria-label='Stop streaming']",
+  "button[aria-label='停止生成']",
+  "button[aria-label='停止']"
+];
+
 export function getPageText(): string {
   const main = document.querySelector("main");
   return collectVisibleTextAndComments(main ?? document.body).trim();
@@ -65,6 +74,10 @@ export async function submitChatInput(): Promise<boolean> {
   return true;
 }
 
+export function isChatbotGenerating(): boolean {
+  return Boolean(findGenerationActiveButton()) || !findSendButton();
+}
+
 function findChatInput(): HTMLElement | null {
   for (const selector of INPUT_SELECTORS) {
     const candidates = Array.from(document.querySelectorAll<HTMLElement>(selector));
@@ -91,6 +104,24 @@ function findSendButton(): HTMLButtonElement | null {
     buttons.find((button) => {
       const label = `${button.getAttribute("aria-label") ?? ""} ${button.textContent ?? ""}`.trim();
       return isVisible(button) && !button.disabled && /send|发送/i.test(label);
+    }) ?? null
+  );
+}
+
+function findGenerationActiveButton(): HTMLButtonElement | null {
+  for (const selector of GENERATION_ACTIVE_SELECTORS) {
+    const candidates = Array.from(document.querySelectorAll<HTMLButtonElement>(selector));
+    const visible = candidates.find((candidate) => isVisible(candidate) && !candidate.closest("[aria-hidden='true']"));
+    if (visible) {
+      return visible;
+    }
+  }
+
+  const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>("button"));
+  return (
+    buttons.find((button) => {
+      const label = `${button.getAttribute("aria-label") ?? ""} ${button.textContent ?? ""}`.trim();
+      return isVisible(button) && /stop|停止/i.test(label);
     }) ?? null
   );
 }

@@ -34,6 +34,8 @@ export interface ShuttleCopy {
   promptInserted: string;
   promptSent: string;
   sendNotFound: string;
+  generationSubmitted: string;
+  waitingForGenerationStart: string;
   waitingForHandoff: string;
   waitingTimedOut: string;
   waitCancelled: string;
@@ -59,8 +61,8 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     close: "Close",
     ok: "OK",
     generateAndCollect: "Generate & Collect",
-    draftHandoff: "Draft Handoff",
-    collectHandoff: "Collect Handoff",
+    draftHandoff: "Generate Only",
+    collectHandoff: "Collect Only",
     cancel: "Cancel",
     copy: "Copy",
     download: "Download",
@@ -87,7 +89,9 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     promptInserted: "Prompt inserted.",
     promptSent: "Prompt inserted and sent.",
     sendNotFound: "Prompt inserted, but the send button was not found.",
-    waitingForHandoff: "Waiting for the handoff to finish...",
+    generationSubmitted: "Prompt sent. Waiting for generation to start...",
+    waitingForGenerationStart: "Waiting for the chatbot to start generating...",
+    waitingForHandoff: "Generation appears complete. Collecting the handoff...",
     waitingTimedOut: "Timed out. You can collect the handoff manually.",
     waitCancelled: "Automatic collection cancelled.",
     conversationChanged: "Conversation changed. Shuttle state refreshed.",
@@ -108,8 +112,8 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     close: "关闭",
     ok: "知道了",
     generateAndCollect: "生成并收取",
-    draftHandoff: "生成交接稿",
-    collectHandoff: "收取交接稿",
+    draftHandoff: "单独生成",
+    collectHandoff: "单独收取",
     cancel: "取消",
     copy: "复制",
     download: "下载",
@@ -136,7 +140,9 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     promptInserted: "提示词已写入。",
     promptSent: "提示词已写入并发送。",
     sendNotFound: "提示词已写入，但没有找到发送按钮。",
-    waitingForHandoff: "正在等待交接稿生成...",
+    generationSubmitted: "提示词已发送，正在等待生成开始...",
+    waitingForGenerationStart: "正在等待 Chatbot 开始生成...",
+    waitingForHandoff: "生成看起来已完成，正在收取交接稿...",
     waitingTimedOut: "等待超时，可以手动收取交接稿。",
     waitCancelled: "已取消自动收取。",
     conversationChanged: "已切换会话，插件状态已刷新。",
