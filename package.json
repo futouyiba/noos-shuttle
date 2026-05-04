@@ -10,7 +10,11 @@
     "hub:dev": "npm --prefix apps/noos-hub run tauri:dev",
     "hub:build": "npm run hub:web:build && cargo build --manifest-path apps/noos-hub/src-tauri/Cargo.toml",
     "hub:bundle": "npm --prefix apps/noos-hub run tauri:build",
+    "hub:launch": "scripts/noos-hub-launch.sh start",
+    "hub:logs": "scripts/noos-hub-launch.sh logs",
     "hub:run": "npm run hub:web:build && cargo run --manifest-path apps/noos-hub/src-tauri/Cargo.toml",
+    "hub:status": "scripts/noos-hub-launch.sh status",
+    "hub:stop": "scripts/noos-hub-launch.sh stop",
     "hub:web:build": "npm --prefix apps/noos-hub run build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"

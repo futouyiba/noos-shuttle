@@ -1,0 +1,3 @@
+display_name: NOOS Hub Launcher
+short_description: Open and inspect the local NOOS Hub desktop app.
+default_prompt: Open NOOS Hub and show me its current status.

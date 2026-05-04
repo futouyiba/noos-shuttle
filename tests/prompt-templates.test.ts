@@ -9,6 +9,7 @@ describe("createGenerateThreadPrompt", () => {
     expect(prompt).toContain("source_url: https://chatgpt.com/c/test");
     expect(prompt).toContain("# 交接：<标题>");
     expect(prompt).toContain("## 建议给下一位代理的指令");
+    expect(prompt).toContain("如果某一节没有内容，也保留标题并写“无”");
   });
 
   it("creates an English handoff prompt when requested", () => {
@@ -18,5 +19,6 @@ describe("createGenerateThreadPrompt", () => {
     expect(prompt).toContain("source_url: https://chatgpt.com/c/test");
     expect(prompt).toContain("# Thread: <title>");
     expect(prompt).toContain("## Suggested Next-Agent Instructions");
+    expect(prompt).toContain('if a section has no content, keep the heading and write "None"');
   });
 });

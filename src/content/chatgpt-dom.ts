@@ -5,6 +5,16 @@ const INPUT_SELECTORS = [
   "[role='textbox']"
 ];
 
+const SEND_BUTTON_SELECTORS = [
+  "[data-testid='send-button']",
+  "[data-testid='composer-send-button']",
+  "button[aria-label='Send prompt']",
+  "button[aria-label='Send message']",
+  "button[aria-label='发送消息']",
+  "button[aria-label='发送']",
+  "form button[type='submit']"
+];
+
 export function getPageText(): string {
   const main = document.querySelector("main");
   return collectVisibleTextAndComments(main ?? document.body).trim();
@@ -29,6 +39,32 @@ export function insertIntoChatInput(text: string): boolean {
   return true;
 }
 
+export async function submitChatInput(): Promise<boolean> {
+  await waitForComposerUpdate();
+
+  const button = findSendButton();
+  if (button) {
+    button.click();
+    return true;
+  }
+
+  const input = findChatInput();
+  if (!input) {
+    return false;
+  }
+
+  input.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      key: "Enter",
+      code: "Enter",
+      bubbles: true,
+      cancelable: true,
+      composed: true
+    })
+  );
+  return true;
+}
+
 function findChatInput(): HTMLElement | null {
   for (const selector of INPUT_SELECTORS) {
     const candidates = Array.from(document.querySelectorAll<HTMLElement>(selector));
@@ -39,6 +75,30 @@ function findChatInput(): HTMLElement | null {
   }
 
   return null;
+}
+
+function findSendButton(): HTMLButtonElement | null {
+  for (const selector of SEND_BUTTON_SELECTORS) {
+    const candidates = Array.from(document.querySelectorAll<HTMLButtonElement>(selector));
+    const visible = candidates.find((candidate) => isVisible(candidate) && !candidate.disabled && !candidate.closest("[aria-hidden='true']"));
+    if (visible) {
+      return visible;
+    }
+  }
+
+  const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>("button"));
+  return (
+    buttons.find((button) => {
+      const label = `${button.getAttribute("aria-label") ?? ""} ${button.textContent ?? ""}`.trim();
+      return isVisible(button) && !button.disabled && /send|发送/i.test(label);
+    }) ?? null
+  );
+}
+
+function waitForComposerUpdate(): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, 120);
+  });
 }
 
 function isVisible(element: HTMLElement): boolean {

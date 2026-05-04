@@ -27,7 +27,25 @@ button {
   padding: 0 12px;
 }
 
+a {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  border: 1px solid rgba(23, 32, 26, 0.14);
+  border-radius: 7px;
+  background: #ffffff;
+  color: #17201a;
+  font: 750 13px/1.2 system-ui, sans-serif;
+  padding: 0 12px;
+  text-decoration: none;
+}
+
 button:hover {
+  border-color: rgba(29, 107, 79, 0.48);
+  background: #f2faf6;
+}
+
+a:hover {
   border-color: rgba(29, 107, 79, 0.48);
   background: #f2faf6;
 }
@@ -194,11 +212,313 @@ h3 {
 .card,
 .panel,
 .config-row,
+.intro-hero,
+.story-panel,
+.guide-main,
+.model-panel,
+.model-roadmap,
+.roadmap-item,
+.snapshot-note,
 .loading,
 .error {
   border: 1px solid rgba(23, 32, 26, 0.1);
   border-radius: 8px;
   background: #ffffff;
+}
+
+.intro-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  gap: 22px;
+  min-height: 314px;
+  overflow: hidden;
+  padding: 24px;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0.78)),
+    radial-gradient(circle at 78% 32%, rgba(138, 215, 173, 0.7), transparent 32%),
+    #f7faf7;
+}
+
+.intro-copy {
+  display: flex;
+  max-width: 660px;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.intro-copy h2 {
+  max-width: 620px;
+  font-size: 34px;
+  line-height: 1.08;
+}
+
+.intro-copy p:not(.eyebrow) {
+  max-width: 590px;
+  margin-top: 14px;
+  color: #4f5a53;
+  font: 600 15px/1.55 system-ui, sans-serif;
+}
+
+.intro-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 22px;
+}
+
+.system-visual {
+  position: relative;
+  min-height: 260px;
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(24, 36, 30, 0.94), rgba(32, 71, 52, 0.94)),
+    #18241e;
+}
+
+.system-visual::before,
+.system-visual::after {
+  position: absolute;
+  inset: 36px;
+  border: 1px solid rgba(217, 247, 230, 0.2);
+  border-radius: 50%;
+  content: "";
+}
+
+.system-visual::after {
+  inset: 70px;
+}
+
+.core-node,
+.orbit {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  font: 850 12px/1 system-ui, sans-serif;
+}
+
+.core-node {
+  top: 50%;
+  left: 50%;
+  width: 86px;
+  height: 86px;
+  transform: translate(-50%, -50%);
+  background: #d9f7e6;
+  color: #173d2d;
+  font-size: 16px;
+}
+
+.orbit {
+  min-width: 86px;
+  height: 42px;
+  border: 1px solid rgba(217, 247, 230, 0.22);
+  background: rgba(255, 255, 255, 0.08);
+  color: #f7fbf7;
+}
+
+.orbit--chat {
+  top: 30px;
+  left: 34px;
+}
+
+.orbit--handoff {
+  right: 24px;
+  top: 108px;
+}
+
+.orbit--agent {
+  bottom: 34px;
+  left: 62px;
+}
+
+.story-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.story-panel {
+  min-height: 168px;
+  padding: 16px;
+}
+
+.story-panel span,
+.roadmap-item span {
+  display: inline-flex;
+  min-width: 42px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #edf3ef;
+  color: #1d6b4f;
+  font: 850 11px/1 system-ui, sans-serif;
+}
+
+.story-panel h3 {
+  margin-top: 18px;
+  font-size: 18px;
+}
+
+.story-panel p,
+.roadmap-item p {
+  margin-top: 9px;
+  color: #56625a;
+  font: 600 13px/1.48 system-ui, sans-serif;
+}
+
+.story-panel--capture {
+  border-top: 4px solid #1d6b4f;
+}
+
+.story-panel--transport {
+  border-top: 4px solid #8b5a11;
+}
+
+.story-panel--consume {
+  border-top: 4px solid #39546c;
+}
+
+.snapshot-grid {
+  display: grid;
+  grid-template-columns: 132px 180px minmax(0, 1fr);
+  gap: 12px;
+}
+
+.snapshot-note {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  justify-content: center;
+  padding: 14px;
+}
+
+.snapshot-note strong,
+.snapshot-note span {
+  display: block;
+}
+
+.snapshot-note strong {
+  font: 800 14px/1.35 system-ui, sans-serif;
+}
+
+.snapshot-note span {
+  overflow: hidden;
+  margin-top: 6px;
+  color: #657169;
+  font: 600 12px/1.3 system-ui, sans-serif;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.guide-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.65fr);
+  gap: 12px;
+}
+
+.guide-main,
+.model-panel {
+  padding: 16px;
+}
+
+.guide-main > p:not(.eyebrow) {
+  max-width: 700px;
+  margin-top: 9px;
+  color: #56625a;
+  font: 600 13px/1.5 system-ui, sans-serif;
+}
+
+.guide-steps,
+.model-modes {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.guide-step {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid rgba(23, 32, 26, 0.08);
+  border-radius: 8px;
+  padding: 12px;
+  background: #f9fbf9;
+}
+
+.guide-step > span {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 8px;
+  background: #edf3ef;
+  color: #1d6b4f;
+  font: 850 12px/1 system-ui, sans-serif;
+}
+
+.guide-step strong,
+.guide-step p {
+  display: block;
+}
+
+.guide-step p {
+  margin-top: 4px;
+  color: #627067;
+  font: 600 12px/1.35 system-ui, sans-serif;
+}
+
+.guide-step--missing,
+.guide-step--error {
+  border-left: 4px solid #9b2727;
+}
+
+.guide-step--partial,
+.guide-step--needs_action {
+  border-left: 4px solid #8b5a11;
+}
+
+.guide-step--ready {
+  border-left: 4px solid #1d6b4f;
+}
+
+.model-mode {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  border-radius: 8px;
+  background: #f7faf7;
+  padding: 11px;
+}
+
+.model-mode strong,
+.model-mode small {
+  display: block;
+}
+
+.model-mode small {
+  margin-top: 4px;
+  color: #657169;
+  font: 600 11px/1.35 system-ui, sans-serif;
+}
+
+.model-roadmap {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  padding: 14px;
+}
+
+.roadmap-item {
+  min-height: 132px;
+  padding: 14px;
+}
+
+.roadmap-item strong {
+  display: block;
+  margin-top: 14px;
+  font: 850 15px/1.25 system-ui, sans-serif;
 }
 
 .metric {

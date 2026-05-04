@@ -131,4 +131,46 @@ tags: [noos, shuttle]
     expect(result.threads[0].title).toBe("中文交接测试");
     expect(result.threads[0].warnings).toEqual([]);
   });
+
+  it("accepts common Chinese aliases for agent instructions and open questions", () => {
+    const result = captureNoosThreads(`<!-- NOOS:THREAD:BEGIN -->
+---
+type: noos_thread
+version: 0.1
+source_app: chatgpt
+target_agent: codex
+status: active
+created_at: 2026-05-02
+title: 中文别名测试
+tags: [noos, shuttle]
+---
+
+# 交接：中文别名测试
+
+## 意图
+验证中文标题别名。
+
+## 背景摘要
+用户希望减少误报。
+
+## 任务
+继续开发。
+
+## 约束
+保持 marker 稳定。
+
+## 验收标准
+- [ ] 可以捕获中文章节。
+
+## 给下一位代理的建议
+读取交接稿并继续。
+
+## 开放问题
+无。
+
+<!-- NOOS:THREAD:END -->`);
+
+    expect(result.threads).toHaveLength(1);
+    expect(result.threads[0].warnings).toEqual([]);
+  });
 });

@@ -16,6 +16,8 @@ export interface ShuttleCopy {
   untitledThread: string;
   githubPlaceholder: string;
   promptInserted: string;
+  promptSent: string;
+  sendNotFound: string;
   inputNotFound: string;
   noThreadDetected: string;
   chooseDetected: (count: number) => string;
@@ -45,7 +47,9 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     warnings: "Warnings",
     untitledThread: "Untitled NOOS Thread",
     githubPlaceholder: "Placeholder adapter",
-    promptInserted: "Prompt inserted. Review and send in ChatGPT.",
+    promptInserted: "Prompt inserted.",
+    promptSent: "Prompt inserted and sent.",
+    sendNotFound: "Prompt inserted, but the send button was not found.",
     inputNotFound: "Chat input box not found. The page layout may have changed.",
     noThreadDetected: "No NOOS Thread detected. Try Draft Handoff first.",
     chooseDetected: (count) => `Detected ${count} handoffs. Choose one to deliver.`,
@@ -71,7 +75,9 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     warnings: "校验提醒",
     untitledThread: "未命名 NOOS 交接稿",
     githubPlaceholder: "GitHub 适配器占位",
-    promptInserted: "提示词已写入。请在 ChatGPT 中检查后发送。",
+    promptInserted: "提示词已写入。",
+    promptSent: "提示词已写入并发送。",
+    sendNotFound: "提示词已写入，但没有找到发送按钮。",
     inputNotFound: "没有找到 ChatGPT 输入框。页面结构可能已经变化。",
     noThreadDetected: "没有检测到 NOOS 交接稿。可以先生成交接稿。",
     chooseDetected: (count) => `检测到 ${count} 份交接稿。请选择要交付的一份。`,

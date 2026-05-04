@@ -30,10 +30,28 @@ scripts/noos-doctor.sh
 ```sh
 npm install
 npm --prefix apps/noos-hub install
-npm run hub:run
+npm run hub:launch
+```
+
+常用 Hub 命令：
+
+```sh
+npm run hub:status
+npm run hub:logs
+npm run hub:stop
 ```
 
 NOOS Hub 是一个 Tauri 桌面 App：界面用 Web 技术实现，系统能力由 Rust 后端调用本地脚本和检查本机状态。
+
+### Codex App 入口
+
+Codex App 当前可以通过 skills / plugins / hooks 扩展 agent 能力，但没有公开的持久化右上角按钮注册接口。NOOS Shuttle 先提供一个稳定 launcher 作为按钮背后的执行入口：
+
+```sh
+npm run hub:launch
+```
+
+同时仓库包含 `noos-hub-launcher` skill，并可安装到 `~/.codex/skills/noos-hub-launcher`。在 Codex 里说“打开 NOOS Hub”或“查看 NOOS Hub 状态”时，Codex 应优先使用这个 launcher。等 Codex App 暴露 topbar button / quick action API 后，按钮只需要调用同一个脚本。
 
 安装下游 agent 消费能力：
 

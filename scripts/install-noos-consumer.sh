@@ -2,39 +2,61 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SKILL_NAME="noos-consume-handoff"
-SOURCE_DIR="$ROOT_DIR/.noos/skills/$SKILL_NAME"
+SKILL_NAMES=("noos-consume-handoff" "noos-hub-launcher")
 USER_NOOS_DIR="$HOME/.noos"
 USER_CONFIG="$USER_NOOS_DIR/config.json"
 USER_CONFIG_EXAMPLE="$ROOT_DIR/.noos/config.example.json"
 PROJECT_CONFIG="$ROOT_DIR/.noos/project.json"
 LOCAL_EXAMPLE="$ROOT_DIR/.noos/local.json.example"
 
-if [[ ! -f "$SOURCE_DIR/SKILL.md" ]]; then
-  echo "Missing source skill: $SOURCE_DIR/SKILL.md" >&2
-  exit 1
-fi
+for skill_name in "${SKILL_NAMES[@]}"; do
+  if [[ ! -f "$ROOT_DIR/.noos/skills/$skill_name/SKILL.md" ]]; then
+    echo "Missing source skill: $ROOT_DIR/.noos/skills/$skill_name/SKILL.md" >&2
+    exit 1
+  fi
+done
 
 install_skill() {
   local target_root="$1"
-  local target_dir="$target_root/$SKILL_NAME"
+  local skill_name="$2"
+  local source_dir="$ROOT_DIR/.noos/skills/$skill_name"
+  local target_dir="$target_root/$skill_name"
 
   mkdir -p "$target_root"
   rm -rf "$target_dir"
-  cp -R "$SOURCE_DIR" "$target_dir"
-  echo "Installed $SKILL_NAME -> $target_dir"
+  cp -R "$source_dir" "$target_dir"
+  echo "Installed $skill_name -> $target_dir"
+}
+
+install_all_skills() {
+  local target_root="$1"
+  local skill_name
+
+  for skill_name in "${SKILL_NAMES[@]}"; do
+    install_skill "$target_root" "$skill_name"
+  done
+}
+
+install_project_claude_skill() {
+  local skill_name="$1"
+  local source_dir="$ROOT_DIR/.noos/skills/$skill_name"
+  local target_dir="$ROOT_DIR/.claude/skills/$skill_name"
+
+  mkdir -p "$ROOT_DIR/.claude/skills"
+  rm -rf "$target_dir"
+  cp -R "$source_dir" "$target_dir"
+  echo "Installed project-local Claude skill -> $target_dir"
 }
 
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude}"
 
-install_skill "$CODEX_HOME/skills"
-install_skill "$CLAUDE_HOME/skills"
+install_all_skills "$CODEX_HOME/skills"
+install_all_skills "$CLAUDE_HOME/skills"
 
-mkdir -p "$ROOT_DIR/.claude/skills"
-rm -rf "$ROOT_DIR/.claude/skills/$SKILL_NAME"
-cp -R "$SOURCE_DIR" "$ROOT_DIR/.claude/skills/$SKILL_NAME"
-echo "Installed project-local Claude skill -> $ROOT_DIR/.claude/skills/$SKILL_NAME"
+for skill_name in "${SKILL_NAMES[@]}"; do
+  install_project_claude_skill "$skill_name"
+done
 
 mkdir -p "$USER_NOOS_DIR"
 if [[ ! -f "$USER_CONFIG" ]]; then
@@ -78,8 +100,9 @@ fi
 
 echo
 echo "Done."
-echo "Codex skill: $CODEX_HOME/skills/$SKILL_NAME"
-echo "Claude user skill: $CLAUDE_HOME/skills/$SKILL_NAME"
-echo "Claude project skill: $ROOT_DIR/.claude/skills/$SKILL_NAME"
+echo "Codex skills: ${SKILL_NAMES[*]}"
+echo "Codex skill root: $CODEX_HOME/skills"
+echo "Claude user skill root: $CLAUDE_HOME/skills"
+echo "Claude project skill root: $ROOT_DIR/.claude/skills"
 echo "User config: $USER_CONFIG"
 echo "Project config: $PROJECT_CONFIG"

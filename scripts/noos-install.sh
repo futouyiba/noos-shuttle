@@ -12,6 +12,8 @@ Usage:
   scripts/noos-install.sh consumers
   scripts/noos-install.sh browser --mode dev-profile
   scripts/noos-install.sh browser --mode manual-unpacked
+  scripts/noos-install.sh browser dev-profile
+  scripts/noos-install.sh browser manual-unpacked
   scripts/noos-install.sh inbox
   scripts/noos-install.sh doctor
 
@@ -69,6 +71,98 @@ chrome_app() {
   return 1
 }
 
+chrome_app_name() {
+  local app_path="$1"
+  basename "$app_path" .app
+}
+
+open_chrome_url() {
+  local app_path="$1"
+  local url="$2"
+  local app_name
+  app_name="$(chrome_app_name "$app_path")"
+
+  open -a "$app_path" || true
+  sleep 1
+  osascript <<OSA || open -a "$app_path" "$url" || true
+tell application "$app_name"
+  activate
+  if (count of windows) = 0 then
+    make new window
+  end if
+  set URL of active tab of front window to "$url"
+end tell
+OSA
+}
+
+open_chrome_manual_install_tabs() {
+  local app_path="$1"
+  local guide_path="$2"
+  local app_name
+  local guide_url
+  app_name="$(chrome_app_name "$app_path")"
+  guide_url="file://$guide_path"
+
+  open -a "$app_path" || true
+  sleep 1
+  if ! osascript <<OSA
+tell application "$app_name"
+  activate
+  if (count of windows) = 0 then
+    make new window
+  end if
+  tell front window
+    make new tab with properties {URL:"$guide_url"}
+    make new tab with properties {URL:"chrome://extensions/"}
+    set active tab index to (count of tabs)
+  end tell
+end tell
+OSA
+  then
+    open -a "$app_path" "$guide_url" || true
+    open_chrome_url "$app_path" "chrome://extensions/"
+  fi
+}
+
+write_manual_install_guide() {
+  local guide="$NOOS_HOME/cache/chrome-install-guide.html"
+  mkdir -p "$(dirname "$guide")"
+  cat > "$guide" <<EOF
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <title>NOOS Shuttle Chrome 安装向导</title>
+    <style>
+      body { margin: 0; background: #eef2ef; color: #17201a; font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      main { max-width: 860px; margin: 48px auto; background: #fff; border: 1px solid rgba(23,32,26,.12); border-radius: 10px; padding: 32px; }
+      h1 { margin: 0 0 12px; font-size: 30px; line-height: 1.15; }
+      h2 { margin: 28px 0 8px; font-size: 18px; }
+      code { display: block; margin: 10px 0; padding: 12px; background: #f4f7f5; border-radius: 8px; font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+      li { margin: 10px 0; }
+      .note { margin-top: 20px; padding: 14px; border-left: 4px solid #8b5a11; background: #fff8ec; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>安装 NOOS Shuttle 到日常 Chrome</h1>
+      <p>脚本已经构建扩展，并会打开 Chrome 的扩展管理页和 dist 文件夹。Chrome 安全策略要求你手动完成最后两步。</p>
+      <h2>步骤</h2>
+      <ol>
+        <li>在 Chrome 地址栏确认当前页面是 <strong>chrome://extensions/</strong>。</li>
+        <li>打开右上角 <strong>Developer mode / 开发者模式</strong>。</li>
+        <li>点击 <strong>Load unpacked / 加载已解压的扩展程序</strong>。</li>
+        <li>选择这个文件夹：</li>
+      </ol>
+      <code>$ROOT_DIR/dist</code>
+      <div class="note">如果页面没有自动跳转，请手动在 Chrome 地址栏输入 <strong>chrome://extensions/</strong>。</div>
+    </main>
+  </body>
+</html>
+EOF
+  printf "%s\n" "$guide"
+}
+
 install_browser_dev_profile() {
   build_extension
 
@@ -91,12 +185,15 @@ install_browser_dev_profile() {
 
 install_browser_manual_unpacked() {
   build_extension
+  local guide
+  guide="$(write_manual_install_guide)"
 
   local app
   if app="$(chrome_app)"; then
-    open -na "$app" --args chrome://extensions/ || true
+    open_chrome_manual_install_tabs "$app" "$guide"
   else
     echo "Chrome app was not found; open chrome://extensions manually."
+    open "$guide"
   fi
 
   open "$ROOT_DIR/dist"
@@ -115,13 +212,16 @@ EOF
 
 install_browser() {
   local mode="dev-profile"
-  shift || true
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --mode)
         mode="${2:-}"
         shift 2
+        ;;
+      dev-profile|manual-unpacked)
+        mode="$1"
+        shift
         ;;
       *)
         echo "Unknown browser option: $1" >&2
@@ -157,7 +257,7 @@ case "$command" in
     ensure_noos_home
     install_workspace
     install_consumers
-    install_browser dev-profile
+    install_browser --mode dev-profile
     "$ROOT_DIR/scripts/noos-doctor.sh"
     ;;
   workspace)

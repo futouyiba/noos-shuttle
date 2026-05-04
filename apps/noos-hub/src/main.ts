@@ -3,6 +3,7 @@ import "./styles.css";
 
 type AdapterStatus = "ready" | "partial" | "missing" | "needs_action" | "error";
 type AdapterKind = "capture" | "transport" | "consumer" | "workspace";
+type ModelModeId = "local" | "user-key" | "noos-cloud";
 
 interface AdapterCheck {
   label: string;
@@ -48,9 +49,37 @@ const kindLabels: Record<AdapterKind, string> = {
 };
 
 const kindOrder: AdapterKind[] = ["capture", "transport", "workspace", "consumer"];
+const githubUrl = "https://github.com/futouyiba/noos-shuttle";
+const docsUrl = "https://futouyiba.github.io/noos-shuttle/";
+
+const modelModes: Array<{
+  id: ModelModeId;
+  name: string;
+  status: AdapterStatus;
+  detail: string;
+}> = [
+  {
+    id: "local",
+    name: "Local Guide",
+    status: "ready",
+    detail: "默认启用：基于 doctor、adapter 状态和本机配置生成下一步建议。"
+  },
+  {
+    id: "user-key",
+    name: "User Provider Key",
+    status: "needs_action",
+    detail: "支持 OpenAI-compatible、Anthropic、Gemini 等供应商配置。"
+  },
+  {
+    id: "noos-cloud",
+    name: "NOOS Cloud Relay",
+    status: "missing",
+    detail: "预留产品化入口：由 NOOS 分发额度 token，Hub 不保存供应商主 key。"
+  }
+];
 
 let currentHealth: HubHealth | null = null;
-let activeSection = "overview";
+let activeSection = "noos";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) {
@@ -72,7 +101,9 @@ function renderShell(): void {
         </div>
       </div>
       <nav>
+        ${navButton("noos", "NOOS")}
         ${navButton("overview", "总览")}
+        ${navButton("guide", "Guide")}
         ${navButton("adapters", "Adapters")}
         ${navButton("handoffs", "Handoffs")}
         ${navButton("config", "配置")}
@@ -87,7 +118,7 @@ function renderShell(): void {
       <header class="topbar">
         <div>
           <p class="eyebrow">NOOS Hub Desktop</p>
-          <h1>AI 工具链上下文中枢</h1>
+          <h1>NOOS Operating System</h1>
         </div>
         <div class="topbar-actions">
           <button type="button" data-action="refresh">刷新</button>
@@ -153,7 +184,11 @@ function renderCurrentSection(): void {
     button.classList.toggle("active", button.dataset.section === activeSection);
   });
 
-  if (activeSection === "adapters") {
+  if (activeSection === "noos") {
+    content.innerHTML = renderNoosIntro(currentHealth);
+  } else if (activeSection === "guide") {
+    content.innerHTML = renderGuide(currentHealth);
+  } else if (activeSection === "adapters") {
     content.innerHTML = renderAdapters(currentHealth);
   } else if (activeSection === "handoffs") {
     content.innerHTML = renderHandoffs(currentHealth);
@@ -168,6 +203,94 @@ function renderCurrentSection(): void {
   content.querySelectorAll<HTMLButtonElement>("[data-run]").forEach((button) => {
     button.addEventListener("click", () => runAction(button.dataset.run ?? ""));
   });
+}
+
+function renderNoosIntro(health: HubHealth): string {
+  return `
+    <section class="intro-hero">
+      <div class="intro-copy">
+        <p class="eyebrow">NOOS Shuttle + NOOS OS</p>
+        <h2>让不同 AI 工具共享上下文、状态和下一步。</h2>
+        <p>NOOS Shuttle 负责把 chatbox 里的讨论变成 handoff；NOOS Operating System 负责把 handoff、agent、repo、浏览器和本机能力组织成可检查、可安装、可消费的系统。</p>
+        <div class="intro-actions">
+          <a href="${githubUrl}" target="_blank" rel="noreferrer">GitHub</a>
+          <a href="${docsUrl}" target="_blank" rel="noreferrer">GitHub Pages</a>
+        </div>
+      </div>
+      <div class="system-visual" aria-label="NOOS system flow">
+        <div class="orbit orbit--chat">Chatbox</div>
+        <div class="orbit orbit--handoff">Handoff</div>
+        <div class="orbit orbit--agent">Agent</div>
+        <div class="core-node">NOOS</div>
+      </div>
+    </section>
+    <section class="story-grid">
+      ${storyPanel("01", "Capture", "ChatGPT、Claude、Gemini 等上游讨论被整理成结构化 handoff。", "capture")}
+      ${storyPanel("02", "Transport", "Clipboard、本地 inbox、GitHub repo 都可以成为上下文传输层。", "transport")}
+      ${storyPanel("03", "Consume", "Codex、Claude Code 和其他 coding agent 读取 handoff 并继续执行。", "consume")}
+    </section>
+    <section class="section-head">
+      <div>
+        <p class="eyebrow">This Machine</p>
+        <h2>当前 NOOS 实体状态</h2>
+      </div>
+      <button type="button" data-run="doctor">运行 Doctor</button>
+    </section>
+    ${renderGuideSnapshot(health)}
+  `;
+}
+
+function renderGuide(health: HubHealth): string {
+  const items = guideItems(health);
+  return `
+    <section class="guide-layout">
+      <article class="guide-main">
+        <p class="eyebrow">Guide Agent</p>
+        <h2>本机安装引导</h2>
+        <p>当前版本先用本地规则读取 adapter 状态。模型接入后，它会解释错误、总结 doctor 输出，并把下一步动作压缩成可确认的按钮。</p>
+        <div class="guide-steps">
+          ${items
+            .map(
+              (item, index) => `
+                <article class="guide-step guide-step--${item.status}">
+                  <span>${String(index + 1).padStart(2, "0")}</span>
+                  <div>
+                    <strong>${escapeHtml(item.title)}</strong>
+                    <p>${escapeHtml(item.detail)}</p>
+                  </div>
+                  ${item.action ? `<button type="button" data-run="${escapeHtml(item.action.id)}">${escapeHtml(item.action.label)}</button>` : ""}
+                </article>
+              `
+            )
+            .join("")}
+        </div>
+      </article>
+      <aside class="model-panel">
+        <p class="eyebrow">Model Layer</p>
+        <h2>模型接入策略</h2>
+        <div class="model-modes">
+          ${modelModes
+            .map(
+              (mode) => `
+                <article class="model-mode model-mode--${mode.status}">
+                  <span class="dot dot--${mode.status}"></span>
+                  <div>
+                    <strong>${escapeHtml(mode.name)}</strong>
+                    <small>${escapeHtml(mode.detail)}</small>
+                  </div>
+                </article>
+              `
+            )
+            .join("")}
+        </div>
+      </aside>
+    </section>
+    <section class="model-roadmap">
+      ${modelRoadmap("v0", "Rule-based", "不需要 token；只解释本机状态和安装脚本结果。")}
+      ${modelRoadmap("v1", "Provider Adapter", "用户配置 base URL、model 和 API key；Hub 只调用抽象 provider。")}
+      ${modelRoadmap("v2", "NOOS Relay", "NOOS Cloud 分发短期额度 token；客户端不接触供应商主 key。")}
+    </section>
+  `;
 }
 
 function renderOverview(health: HubHealth): string {
@@ -202,6 +325,21 @@ function renderOverview(health: HubHealth): string {
       ${pipelineStep("Consume", "Codex / Claude Code", adapterStatus(health, "consumer"))}
     </section>
     ${renderAdapters(health)}
+  `;
+}
+
+function renderGuideSnapshot(health: HubHealth): string {
+  const nextAction = chooseNextAction(health.adapters);
+  const ready = health.adapters.filter((adapter) => adapter.status === "ready").length;
+  return `
+    <section class="snapshot-grid">
+      ${metric("Ready", String(ready), "可用 adapter")}
+      ${metric("Next", nextAction?.name ?? "Doctor", "建议动作")}
+      <article class="snapshot-note">
+        <strong>${nextAction ? escapeHtml(nextAction.summary) : "核心链路已具备基础可用性。"}</strong>
+        <span>${escapeHtml(health.repo_root)}</span>
+      </article>
+    </section>
   `;
 }
 
@@ -337,6 +475,26 @@ function metric(label: string, value: string, caption: string): string {
   `;
 }
 
+function storyPanel(index: string, title: string, detail: string, variant: string): string {
+  return `
+    <article class="story-panel story-panel--${variant}">
+      <span>${index}</span>
+      <h3>${escapeHtml(title)}</h3>
+      <p>${escapeHtml(detail)}</p>
+    </article>
+  `;
+}
+
+function modelRoadmap(stage: string, title: string, detail: string): string {
+  return `
+    <article class="roadmap-item">
+      <span>${escapeHtml(stage)}</span>
+      <strong>${escapeHtml(title)}</strong>
+      <p>${escapeHtml(detail)}</p>
+    </article>
+  `;
+}
+
 function pipelineStep(title: string, detail: string, status: AdapterStatus): string {
   return `
     <article class="pipe pipe--${status}">
@@ -371,6 +529,43 @@ function adapterStatus(health: HubHealth, kind: AdapterKind): AdapterStatus {
 function chooseNextAction(adapters: AdapterHealth[]): AdapterHealth | undefined {
   return adapters.find((adapter) => adapter.status === "missing" || adapter.status === "needs_action") ??
     adapters.find((adapter) => adapter.status === "partial");
+}
+
+function guideItems(health: HubHealth): Array<{
+  title: string;
+  detail: string;
+  status: AdapterStatus;
+  action?: AdapterAction;
+}> {
+  const nextAction = chooseNextAction(health.adapters);
+  const inbox = health.adapters.find((adapter) => adapter.id === "local-inbox");
+  const codex = health.adapters.find((adapter) => adapter.id === "codex");
+
+  return [
+    {
+      title: "确认 NOOS Hub 状态",
+      detail: `本机 Hub 位于 ${health.noos_home}，Doctor 会刷新 workspace、consumer skill、browser extension 和 GitHub auth。`,
+      status: "ready",
+      action: { id: "doctor", label: "运行 Doctor" }
+    },
+    {
+      title: nextAction ? `处理 ${nextAction.name}` : "核心链路已就绪",
+      detail: nextAction ? nextAction.summary : "可以开始从浏览器捕获 handoff，并交给 coding agent 消费。",
+      status: nextAction?.status ?? "ready",
+      action: nextAction?.actions[0]
+    },
+    {
+      title: "补齐本地上下文收件箱",
+      detail: inbox?.status === "ready" ? "Local Inbox 已可用于 download 和跨工具交换。" : "Local Inbox 可以作为 Chatbox 到本机 agent 的最低摩擦传输层。",
+      status: inbox?.status ?? "missing",
+      action: { id: "create-inbox", label: "创建 Inbox" }
+    },
+    {
+      title: "准备模型引导层",
+      detail: codex?.status === "ready" ? "Codex consumer 已就绪，后续可加入模型解释层。" : "先使用 Local Guide；配置 provider key 或 NOOS Cloud Relay 后再启用模型解释。",
+      status: "partial"
+    }
+  ];
 }
 
 async function runAction(action: string): Promise<void> {

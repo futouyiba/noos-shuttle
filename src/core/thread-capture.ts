@@ -12,8 +12,15 @@ const REQUIRED_SECTION_GROUPS = [
   ["## Task", "## 任务"],
   ["## Constraints", "## 约束"],
   ["## Acceptance Criteria", "## 验收标准"],
-  ["## Suggested Next-Agent Instructions", "## 建议给下一位代理的指令"],
-  ["## Open Questions", "## 未决问题"]
+  [
+    "## Suggested Next-Agent Instructions",
+    "## 建议给下一位代理的指令",
+    "## 给下一位代理的建议",
+    "## 后续代理指令",
+    "## 下一步指令",
+    "## Next-Agent Instructions"
+  ],
+  ["## Open Questions", "## 未决问题", "## 开放问题", "## 待确认问题", "## 问题"]
 ];
 
 export function captureNoosThreads(source: string, detectedAt = new Date().toISOString()): CaptureResult {
@@ -92,10 +99,20 @@ function validateThread(
   }
 
   for (const sectionGroup of REQUIRED_SECTION_GROUPS) {
-    if (!sectionGroup.some((section) => bodyMarkdown.includes(section))) {
+    if (!sectionGroup.some((section) => hasMarkdownHeading(bodyMarkdown, section))) {
       warnings.push(`Missing required section: ${sectionGroup.join(" / ")}.`);
     }
   }
 
   return warnings;
+}
+
+function hasMarkdownHeading(bodyMarkdown: string, heading: string): boolean {
+  const normalizedHeading = heading.replace(/^#+\s*/, "").trim();
+  const pattern = new RegExp(`^#{2,6}\\s+${escapeRegExp(normalizedHeading)}\\s*$`, "im");
+  return pattern.test(bodyMarkdown);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

@@ -6,7 +6,7 @@ import { COPY, type ShuttleLocale, getStoredLocale, storeLocale } from "../share
 import { ClipboardAdapter } from "../storage/ClipboardAdapter";
 import { DownloadAdapter } from "../storage/DownloadAdapter";
 import { GitHubAdapter } from "../storage/GitHubAdapter";
-import { getPageText, insertIntoChatInput } from "./chatgpt-dom";
+import { getPageText, insertIntoChatInput, submitChatInput } from "./chatgpt-dom";
 import styles from "./styles.css?inline";
 
 type ShuttleState = "idle" | "prompt-ready" | "captured" | "needs-choice" | "warning" | "saved" | "error";
@@ -115,7 +115,7 @@ function render(app: HTMLElement): void {
     render(app);
   });
 
-  app.querySelectorAll<HTMLElement>("[data-action]").forEach((element) => {
+  app.querySelectorAll<HTMLButtonElement>("button[data-action]").forEach((element) => {
     element.addEventListener("click", () => handleAction(element.dataset.action ?? "", app));
   });
 
@@ -200,8 +200,14 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
   if (action === "generate") {
     const inserted = insertIntoChatInput(createGenerateThreadPrompt(window.location.href, viewState.locale));
     viewState.state = inserted ? "prompt-ready" : "error";
+    viewState.open = false;
     viewState.message = inserted ? copy.promptInserted : copy.inputNotFound;
     render(app);
+    if (inserted) {
+      const sent = await submitChatInput();
+      viewState.message = sent ? copy.promptSent : copy.sendNotFound;
+      render(app);
+    }
     return;
   }
 
@@ -236,6 +242,7 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
   if (action === "copy") {
     const result = await clipboardAdapter.saveThread(selectedThread);
     applySaveResult(result.ok ? copy.copyFinished : result.message ?? copy.copyFinished, result.ok);
+    viewState.open = false;
     render(app);
     return;
   }
@@ -244,6 +251,7 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
     const filename = createThreadFilename(selectedThread.title);
     const result = await downloadAdapter.saveThread(selectedThread, { filename });
     applySaveResult(result.ok ? copy.downloadFinished : result.message ?? copy.downloadFinished, result.ok);
+    viewState.open = false;
     render(app);
     return;
   }
@@ -251,6 +259,7 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
   if (action === "github") {
     const result = await githubAdapter.saveThread(selectedThread);
     applySaveResult(result.message ?? copy.githubUnavailable, result.ok);
+    viewState.open = false;
     render(app);
   }
 }

@@ -10,14 +10,42 @@
     "128": "icons/icon-128.png"
   },
   "permissions": ["clipboardWrite", "downloads"],
-  "host_permissions": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "https://chat.openai.com/*",
+    "https://claude.ai/*",
+    "https://gemini.google.com/*",
+    "https://aistudio.google.com/*",
+    "https://chat.deepseek.com/*",
+    "https://kimi.moonshot.cn/*",
+    "https://yuanbao.tencent.com/*",
+    "https://www.doubao.com/*",
+    "https://chat.qwen.ai/*",
+    "https://grok.com/*",
+    "https://www.perplexity.ai/*",
+    "https://poe.com/*"
+  ],
   "background": {
     "service_worker": "assets/service-worker.js",
     "type": "module"
   },
   "content_scripts": [
     {
-      "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://claude.ai/*",
+        "https://gemini.google.com/*",
+        "https://aistudio.google.com/*",
+        "https://chat.deepseek.com/*",
+        "https://kimi.moonshot.cn/*",
+        "https://yuanbao.tencent.com/*",
+        "https://www.doubao.com/*",
+        "https://chat.qwen.ai/*",
+        "https://grok.com/*",
+        "https://www.perplexity.ai/*",
+        "https://poe.com/*"
+      ],
       "js": ["assets/content.js"],
       "run_at": "document_idle"
     }

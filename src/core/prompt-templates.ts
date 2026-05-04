@@ -33,7 +33,7 @@ export function createGenerateThreadPrompt(
 - tags
 - preferred_path，路径格式参考：${examplePath}
 
-正文请使用中文，并包含以下章节：
+正文请使用中文，并严格包含以下章节标题。不要改写、合并或删除这些标题；如果某一节没有内容，也保留标题并写“无”：
 # 交接：<标题>
 
 ## 意图
@@ -72,7 +72,7 @@ Use YAML frontmatter with:
 - tags
 - preferred_path, using this pattern: ${examplePath}
 
-The body must include:
+The body must include these exact section headings. Do not rewrite, merge, or remove them; if a section has no content, keep the heading and write "None":
 # Thread: <title>
 
 ## Intent
