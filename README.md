@@ -208,9 +208,27 @@ npm run dev
 npm run typecheck
 npm test
 npm run build
+npm run package:extension
 npm run hub:build
 bash -n scripts/noos-install.sh
 bash -n scripts/noos-doctor.sh
+```
+
+## 发布
+
+浏览器插件 zip 不提交到源码仓库。生成本地 release 包：
+
+```sh
+npm run package:extension
+```
+
+这会构建 `dist/` 并生成 `release/noos-shuttle-<version>.zip`。`release/*.zip` 已被 git ignore。
+
+正式发布使用 GitHub Releases：推送 `v*` tag 会触发 `.github/workflows/release.yml`，在 CI 中运行类型检查、测试、打包，并把 zip 上传到对应 GitHub Release。
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
 ```
 
 ## 文档

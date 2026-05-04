@@ -1,9 +1,11 @@
 node_modules/
 dist/
+release/*.zip
 .DS_Store
 coverage/
 .tmp/
 output/
+.claude/skills/
 .noos/local.json
 __pycache__/
 *.pyc

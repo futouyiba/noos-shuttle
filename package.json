@@ -7,6 +7,7 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite build --watch",
+    "package:extension": "scripts/package-extension.sh",
     "hub:dev": "npm --prefix apps/noos-hub run tauri:dev",
     "hub:build": "npm run hub:web:build && cargo build --manifest-path apps/noos-hub/src-tauri/Cargo.toml",
     "hub:bundle": "npm --prefix apps/noos-hub run tauri:build",
