@@ -20,6 +20,7 @@
 .fab {
   width: 44px;
   height: 44px;
+  padding: 0;
   border: 0;
   border-radius: 999px;
   background: #193b2d;
@@ -29,6 +30,15 @@
   font: 700 13px/1 system-ui, sans-serif;
   touch-action: none;
   user-select: none;
+}
+
+.fab-logo {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background-position: center;
+  background-size: cover;
 }
 
 .fab--captured,
@@ -89,7 +99,7 @@
 }
 
 .header span,
-.github-note span,
+.vault-note,
 .empty {
   display: block;
   margin-top: 5px;
@@ -143,21 +153,39 @@
   background: #eaf4f8;
 }
 
-.delivery-field {
+.auto-delivery {
   display: grid;
   gap: 5px;
   color: #5c665f;
   font: 700 11px/1.25 system-ui, sans-serif;
 }
 
-.delivery-field select {
-  width: 100%;
+.delivery-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.delivery-option {
   min-height: 32px;
+  padding: 0 6px;
   border: 1px solid rgba(23, 32, 26, 0.14);
   border-radius: 6px;
   background: #ffffff;
   color: #17201a;
+  cursor: pointer;
   font: 600 12px/1.2 system-ui, sans-serif;
+}
+
+.delivery-option:hover {
+  border-color: rgba(36, 90, 120, 0.42);
+  background: #f4f9fb;
+}
+
+.delivery-option[aria-pressed="true"] {
+  border-color: rgba(36, 90, 120, 0.58);
+  background: #245a78;
+  color: #ffffff;
 }
 
 .actions {
@@ -168,7 +196,7 @@
 }
 
 .actions button,
-.github-note button {
+.preview-actions button {
   min-height: 34px;
   border: 1px solid rgba(23, 32, 26, 0.14);
   border-radius: 6px;
@@ -179,7 +207,7 @@
 }
 
 .actions button:hover:not(:disabled),
-.github-note button:hover:not(:disabled),
+.preview-actions button:hover:not(:disabled),
 .icon-button:hover {
   border-color: rgba(29, 107, 79, 0.45);
   background: #f2faf6;
@@ -232,6 +260,18 @@ button:disabled {
   word-break: break-word;
   color: #28332d;
   font: 400 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.preview-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  padding: 10px 11px 0;
+  border-top: 1px solid rgba(23, 32, 26, 0.08);
+}
+
+.vault-note {
+  padding: 6px 11px 10px;
 }
 
 .warnings {
@@ -360,17 +400,6 @@ button:disabled {
 .modal-actions button:hover {
   border-color: rgba(29, 107, 79, 0.45);
   background: #f2faf6;
-}
-
-.github-note {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  padding: 0 14px 10px;
-}
-
-.github-note button {
-  min-width: 88px;
 }
 
 .settings {

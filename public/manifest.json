@@ -9,6 +9,15 @@
     "48": "icons/icon-48.png",
     "128": "icons/icon-128.png"
   },
+  "action": {
+    "default_title": "NOOS Shuttle",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
   "permissions": ["clipboardWrite", "downloads"],
   "host_permissions": [
     "https://chatgpt.com/*",
@@ -48,6 +57,26 @@
       ],
       "js": ["assets/content.js"],
       "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/icon-128.png"],
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://claude.ai/*",
+        "https://gemini.google.com/*",
+        "https://aistudio.google.com/*",
+        "https://chat.deepseek.com/*",
+        "https://kimi.moonshot.cn/*",
+        "https://yuanbao.tencent.com/*",
+        "https://www.doubao.com/*",
+        "https://chat.qwen.ai/*",
+        "https://grok.com/*",
+        "https://www.perplexity.ai/*",
+        "https://poe.com/*"
+      ]
     }
   ]
 }

@@ -9,13 +9,13 @@ export interface ShuttleCopy {
   draftHandoff: string;
   collectHandoff: string;
   cancel: string;
-  copy: string;
-  download: string;
-  afterCollect: string;
-  deliverNone: string;
-  deliverCopy: string;
-  deliverDownload: string;
-  deliverGithub: string;
+  autoAfterCollect: string;
+  autoCopy: string;
+  autoDownload: string;
+  autoSave: string;
+  copyText: string;
+  downloadFile: string;
+  saveToVault: string;
   settings: string;
   language: string;
   noCapturedHandoff: string;
@@ -23,14 +23,15 @@ export interface ShuttleCopy {
   chooseHandoffTitle: string;
   chooseHandoffIntro: string;
   deliverySuccessTitle: string;
+  deliveryIssueTitle: string;
   validationWarningTitle: string;
   reviewBeforeDelivery: string;
   continueCopy: string;
   continueDownload: string;
-  continueGithub: string;
+  continueSave: string;
   warnings: string;
   untitledThread: string;
-  githubPlaceholder: string;
+  vaultAdapterNote: string;
   promptInserted: string;
   promptSent: string;
   sendNotFound: string;
@@ -64,13 +65,13 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     draftHandoff: "Generate Only",
     collectHandoff: "Collect Only",
     cancel: "Cancel",
-    copy: "Copy",
-    download: "Download",
-    afterCollect: "After collection",
-    deliverNone: "Keep in panel",
-    deliverCopy: "Copy",
-    deliverDownload: "Download",
-    deliverGithub: "GitHub",
+    autoAfterCollect: "Auto after collect",
+    autoCopy: "Auto Copy",
+    autoDownload: "Auto Download",
+    autoSave: "Auto Save",
+    copyText: "Copy Text",
+    downloadFile: "Download",
+    saveToVault: "Save 2 Vault",
     settings: "Settings",
     language: "Language",
     noCapturedHandoff: "No captured handoff yet.",
@@ -78,14 +79,15 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     chooseHandoffTitle: "Choose a handoff",
     chooseHandoffIntro: "Several NOOS handoffs were found. Pick the one to deliver.",
     deliverySuccessTitle: "Handoff delivered",
+    deliveryIssueTitle: "Delivery needs attention",
     validationWarningTitle: "Review validation warnings",
     reviewBeforeDelivery: "Automatic delivery was paused. Review the warnings before sending this handoff downstream.",
     continueCopy: "Copy anyway",
     continueDownload: "Download anyway",
-    continueGithub: "Send to GitHub anyway",
+    continueSave: "Save anyway",
     warnings: "Warnings",
     untitledThread: "Untitled NOOS Thread",
-    githubPlaceholder: "Placeholder adapter",
+    vaultAdapterNote: "Current vault adapter: GitHub",
     promptInserted: "Prompt inserted.",
     promptSent: "Prompt inserted and sent.",
     sendNotFound: "Prompt inserted, but the send button was not found.",
@@ -115,13 +117,13 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     draftHandoff: "单独生成",
     collectHandoff: "单独收取",
     cancel: "取消",
-    copy: "复制",
-    download: "下载",
-    afterCollect: "收取后",
-    deliverNone: "留在面板",
-    deliverCopy: "复制",
-    deliverDownload: "下载",
-    deliverGithub: "GitHub",
+    autoAfterCollect: "拉取后自动",
+    autoCopy: "自动复制",
+    autoDownload: "自动下载",
+    autoSave: "自动入库",
+    copyText: "复制文本",
+    downloadFile: "下载文件",
+    saveToVault: "存入库",
     settings: "设置",
     language: "语言",
     noCapturedHandoff: "还没有收取交接稿。",
@@ -129,14 +131,15 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     chooseHandoffTitle: "选择交接稿",
     chooseHandoffIntro: "检测到多份 NOOS 交接稿。请选择要交付的一份。",
     deliverySuccessTitle: "交接稿已交付",
+    deliveryIssueTitle: "交付需要处理",
     validationWarningTitle: "请确认校验提醒",
     reviewBeforeDelivery: "已暂停自动交付。请先确认这些问题，再决定是否发送到下游。",
     continueCopy: "仍然复制",
     continueDownload: "仍然下载",
-    continueGithub: "仍然发送 GitHub",
+    continueSave: "仍然入库",
     warnings: "校验提醒",
     untitledThread: "未命名 NOOS 交接稿",
-    githubPlaceholder: "GitHub 适配器占位",
+    vaultAdapterNote: "当前文件库适配：GitHub",
     promptInserted: "提示词已写入。",
     promptSent: "提示词已写入并发送。",
     sendNotFound: "提示词已写入，但没有找到发送按钮。",

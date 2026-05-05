@@ -10,7 +10,7 @@ import { getPageText, insertIntoChatInput, isChatbotGenerating, submitChatInput 
 import styles from "./styles.css?inline";
 
 type ShuttleState = "idle" | "prompt-ready" | "waiting" | "captured" | "needs-choice" | "warning" | "saved" | "error";
-type DeliveryMode = "none" | "copy" | "download" | "github";
+type DeliveryMode = "copy" | "download" | "vault";
 type ModalState =
   | { kind: "success"; title: string; message: string }
   | { kind: "warnings"; title: string; message: string; warnings: string[] }
@@ -25,7 +25,7 @@ interface ViewState {
   threads: NoosThread[];
   selectedIndex: number;
   locale: ShuttleLocale;
-  deliveryMode: DeliveryMode;
+  deliveryModes: DeliveryMode[];
   modal: ModalState;
 }
 
@@ -47,6 +47,7 @@ const GENERATION_START_GRACE_MS = 1_500;
 const GENERATION_QUIET_MS = 1_200;
 const FAB_SIZE = 44;
 const EDGE_GAP = 12;
+const SHUTTLE_ICON_URL = getExtensionAssetUrl("icons/icon-128.png");
 const clipboardAdapter = new ClipboardAdapter();
 const downloadAdapter = new DownloadAdapter();
 const githubAdapter = new GitHubAdapter();
@@ -64,7 +65,7 @@ const viewState: ViewState = {
   threads: [],
   selectedIndex: 0,
   locale: getStoredLocale(),
-  deliveryMode: getStoredDeliveryMode(),
+  deliveryModes: getStoredDeliveryModes(),
   modal: null
 };
 
@@ -104,7 +105,7 @@ function render(app: HTMLElement): void {
 
   app.innerHTML = `
     <button class="fab fab--${viewState.state}" type="button" aria-label="NOOS Shuttle">
-      <span>NS</span>
+      <span class="fab-logo" style="background-image: url('${escapeAttribute(SHUTTLE_ICON_URL)}')"></span>
     </button>
     ${
       viewState.open
@@ -125,27 +126,20 @@ function render(app: HTMLElement): void {
                   ? `<button class="cancel-action" type="button" data-action="cancel-wait">${copy.cancel}</button>`
                   : ""
               }
-              <label class="delivery-field">
-                <span>${copy.afterCollect}</span>
-                <select data-action="delivery-mode">
-                  <option value="none" ${viewState.deliveryMode === "none" ? "selected" : ""}>${copy.deliverNone}</option>
-                  <option value="copy" ${viewState.deliveryMode === "copy" ? "selected" : ""}>${copy.deliverCopy}</option>
-                  <option value="download" ${viewState.deliveryMode === "download" ? "selected" : ""}>${copy.deliverDownload}</option>
-                  <option value="github" ${viewState.deliveryMode === "github" ? "selected" : ""}>${copy.deliverGithub}</option>
-                </select>
-              </label>
+              <div class="auto-delivery">
+                <span>${copy.autoAfterCollect}</span>
+                <div class="delivery-options" role="group" aria-label="${copy.autoAfterCollect}">
+                  ${renderDeliveryOption("copy", copy.autoCopy)}
+                  ${renderDeliveryOption("download", copy.autoDownload)}
+                  ${renderDeliveryOption("vault", copy.autoSave)}
+                </div>
+              </div>
             </div>
             <div class="actions">
               <button type="button" data-action="generate">${copy.draftHandoff}</button>
               <button type="button" data-action="capture">${copy.collectHandoff}</button>
-              <button type="button" data-action="copy" ${selectedThread ? "" : "disabled"}>${copy.copy}</button>
-              <button type="button" data-action="download" ${selectedThread ? "" : "disabled"}>${copy.download}</button>
             </div>
             ${renderThreads(selectedThread)}
-            <div class="github-note">
-              <button type="button" data-action="github" ${selectedThread ? "" : "disabled"}>GitHub</button>
-              <span>${copy.githubPlaceholder}</span>
-            </div>
             <div class="settings">
               <button class="settings-toggle" type="button" data-action="settings">${copy.settings}</button>
               ${
@@ -189,9 +183,11 @@ function render(app: HTMLElement): void {
     handleAction("select-thread", app);
   });
 
-  app.querySelector<HTMLSelectElement>("select[data-action='delivery-mode']")?.addEventListener("change", () => {
-    handleAction("delivery-mode", app);
-  });
+}
+
+function renderDeliveryOption(mode: DeliveryMode, label: string): string {
+  const pressed = viewState.deliveryModes.includes(mode);
+  return `<button class="delivery-option" type="button" data-action="delivery-${mode}" aria-pressed="${pressed}">${label}</button>`;
 }
 
 function renderThreads(selectedThread: NoosThread | undefined): string {
@@ -213,6 +209,12 @@ function renderThreads(selectedThread: NoosThread | undefined): string {
       <div class="preview-title">${escapeHtml(selectedThread?.title ?? copy.untitledThread)}</div>
       ${warnings}
       <pre>${escapeHtml(selectedThread?.rawMarkdown ?? "")}</pre>
+      <footer class="preview-actions" aria-label="${copy.detectedHandoffs}">
+        <button type="button" data-action="copy">${copy.copyText}</button>
+        <button type="button" data-action="download">${copy.downloadFile}</button>
+        <button type="button" data-action="vault">${copy.saveToVault}</button>
+      </footer>
+      <div class="vault-note">${escapeHtml(copy.vaultAdapterNote)}</div>
     </article>
   `;
 }
@@ -261,7 +263,7 @@ function renderModal(): string {
         <footer class="modal-actions">
           <button type="button" data-action="modal-copy">${copy.continueCopy}</button>
           <button type="button" data-action="modal-download">${copy.continueDownload}</button>
-          <button type="button" data-action="modal-github">${copy.continueGithub}</button>
+          <button type="button" data-action="modal-vault">${copy.continueSave}</button>
         </footer>
       </section>
     </div>`;
@@ -304,9 +306,9 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
     return;
   }
 
-  if (action === "modal-copy" || action === "modal-download" || action === "modal-github") {
+  if (action === "modal-copy" || action === "modal-download" || action === "modal-vault") {
     viewState.modal = null;
-    const mode = action === "modal-copy" ? "copy" : action === "modal-download" ? "download" : "github";
+    const mode = action === "modal-copy" ? "copy" : action === "modal-download" ? "download" : "vault";
     await deliverSelectedThread(mode, app);
     return;
   }
@@ -325,11 +327,12 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
     return;
   }
 
-  if (action === "delivery-mode") {
-    const select = app.querySelector<HTMLSelectElement>("select[data-action='delivery-mode']");
-    const mode = parseDeliveryMode(select?.value);
-    viewState.deliveryMode = mode;
-    storeDeliveryMode(mode);
+  if (action.startsWith("delivery-")) {
+    const mode = parseDeliveryMode(action.replace("delivery-", ""));
+    if (mode) {
+      toggleDeliveryMode(mode);
+      storeDeliveryModes(viewState.deliveryModes);
+    }
     render(app);
     return;
   }
@@ -403,8 +406,8 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
     return;
   }
 
-  if (action === "github") {
-    await deliverSelectedThread("github", app);
+  if (action === "vault") {
+    await deliverSelectedThread("vault", app);
   }
 }
 
@@ -474,17 +477,19 @@ function waitForGeneratedHandoff(app: HTMLElement, baselineBegin: number): void 
     viewState.threads = result.threads;
     viewState.selectedIndex = selectedIndex;
     updateStateForSelection();
+    const deliveryModes = activeDeliveryModes();
     viewState.message =
-      candidate.warnings.length > 0 && viewState.deliveryMode !== "none" ? copy.autoDeliverySkipped : candidate.warnings.length > 0 ? copy.capturedWithWarnings : copy.captured;
-    viewState.open = candidate.warnings.length > 0;
+      candidate.warnings.length > 0 && deliveryModes.length > 0 ? copy.autoDeliverySkipped : candidate.warnings.length > 0 ? copy.capturedWithWarnings : copy.captured;
+    viewState.open = true;
     cancelActiveWait();
     if (candidate.warnings.length > 0) {
       showValidationModal(candidate);
       render(app);
-    } else if (viewState.deliveryMode !== "none") {
-      void deliverSelectedThread(viewState.deliveryMode, app);
+    } else if (deliveryModes.length > 0) {
+      void deliverSelectedThreads(deliveryModes, app);
     } else {
       viewState.modal = { kind: "success", title: copy.deliverySuccessTitle, message: copy.captured };
+      viewState.open = true;
       render(app);
     }
     return true;
@@ -628,27 +633,48 @@ function resetForConversationChange(app: HTMLElement): void {
 }
 
 async function deliverSelectedThread(mode: DeliveryMode, app: HTMLElement): Promise<void> {
+  await deliverSelectedThreads([mode], app);
+}
+
+async function deliverSelectedThreads(modes: DeliveryMode[], app: HTMLElement): Promise<void> {
   const selectedThread = viewState.threads[viewState.selectedIndex];
   const copy = COPY[viewState.locale];
-  if (!selectedThread || mode === "none") {
+  const activeModes = uniqueDeliveryModes(modes);
+  if (!selectedThread || activeModes.length === 0) {
+    viewState.open = true;
+    viewState.modal = { kind: "success", title: copy.deliverySuccessTitle, message: copy.captured };
+    render(app);
     return;
   }
 
-  if (mode === "copy") {
-    const result = await clipboardAdapter.saveThread(selectedThread);
-    applySaveResult(result.ok ? copy.copyFinished : result.message ?? copy.copyFinished, result.ok);
-  } else if (mode === "download") {
-    const filename = createThreadFilename(selectedThread.title);
-    const result = await downloadAdapter.saveThread(selectedThread, { filename });
-    applySaveResult(result.ok ? copy.downloadFinished : result.message ?? copy.downloadFinished, result.ok);
-  } else {
-    const result = await githubAdapter.saveThread(selectedThread);
-    applySaveResult(result.message ?? copy.githubUnavailable, result.ok);
+  const messages: string[] = [];
+  let ok = true;
+  for (const mode of activeModes) {
+    const result = await saveThreadWithMode(mode, selectedThread);
+    ok = ok && result.ok;
+    messages.push(result.message);
   }
 
-  viewState.open = false;
-  viewState.modal = { kind: "success", title: copy.deliverySuccessTitle, message: viewState.message };
+  applySaveResult(messages.join(" "), ok);
+  viewState.open = true;
+  viewState.modal = { kind: "success", title: ok ? copy.deliverySuccessTitle : copy.deliveryIssueTitle, message: viewState.message };
   render(app);
+}
+
+async function saveThreadWithMode(mode: DeliveryMode, selectedThread: NoosThread): Promise<{ ok: boolean; message: string }> {
+  const copy = COPY[viewState.locale];
+  if (mode === "copy") {
+    const result = await clipboardAdapter.saveThread(selectedThread);
+    return { ok: result.ok, message: result.ok ? copy.copyFinished : result.message ?? copy.copyFinished };
+  }
+  if (mode === "download") {
+    const filename = createThreadFilename(selectedThread.title);
+    const result = await downloadAdapter.saveThread(selectedThread, { filename });
+    return { ok: result.ok, message: result.ok ? copy.downloadFinished : result.message ?? copy.downloadFinished };
+  }
+
+  const result = await githubAdapter.saveThread(selectedThread);
+  return { ok: result.ok, message: result.message ?? copy.githubUnavailable };
 }
 
 function showValidationModal(thread: NoosThread): void {
@@ -771,16 +797,55 @@ function storePosition(position: ShuttlePosition): void {
   window.localStorage.setItem("noos-shuttle-position", JSON.stringify(position));
 }
 
-function parseDeliveryMode(value: string | undefined): DeliveryMode {
-  return value === "copy" || value === "download" || value === "github" ? value : "none";
+function activeDeliveryModes(): DeliveryMode[] {
+  return viewState.deliveryModes;
 }
 
-function getStoredDeliveryMode(): DeliveryMode {
-  return parseDeliveryMode(window.localStorage.getItem("noos-shuttle-delivery-mode") ?? undefined);
+function toggleDeliveryMode(mode: DeliveryMode): void {
+  if (viewState.deliveryModes.includes(mode)) {
+    viewState.deliveryModes = viewState.deliveryModes.filter((item) => item !== mode);
+    return;
+  }
+
+  viewState.deliveryModes = uniqueDeliveryModes([...viewState.deliveryModes, mode]);
 }
 
-function storeDeliveryMode(mode: DeliveryMode): void {
-  window.localStorage.setItem("noos-shuttle-delivery-mode", mode);
+function parseDeliveryMode(value: string | undefined): DeliveryMode | null {
+  if (value === "github") {
+    return "vault";
+  }
+
+  return value === "copy" || value === "download" || value === "vault" ? value : null;
+}
+
+function uniqueDeliveryModes(modes: DeliveryMode[]): DeliveryMode[] {
+  return ["copy", "download", "vault"].filter((mode): mode is DeliveryMode => modes.includes(mode as DeliveryMode));
+}
+
+function getStoredDeliveryModes(): DeliveryMode[] {
+  const stored = window.localStorage.getItem("noos-shuttle-delivery-modes");
+  if (stored) {
+    try {
+      const parsed = JSON.parse(stored);
+      if (Array.isArray(parsed)) {
+        return uniqueDeliveryModes(parsed.map((item) => parseDeliveryMode(String(item))).filter(Boolean) as DeliveryMode[]);
+      }
+    } catch {
+      window.localStorage.removeItem("noos-shuttle-delivery-modes");
+    }
+  }
+
+  const legacy = window.localStorage.getItem("noos-shuttle-delivery-mode");
+  const legacyMode = legacy === "none" ? null : parseDeliveryMode(legacy ?? undefined);
+  return legacyMode ? [legacyMode] : [];
+}
+
+function storeDeliveryModes(modes: DeliveryMode[]): void {
+  window.localStorage.setItem("noos-shuttle-delivery-modes", JSON.stringify(uniqueDeliveryModes(modes)));
+}
+
+function getExtensionAssetUrl(path: string): string {
+  return typeof chrome !== "undefined" && chrome.runtime?.getURL ? chrome.runtime.getURL(path) : path;
 }
 
 function escapeHtml(value: string): string {
@@ -794,4 +859,8 @@ function escapeHtml(value: string): string {
     };
     return entities[character];
   });
+}
+
+function escapeAttribute(value: string): string {
+  return escapeHtml(value).replace(/`/g, "&#96;");
 }

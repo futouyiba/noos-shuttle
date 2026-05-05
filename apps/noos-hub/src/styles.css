@@ -80,14 +80,11 @@ code {
 }
 
 .mark {
-  display: grid;
-  place-items: center;
   width: 36px;
   height: 36px;
   border-radius: 8px;
-  background: #d9f7e6;
-  color: #173d2d;
-  font: 900 12px/1 system-ui, sans-serif;
+  object-fit: cover;
+  box-shadow: 0 0 0 1px rgba(116, 221, 235, 0.2);
 }
 
 .brand strong,

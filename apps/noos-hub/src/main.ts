@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import noosLogoUrl from "./assets/noos-logo.png";
 import "./styles.css";
 
 type AdapterStatus = "ready" | "partial" | "missing" | "needs_action" | "error";
@@ -94,7 +95,7 @@ function renderShell(): void {
   appElement.innerHTML = `
     <aside class="sidebar">
       <div class="brand">
-        <div class="mark">NS</div>
+        <img class="mark" src="${noosLogoUrl}" alt="" aria-hidden="true" />
         <div>
           <strong>NOOS Hub</strong>
           <span>Context Control Plane</span>
