@@ -255,8 +255,8 @@ npm run package:release
 正式发布使用 GitHub Releases：推送 `v*` tag 会触发 `.github/workflows/release.yml`，在 CI 中运行类型检查、测试、打包，构建 macOS Hub bundle，并把拆分产物上传到对应 GitHub Release。
 
 ```sh
-git tag v0.1.1
-git push origin v0.1.1
+git tag v0.1.2
+git push origin v0.1.2
 ```
 
 ## 文档

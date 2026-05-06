@@ -255,8 +255,8 @@ This creates separate artifacts under `release/`:
 Official releases use GitHub Releases. Pushing a `v*` tag triggers `.github/workflows/release.yml`, which runs type checks, tests, packaging, builds the macOS Hub bundle, and uploads separated artifacts to the matching GitHub Release.
 
 ```sh
-git tag v0.1.1
-git push origin v0.1.1
+git tag v0.1.2
+git push origin v0.1.2
 ```
 
 ## Documentation
