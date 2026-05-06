@@ -13,7 +13,15 @@ export function createGenerateThreadPrompt(
 
 这份交接稿的用途，是把当前讨论交给 Codex、Claude Code、OpenCode 等编码代理继续执行。
 
-只输出一个 markdown 交接块。不要在交接块外写解释、寒暄或补充说明。
+只输出一个 fenced markdown code block。不要在 code block 外写解释、寒暄或补充说明。
+
+输出格式必须是：
+
+\`\`\`markdown
+<!-- NOOS:THREAD:BEGIN -->
+...
+<!-- NOOS:THREAD:END -->
+\`\`\`
 
 交接稿必须被以下精确标记包裹：
 
@@ -24,6 +32,7 @@ export function createGenerateThreadPrompt(
 使用 YAML frontmatter，字段保持英文键名：
 - type: noos_thread
 - version: 0.1
+- handoff_revision: v1、v2、v3 这类递增版本号。若当前对话里已经有旧交接稿，请使用下一个版本号。
 - source_app: chatgpt
 - source_url: ${sourceUrl}
 - target_agent: codex
@@ -32,6 +41,8 @@ export function createGenerateThreadPrompt(
 - title
 - tags
 - preferred_path，路径格式参考：${examplePath}
+
+frontmatter 必须让用户可以区分多份交接稿：title、created_at、handoff_revision、status、target_agent、preferred_path 都要填写清楚。
 
 正文请使用中文，并严格包含以下章节标题。不要改写、合并或删除这些标题；如果某一节没有内容，也保留标题并写“无”：
 # 交接：<标题>
@@ -52,7 +63,15 @@ export function createGenerateThreadPrompt(
 
 The purpose is to hand off this discussion to a coding agent such as Codex, Claude Code, or OpenCode.
 
-Output only one markdown handoff block. Do not include any explanation outside the block.
+Output only one fenced markdown code block. Do not include any explanation outside the code block.
+
+The output format must be:
+
+\`\`\`markdown
+<!-- NOOS:THREAD:BEGIN -->
+...
+<!-- NOOS:THREAD:END -->
+\`\`\`
 
 The handoff must be wrapped by these exact markers:
 
@@ -63,6 +82,7 @@ The handoff must be wrapped by these exact markers:
 Use YAML frontmatter with:
 - type: noos_thread
 - version: 0.1
+- handoff_revision: an increasing version label such as v1, v2, or v3. If older handoffs already exist in this conversation, use the next version.
 - source_app: chatgpt
 - source_url: ${sourceUrl}
 - target_agent: codex
@@ -71,6 +91,8 @@ Use YAML frontmatter with:
 - title
 - tags
 - preferred_path, using this pattern: ${examplePath}
+
+The frontmatter must let the user distinguish multiple handoffs: title, created_at, handoff_revision, status, target_agent, and preferred_path must be explicit.
 
 The body must include these exact section headings. Do not rewrite, merge, or remove them; if a section has no content, keep the heading and write "None":
 # Thread: <title>

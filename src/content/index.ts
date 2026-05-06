@@ -219,6 +219,22 @@ function renderThreads(selectedThread: NoosThread | undefined): string {
   `;
 }
 
+function threadChoiceSummary(thread: NoosThread, copy: (typeof COPY)[ShuttleLocale]): string {
+  const parts = [
+    thread.frontmatter?.handoff_revision,
+    thread.frontmatter?.created_at,
+    thread.frontmatter?.status,
+    thread.frontmatter?.target_agent,
+    thread.frontmatter?.preferred_path
+  ].filter(Boolean);
+
+  if (thread.warnings.length > 0) {
+    parts.push(`${copy.warnings}: ${thread.warnings.length}`);
+  }
+
+  return parts.length > 0 ? parts.join(" · ") : copy.captured;
+}
+
 function renderModal(): string {
   const modal = viewState.modal;
   const copy = COPY[viewState.locale];
@@ -240,7 +256,7 @@ function renderModal(): string {
               (thread, index) =>
                 `<button type="button" data-action="choose-thread-${index}">
                   <strong>${escapeHtml(thread.title)}</strong>
-                  <span>${thread.warnings.length > 0 ? `${copy.warnings}: ${thread.warnings.length}` : copy.captured}</span>
+                  <span>${escapeHtml(threadChoiceSummary(thread, copy))}</span>
                 </button>`
             )
             .join("")}
