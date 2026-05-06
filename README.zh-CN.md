@@ -264,5 +264,6 @@ git push origin v0.1.1
 - `docs/noos-install-architecture.md`：整体安装架构
 - `docs/noos-downstream-integration.md`：下游 agent 集成设计
 - `docs/noos-handoff-vault-strategy.md`：handoff 入库策略
+- `docs/noos-shuttle-page-context-events.zh-CN.md`：浏览器页面上下文事件与状态处理
 - `docs/noos-thread-format.md`：NOOS Thread v0.1 格式
 - `docs/noos-shuttle-v0-design-breakdown.md`：v0 设计拆解

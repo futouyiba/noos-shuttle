@@ -43,10 +43,24 @@ interface ShuttlePosition {
   y: number;
 }
 
+type PageKind = "conversation" | "composer" | "login" | "unavailable" | "unsupported" | "unknown";
+
+interface PageContext {
+  href: string;
+  origin: string;
+  pathname: string;
+  conversationId: string;
+  pageKind: PageKind;
+  textFingerprint: string;
+  signature: string;
+}
+
 const WAIT_FOR_HANDOFF_TIMEOUT_MS = 120_000;
 const GENERATION_START_GRACE_MS = 1_500;
 const GENERATION_QUIET_MS = 1_200;
 const CAPTURE_POLL_MS = 1_500;
+const PAGE_CONTEXT_POLL_MS = 1_000;
+const PAGE_CONTEXT_DEBOUNCE_MS = 250;
 const FAB_SIZE = 44;
 const EDGE_GAP = 12;
 const SHUTTLE_ICON_URL = getExtensionAssetUrl("icons/icon-128.png");
@@ -54,8 +68,9 @@ const clipboardAdapter = new ClipboardAdapter();
 const downloadAdapter = new DownloadAdapter();
 const noosVaultAdapter = new NoosVaultAdapter();
 let activeWait: ActiveWait | null = null;
-let currentConversationUrl = window.location.href;
+let currentPageContext = getPageContext();
 let conversationWatcherInstalled = false;
+let pageContextDebounceId: number | null = null;
 let shuttlePosition = getStoredPosition();
 let suppressNextFabClick = false;
 
@@ -625,19 +640,29 @@ function installConversationWatcher(app: HTMLElement): void {
   }
 
   conversationWatcherInstalled = true;
-  const checkConversation = () => {
-    if (window.location.href === currentConversationUrl) {
-      return;
+  const scheduleContextCheck = () => {
+    if (pageContextDebounceId !== null) {
+      window.clearTimeout(pageContextDebounceId);
     }
-
-    currentConversationUrl = window.location.href;
-    resetForConversationChange(app);
+    pageContextDebounceId = window.setTimeout(() => {
+      pageContextDebounceId = null;
+      checkPageContext(app);
+    }, PAGE_CONTEXT_DEBOUNCE_MS);
   };
 
-  wrapHistoryMethod("pushState", checkConversation);
-  wrapHistoryMethod("replaceState", checkConversation);
-  window.addEventListener("popstate", checkConversation);
-  window.setInterval(checkConversation, 1000);
+  wrapHistoryMethod("pushState", scheduleContextCheck);
+  wrapHistoryMethod("replaceState", scheduleContextCheck);
+  window.addEventListener("popstate", scheduleContextCheck);
+  window.addEventListener("hashchange", scheduleContextCheck);
+  window.addEventListener("focus", scheduleContextCheck);
+  window.addEventListener("pageshow", scheduleContextCheck);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      scheduleContextCheck();
+    }
+  });
+  window.addEventListener("pagehide", () => cancelActiveWait());
+  window.setInterval(() => checkPageContext(app), PAGE_CONTEXT_POLL_MS);
 }
 
 function wrapHistoryMethod(method: "pushState" | "replaceState", onChange: () => void): void {
@@ -647,6 +672,17 @@ function wrapHistoryMethod(method: "pushState" | "replaceState", onChange: () =>
     window.setTimeout(onChange, 0);
     return result;
   } as History[typeof method];
+}
+
+function checkPageContext(app: HTMLElement): void {
+  const nextContext = getPageContext();
+  if (nextContext.signature === currentPageContext.signature) {
+    currentPageContext = nextContext;
+    return;
+  }
+
+  currentPageContext = nextContext;
+  resetForConversationChange(app);
 }
 
 function resetForConversationChange(app: HTMLElement): void {
@@ -659,6 +695,99 @@ function resetForConversationChange(app: HTMLElement): void {
   viewState.selectedIndex = 0;
   viewState.modal = null;
   render(app);
+}
+
+function getPageContext(): PageContext {
+  const url = new URL(window.location.href);
+  const pageKind = detectPageKind(url);
+  const conversationId = detectConversationId(url);
+  const textFingerprint = fingerprintText(document.querySelector("main")?.textContent ?? document.body.textContent ?? "");
+  const signature = [url.origin, normalizedPathname(url), conversationId, pageKind].join("|");
+
+  return {
+    href: url.href,
+    origin: url.origin,
+    pathname: url.pathname,
+    conversationId,
+    pageKind,
+    textFingerprint,
+    signature
+  };
+}
+
+function detectConversationId(url: URL): string {
+  const patterns = [
+    /^\/c\/([^/?#]+)/,
+    /^\/chat\/([^/?#]+)/,
+    /^\/app\/[^/]+\/chat\/([^/?#]+)/,
+    /^\/u\/\d+\/c\/([^/?#]+)/
+  ];
+
+  for (const pattern of patterns) {
+    const match = url.pathname.match(pattern);
+    if (match?.[1]) {
+      return match[1];
+    }
+  }
+
+  return "";
+}
+
+function detectPageKind(url: URL): PageKind {
+  const host = url.hostname.toLowerCase();
+  const path = url.pathname.toLowerCase();
+  const text = (document.querySelector("main")?.textContent ?? document.body.textContent ?? "").toLowerCase();
+  const hasComposer = Boolean(document.querySelector("textarea, div[contenteditable='true'], [role='textbox']"));
+
+  if (!isSupportedChatHost(host)) {
+    return "unsupported";
+  }
+  if (/login|auth|signin|sign-in|oauth|登录|登入/.test(path) || /log in|sign in|sign up|登录|注册/.test(text)) {
+    return "login";
+  }
+  if (/not found|conversation not found|unable to load|you do not have access|找不到|无法访问|没有权限/.test(text)) {
+    return "unavailable";
+  }
+  if (detectConversationId(url)) {
+    return "conversation";
+  }
+  if (hasComposer) {
+    return "composer";
+  }
+
+  return "unknown";
+}
+
+function normalizedPathname(url: URL): string {
+  const conversationId = detectConversationId(url);
+  return conversationId ? url.pathname.replace(conversationId, ":conversation") : url.pathname;
+}
+
+function isSupportedChatHost(host: string): boolean {
+  return [
+    "chatgpt.com",
+    "chat.openai.com",
+    "claude.ai",
+    "gemini.google.com",
+    "aistudio.google.com",
+    "chat.deepseek.com",
+    "kimi.moonshot.cn",
+    "yuanbao.tencent.com",
+    "www.doubao.com",
+    "chat.qwen.ai",
+    "grok.com",
+    "www.perplexity.ai",
+    "poe.com"
+  ].some((candidate) => host === candidate || host.endsWith(`.${candidate}`));
+}
+
+function fingerprintText(value: string): string {
+  let hash = 0;
+  const normalized = value.replace(/\s+/g, " ").trim().slice(0, 2000);
+  for (let index = 0; index < normalized.length; index += 1) {
+    hash = (hash * 31 + normalized.charCodeAt(index)) >>> 0;
+  }
+  return hash.toString(16);
 }
 
 async function deliverSelectedThread(mode: DeliveryMode, app: HTMLElement): Promise<void> {

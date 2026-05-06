@@ -264,5 +264,6 @@ git push origin v0.1.1
 - `docs/noos-install-architecture.md`: install architecture
 - `docs/noos-downstream-integration.md`: downstream agent integration design
 - `docs/noos-handoff-vault-strategy.md`: handoff vault storage strategy
+- `docs/noos-shuttle-page-context-events.md`: browser page context event and state handling
 - `docs/noos-thread-format.md`: NOOS Thread v0.1 format
 - `docs/noos-shuttle-v0-design-breakdown.md`: v0 design breakdown
