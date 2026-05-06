@@ -45,6 +45,7 @@ fn get_hub_health() -> Result<HubHealth, String> {
         noos_home: noos_home.display().to_string(),
         adapters: vec![
             workspace_adapter(&repo_root),
+            vault_adapter(&noos_home),
             inbox_adapter(&noos_home),
             codex_adapter(&noos_home),
             claude_adapter(&repo_root),
@@ -62,6 +63,8 @@ fn run_hub_action(action: String) -> Result<String, String> {
         "install-consumers" => run_script(&repo_root, &["scripts/noos-install.sh", "consumers"]),
         "install-workspace" => run_script(&repo_root, &["scripts/noos-install.sh", "workspace"]),
         "create-inbox" => run_script(&repo_root, &["scripts/noos-install.sh", "inbox"]),
+        "create-vault" => run_script(&repo_root, &["scripts/noos-install.sh", "vault"]),
+        "sync-handoffs-git" => run_script(&repo_root, &["scripts/noos-sync-handoffs-git.sh"]),
         "browser-dev-profile" => run_script(
             &repo_root,
             &["scripts/noos-install.sh", "browser", "--mode", "dev-profile"],
@@ -112,6 +115,26 @@ fn inbox_adapter(noos_home: &Path) -> AdapterHealth {
         "本地 handoff 收件箱，用于 download 和跨工具交换。",
         checks,
         vec![action("create-inbox", "创建 Inbox", false)],
+    )
+}
+
+fn vault_adapter(noos_home: &Path) -> AdapterHealth {
+    let checks = vec![
+        dir_check("NOOS vault", noos_home.join("vault")),
+        dir_check("Wiki vault", noos_home.join("vault/wiki")),
+        dir_check("Handoff vault", noos_home.join("vault/handoffs/active")),
+        dir_check(
+            "Browser vault mirror",
+            home_dir().join("Downloads/NOOS/vault/handoffs/active"),
+        ),
+    ];
+    adapter(
+        "noos-vault",
+        "NOOS Vault",
+        "transport",
+        "NOOS 本机存储中心，包含 Wiki 和 Handoff；浏览器插件先写入本机 vault mirror。",
+        checks,
+        vec![action("create-vault", "创建 NOOS Vault", false)],
     )
 }
 
@@ -179,28 +202,26 @@ fn browser_adapter(repo_root: &Path, noos_home: &Path) -> AdapterHealth {
 }
 
 fn github_adapter(repo_root: &Path) -> AdapterHealth {
-    let mut checks = vec![
-        command_check("GitHub CLI", "gh", &["--version"]),
+    let checks = vec![
+        command_check("Git CLI", "git", &["--version"]),
+        if command_in_dir_status(repo_root, "git", &["remote", "get-url", "origin"]) {
+            check("Git remote", "ready", Some("origin".to_string()))
+        } else {
+            check("Git remote", "needs_action", Some("configure origin remote".to_string()))
+        },
         file_check("Project GitHub config", repo_root.join(".noos/project.json")),
     ];
 
-    checks.push(if command_status("gh", &["auth", "status"]) {
-        check("GitHub auth", "ready", Some("authenticated".to_string()))
-    } else {
-        check(
-            "GitHub auth",
-            "needs_action",
-            Some("run gh auth login".to_string()),
-        )
-    });
-
     adapter(
         "github",
-        "GitHub",
+        "Git Sync",
         "transport",
-        "通过 gh 登录状态和 repo handle 支持远程 handoff 交付。",
+        "把本机 NOOS Handoff Vault 同步到项目 Git 仓库，供跨机器和远端 agent 消费。",
         checks,
-        vec![action("doctor", "检查 GitHub 状态", false)],
+        vec![
+            action("sync-handoffs-git", "同步 Handoff 到 Git", true),
+            action("doctor", "检查 Git 状态", false),
+        ],
     )
 }
 
@@ -272,6 +293,15 @@ fn command_check(label: &str, command: &str, args: &[&str]) -> AdapterCheck {
 fn command_status(command: &str, args: &[&str]) -> bool {
     Command::new(command)
         .args(args)
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn command_in_dir_status(directory: &Path, command: &str, args: &[&str]) -> bool {
+    Command::new(command)
+        .args(args)
+        .current_dir(directory)
         .output()
         .map(|output| output.status.success())
         .unwrap_or(false)

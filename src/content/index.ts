@@ -5,7 +5,7 @@ import type { NoosThread } from "../core/noos-thread";
 import { COPY, type ShuttleLocale, getStoredLocale, storeLocale } from "../shared/i18n";
 import { ClipboardAdapter } from "../storage/ClipboardAdapter";
 import { DownloadAdapter } from "../storage/DownloadAdapter";
-import { GitHubAdapter } from "../storage/GitHubAdapter";
+import { NoosVaultAdapter } from "../storage/NoosVaultAdapter";
 import { getPageText, insertIntoChatInput, isChatbotGenerating, submitChatInput } from "./chatgpt-dom";
 import styles from "./styles.css?inline";
 
@@ -50,7 +50,7 @@ const EDGE_GAP = 12;
 const SHUTTLE_ICON_URL = getExtensionAssetUrl("icons/icon-128.png");
 const clipboardAdapter = new ClipboardAdapter();
 const downloadAdapter = new DownloadAdapter();
-const githubAdapter = new GitHubAdapter();
+const noosVaultAdapter = new NoosVaultAdapter();
 let activeWait: ActiveWait | null = null;
 let currentConversationUrl = window.location.href;
 let conversationWatcherInstalled = false;
@@ -673,8 +673,9 @@ async function saveThreadWithMode(mode: DeliveryMode, selectedThread: NoosThread
     return { ok: result.ok, message: result.ok ? copy.downloadFinished : result.message ?? copy.downloadFinished };
   }
 
-  const result = await githubAdapter.saveThread(selectedThread);
-  return { ok: result.ok, message: result.message ?? copy.githubUnavailable };
+  const filename = createThreadFilename(selectedThread.title);
+  const result = await noosVaultAdapter.saveThread(selectedThread, { filename });
+  return { ok: result.ok, message: result.ok ? copy.vaultFinished : result.message ?? copy.vaultUnavailable };
 }
 
 function showValidationModal(thread: NoosThread): void {

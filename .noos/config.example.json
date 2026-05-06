@@ -1,6 +1,11 @@
 {
   "schema_version": "0.1",
-  "local_inbox_dirs": ["~/NOOS/inbox", "~/Downloads"],
+  "local_inbox_dirs": [
+    "~/.noos/vault/handoffs/active",
+    "~/Downloads/NOOS/vault/handoffs/active",
+    "~/NOOS/inbox",
+    "~/Downloads"
+  ],
   "default_agent": "codex",
   "github": {
     "auth_provider": "gh",

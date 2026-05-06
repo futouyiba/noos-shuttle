@@ -44,6 +44,10 @@ echo
 
 check_dir "$NOOS_HOME" "NOOS home"
 check_dir "$NOOS_HOME/inbox" "NOOS inbox"
+check_dir "$NOOS_HOME/vault" "NOOS vault"
+check_dir "$NOOS_HOME/vault/wiki" "NOOS wiki vault"
+check_dir "$NOOS_HOME/vault/handoffs/active" "NOOS handoff vault"
+check_dir "$HOME/Downloads/NOOS/vault/handoffs/active" "Browser vault mirror"
 check_file "$NOOS_HOME/config.json" "User config"
 
 echo

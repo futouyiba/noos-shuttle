@@ -71,7 +71,12 @@ def main() -> int:
     candidates.extend(scan_dir("repo_active", active_dir, max_age_hours=None, limit=args.limit))
 
     if args.include_inbox:
-        inbox_dirs = config["user"].get("local_inbox_dirs") or ["~/NOOS/inbox", "~/Downloads"]
+        inbox_dirs = config["user"].get("local_inbox_dirs") or [
+            "~/.noos/vault/handoffs/active",
+            "~/Downloads/NOOS/vault/handoffs/active",
+            "~/NOOS/inbox",
+            "~/Downloads"
+        ]
         for inbox in inbox_dirs:
             candidates.extend(
                 scan_dir("local_inbox", expand_path(inbox, repo_root), max_age_hours=args.max_age_hours, limit=args.limit)

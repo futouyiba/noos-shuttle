@@ -21,7 +21,7 @@ Current v0 focus:
 
 - Generate and capture NOOS handoffs in ChatGPT Web
 - Support Chinese and English prompts and UI
-- Copy, download, or save handoffs into a local or repository workspace
+- Copy, download, or save handoffs into the local NOOS Vault
 - Install downstream handoff-consumption skills for Codex, Claude Code, and similar coding agents
 - Provide initial NOOS install and doctor scripts
 - Provide an early Tauri desktop NOOS Hub for local adapter status and install actions
@@ -131,6 +131,8 @@ This is Chrome's security requirement for unpacked extensions in a regular profi
 5. Use the manual buttons near the preview to copy, download, or save the handoff.
 6. Use the `Auto after collect` toggles if you want future successful captures to copy, download, or save automatically.
 
+`Save 2 Vault` is local-first. The browser extension writes to the NOOS browser vault mirror under `~/Downloads/NOOS/vault/handoffs/active/`; NOOS Hub owns the separate Git sync action when you want those handoffs committed and pushed for remote agents.
+
 Chinese browsers default to Chinese UI and Chinese prompts. You can switch languages in `Settings`.
 
 ## Downstream Agent Kit
@@ -185,6 +187,10 @@ User-level:
   logs/
   cache/
   chrome-profile/
+  vault/
+    wiki/
+    handoffs/
+      active/
 ```
 
 Project-level:

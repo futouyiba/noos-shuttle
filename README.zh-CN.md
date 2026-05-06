@@ -21,7 +21,7 @@ NOOS Shuttle 是一套 AI 上下文穿梭工具。它的目标不是只做一个
 
 - 在 ChatGPT 网页里生成和捕获 NOOS handoff
 - 支持中文/英文提示词和 UI
-- 将 handoff 复制、下载或放入本地/仓库工作区
+- 将 handoff 复制、下载或存入本机 NOOS Vault
 - 为 Codex、Claude Code 等下游 coding agent 安装消费 handoff 的 skill
 - 提供初步的 NOOS install / doctor 脚本
 - 提供 Tauri 桌面版 NOOS Hub 雏形，用来查看本机 adapter 状态和触发安装动作
@@ -131,6 +131,8 @@ scripts/noos-install.sh browser --mode manual-unpacked
 5. 使用预览区旁边的手动按钮复制、下载或存入库。
 6. 如果希望后续成功收取后自动复制、下载或入库，可以打开 `拉取后自动` 里的对应开关。
 
+`存入库` 是 local-first。浏览器插件会写入 `~/Downloads/NOOS/vault/handoffs/active/` 这个 NOOS 浏览器 vault mirror；如果要把这些 handoff 提交并推送到 Git，应该在 NOOS Hub 里点击单独的 Git 同步按钮。
+
 中文浏览器默认使用中文 UI 和中文提示词；英文可在 `设置` 中切换。
 
 ## 下游 Agent Kit
@@ -185,6 +187,10 @@ python3 .noos/skills/noos-transfer-handoff/scripts/plan_transfer.py --repo-root 
   logs/
   cache/
   chrome-profile/
+  vault/
+    wiki/
+    handoffs/
+      active/
 ```
 
 项目级：

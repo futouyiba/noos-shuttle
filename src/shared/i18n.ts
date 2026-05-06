@@ -50,7 +50,8 @@ export interface ShuttleCopy {
   captureBeforeDelivery: string;
   copyFinished: string;
   downloadFinished: string;
-  githubUnavailable: string;
+  vaultFinished: string;
+  vaultUnavailable: string;
 }
 
 export const DEFAULT_LOCALE: ShuttleLocale = "zh";
@@ -106,7 +107,8 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     captureBeforeDelivery: "Collect a NOOS Handoff before delivery.",
     copyFinished: "Copy finished.",
     downloadFinished: "Download finished.",
-    githubUnavailable: "GitHub save unavailable."
+    vaultFinished: "Saved to NOOS Vault.",
+    vaultUnavailable: "NOOS Vault save unavailable."
   },
   zh: {
     localeName: "中文",
@@ -158,7 +160,8 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     captureBeforeDelivery: "请先收取 NOOS 交接稿，再进行交付。",
     copyFinished: "复制完成。",
     downloadFinished: "下载完成。",
-    githubUnavailable: "GitHub 保存暂不可用。"
+    vaultFinished: "已存入 NOOS 文件库。",
+    vaultUnavailable: "NOOS 文件库保存暂不可用。"
   }
 };
 
