@@ -26,7 +26,7 @@ const GENERATION_ACTIVE_SELECTORS = [
 
 export function getPageText(): string {
   const main = document.querySelector("main");
-  return collectVisibleTextAndComments(main ?? document.body).trim();
+  return collectMarkdownAndComments(main ?? document.body).trim();
 }
 
 export function insertIntoChatInput(text: string): boolean {
@@ -138,30 +138,6 @@ function isVisible(element: HTMLElement): boolean {
   return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
 }
 
-function collectVisibleTextAndComments(root: Element): string {
-  const chunks: string[] = [];
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_COMMENT);
-
-  while (walker.nextNode()) {
-    const node = walker.currentNode;
-    if (shouldIgnoreNode(node)) {
-      continue;
-    }
-
-    if (node.nodeType === Node.COMMENT_NODE) {
-      chunks.push(`<!-- ${node.nodeValue?.trim() ?? ""} -->`);
-      continue;
-    }
-
-    const value = node.nodeValue?.trim();
-    if (value) {
-      chunks.push(value);
-    }
-  }
-
-  return chunks.join("\n");
-}
-
 function shouldIgnoreNode(node: Node): boolean {
   const parent = node.parentElement;
   if (!parent) {
@@ -180,4 +156,108 @@ function shouldIgnoreNode(node: Node): boolean {
       ].join(",")
     )
   );
+}
+
+function collectMarkdownAndComments(root: Element): string {
+  return normalizeMarkdownLines(renderNode(root, "block"));
+}
+
+function renderNode(node: Node, mode: "block" | "inline"): string {
+  if (shouldIgnoreNode(node)) {
+    return "";
+  }
+
+  if (node.nodeType === Node.COMMENT_NODE) {
+    const value = node.nodeValue?.trim();
+    return value ? `<!-- ${value} -->` : "";
+  }
+
+  if (node.nodeType === Node.TEXT_NODE) {
+    return normalizeInlineText(node.nodeValue ?? "");
+  }
+
+  if (!(node instanceof HTMLElement)) {
+    return renderChildren(node, mode);
+  }
+
+  const tagName = node.tagName.toLowerCase();
+
+  if (tagName === "br") {
+    return "\n";
+  }
+
+  if (tagName === "pre") {
+    return node.textContent?.trim() ?? "";
+  }
+
+  if (tagName === "code") {
+    return mode === "inline" ? `\`${normalizeInlineText(node.textContent ?? "")}\`` : node.textContent?.trim() ?? "";
+  }
+
+  if (/^h[1-6]$/.test(tagName)) {
+    const level = Number(tagName.slice(1));
+    return `${"#".repeat(level)} ${renderChildren(node, "inline").trim()}`;
+  }
+
+  if (tagName === "li") {
+    return `- ${renderChildren(node, "inline").trim()}`;
+  }
+
+  if (tagName === "blockquote") {
+    return renderChildren(node, "block")
+      .split(/\n/)
+      .filter(Boolean)
+      .map((line) => `> ${line}`)
+      .join("\n");
+  }
+
+  if (isBlockElement(node)) {
+    return renderChildren(node, "block");
+  }
+
+  return renderChildren(node, mode);
+}
+
+function renderChildren(node: Node, mode: "block" | "inline"): string {
+  const pieces = Array.from(node.childNodes)
+    .map((child) => renderNode(child, mode))
+    .filter((value) => value.trim().length > 0);
+
+  return pieces.join(mode === "inline" ? " " : "\n");
+}
+
+function isBlockElement(element: HTMLElement): boolean {
+  return [
+    "article",
+    "aside",
+    "div",
+    "dl",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "footer",
+    "form",
+    "header",
+    "hr",
+    "main",
+    "nav",
+    "ol",
+    "p",
+    "section",
+    "table",
+    "ul"
+  ].includes(element.tagName.toLowerCase());
+}
+
+function normalizeInlineText(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function normalizeMarkdownLines(value: string): string {
+  return value
+    .split(/\n/)
+    .map((line) => line.trimEnd())
+    .filter((line, index, lines) => line.trim().length > 0 || (index > 0 && lines[index - 1]?.trim().length > 0))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n");
 }

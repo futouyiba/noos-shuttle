@@ -15,6 +15,7 @@ Usage:
   scripts/noos-install.sh browser dev-profile
   scripts/noos-install.sh browser manual-unpacked
   scripts/noos-install.sh inbox
+  scripts/noos-install.sh vault
   scripts/noos-install.sh doctor
 
 Browser modes:
@@ -24,7 +25,15 @@ EOF
 }
 
 ensure_noos_home() {
-  mkdir -p "$NOOS_HOME/inbox" "$NOOS_HOME/outbox" "$NOOS_HOME/logs" "$NOOS_HOME/cache"
+  mkdir -p \
+    "$NOOS_HOME/inbox" \
+    "$NOOS_HOME/outbox" \
+    "$NOOS_HOME/logs" \
+    "$NOOS_HOME/cache" \
+    "$NOOS_HOME/vault/wiki" \
+    "$NOOS_HOME/vault/handoffs/active" \
+    "$NOOS_HOME/vault/handoffs/archived" \
+    "$HOME/Downloads/NOOS/vault/handoffs/active"
   if [[ ! -f "$NOOS_HOME/config.json" ]]; then
     cp "$ROOT_DIR/.noos/config.example.json" "$NOOS_HOME/config.json"
     echo "Created $NOOS_HOME/config.json"
@@ -271,6 +280,11 @@ case "$command" in
   inbox)
     ensure_noos_home
     echo "NOOS inbox: $NOOS_HOME/inbox"
+    ;;
+  vault)
+    ensure_noos_home
+    echo "NOOS vault: $NOOS_HOME/vault"
+    echo "Browser vault mirror: $HOME/Downloads/NOOS/vault"
     ;;
   browser)
     ensure_noos_home

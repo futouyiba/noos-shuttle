@@ -124,18 +124,18 @@
 }
 
 .primary-action {
-  min-height: 46px;
-  border: 0;
+  min-height: 50px;
+  border: 1px solid rgba(59, 36, 16, 0.24);
   border-radius: 7px;
-  background: #245a78;
+  background: #7a451c;
   color: #ffffff;
   cursor: pointer;
-  font: 800 14px/1.2 system-ui, sans-serif;
-  box-shadow: 0 8px 18px rgba(36, 90, 120, 0.18);
+  font: 850 14px/1.2 system-ui, sans-serif;
+  box-shadow: 0 9px 20px rgba(122, 69, 28, 0.24);
 }
 
 .primary-action:hover:not(:disabled) {
-  background: #1d4b66;
+  background: #653713;
 }
 
 .cancel-action {

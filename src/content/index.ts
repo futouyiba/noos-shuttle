@@ -5,7 +5,7 @@ import type { NoosThread } from "../core/noos-thread";
 import { COPY, type ShuttleLocale, getStoredLocale, storeLocale } from "../shared/i18n";
 import { ClipboardAdapter } from "../storage/ClipboardAdapter";
 import { DownloadAdapter } from "../storage/DownloadAdapter";
-import { GitHubAdapter } from "../storage/GitHubAdapter";
+import { NoosVaultAdapter } from "../storage/NoosVaultAdapter";
 import { getPageText, insertIntoChatInput, isChatbotGenerating, submitChatInput } from "./chatgpt-dom";
 import styles from "./styles.css?inline";
 
@@ -33,6 +33,7 @@ interface ActiveWait {
   observer: MutationObserver;
   timeoutId: number;
   fallbackStartId: number;
+  capturePollId: number;
   quietTimerId: number | null;
   hasStartedGenerating: boolean;
 }
@@ -42,18 +43,34 @@ interface ShuttlePosition {
   y: number;
 }
 
+type PageKind = "conversation" | "composer" | "login" | "unavailable" | "unsupported" | "unknown";
+
+interface PageContext {
+  href: string;
+  origin: string;
+  pathname: string;
+  conversationId: string;
+  pageKind: PageKind;
+  textFingerprint: string;
+  signature: string;
+}
+
 const WAIT_FOR_HANDOFF_TIMEOUT_MS = 120_000;
 const GENERATION_START_GRACE_MS = 1_500;
 const GENERATION_QUIET_MS = 1_200;
+const CAPTURE_POLL_MS = 1_500;
+const PAGE_CONTEXT_POLL_MS = 1_000;
+const PAGE_CONTEXT_DEBOUNCE_MS = 250;
 const FAB_SIZE = 44;
 const EDGE_GAP = 12;
 const SHUTTLE_ICON_URL = getExtensionAssetUrl("icons/icon-128.png");
 const clipboardAdapter = new ClipboardAdapter();
 const downloadAdapter = new DownloadAdapter();
-const githubAdapter = new GitHubAdapter();
+const noosVaultAdapter = new NoosVaultAdapter();
 let activeWait: ActiveWait | null = null;
-let currentConversationUrl = window.location.href;
+let currentPageContext = getPageContext();
 let conversationWatcherInstalled = false;
+let pageContextDebounceId: number | null = null;
 let shuttlePosition = getStoredPosition();
 let suppressNextFabClick = false;
 
@@ -219,6 +236,22 @@ function renderThreads(selectedThread: NoosThread | undefined): string {
   `;
 }
 
+function threadChoiceSummary(thread: NoosThread, copy: (typeof COPY)[ShuttleLocale]): string {
+  const parts = [
+    thread.frontmatter?.handoff_revision,
+    thread.frontmatter?.created_at,
+    thread.frontmatter?.status,
+    thread.frontmatter?.target_agent,
+    thread.frontmatter?.preferred_path
+  ].filter(Boolean);
+
+  if (thread.warnings.length > 0) {
+    parts.push(`${copy.warnings}: ${thread.warnings.length}`);
+  }
+
+  return parts.length > 0 ? parts.join(" · ") : copy.captured;
+}
+
 function renderModal(): string {
   const modal = viewState.modal;
   const copy = COPY[viewState.locale];
@@ -240,7 +273,7 @@ function renderModal(): string {
               (thread, index) =>
                 `<button type="button" data-action="choose-thread-${index}">
                   <strong>${escapeHtml(thread.title)}</strong>
-                  <span>${thread.warnings.length > 0 ? `${copy.warnings}: ${thread.warnings.length}` : copy.captured}</span>
+                  <span>${escapeHtml(threadChoiceSummary(thread, copy))}</span>
                 </button>`
             )
             .join("")}
@@ -524,6 +557,10 @@ function waitForGeneratedHandoff(app: HTMLElement, baselineBegin: number): void 
       return;
     }
 
+    if (tryCapture()) {
+      return;
+    }
+
     if (isChatbotGenerating()) {
       hasStartedGenerating = true;
       activeWait.hasStartedGenerating = true;
@@ -543,6 +580,12 @@ function waitForGeneratedHandoff(app: HTMLElement, baselineBegin: number): void 
     observeGenerationState();
   });
   observer.observe(document.body, { attributes: true, childList: true, subtree: true, characterData: true });
+  const capturePollId = window.setInterval(() => {
+    if (!activeWait) {
+      return;
+    }
+    tryCapture();
+  }, CAPTURE_POLL_MS);
   const fallbackStartId = window.setTimeout(() => {
     if (!activeWait || hasStartedGenerating) {
       return;
@@ -558,7 +601,7 @@ function waitForGeneratedHandoff(app: HTMLElement, baselineBegin: number): void 
     viewState.message = copy.waitingTimedOut;
     render(app);
   }, WAIT_FOR_HANDOFF_TIMEOUT_MS);
-  activeWait = { observer, timeoutId, fallbackStartId, quietTimerId, hasStartedGenerating };
+  activeWait = { observer, timeoutId, fallbackStartId, capturePollId, quietTimerId, hasStartedGenerating };
   observeGenerationState();
 }
 
@@ -570,6 +613,7 @@ function cancelActiveWait(): void {
   activeWait.observer.disconnect();
   window.clearTimeout(activeWait.timeoutId);
   window.clearTimeout(activeWait.fallbackStartId);
+  window.clearInterval(activeWait.capturePollId);
   if (activeWait.quietTimerId !== null) {
     window.clearTimeout(activeWait.quietTimerId);
   }
@@ -596,19 +640,29 @@ function installConversationWatcher(app: HTMLElement): void {
   }
 
   conversationWatcherInstalled = true;
-  const checkConversation = () => {
-    if (window.location.href === currentConversationUrl) {
-      return;
+  const scheduleContextCheck = () => {
+    if (pageContextDebounceId !== null) {
+      window.clearTimeout(pageContextDebounceId);
     }
-
-    currentConversationUrl = window.location.href;
-    resetForConversationChange(app);
+    pageContextDebounceId = window.setTimeout(() => {
+      pageContextDebounceId = null;
+      checkPageContext(app);
+    }, PAGE_CONTEXT_DEBOUNCE_MS);
   };
 
-  wrapHistoryMethod("pushState", checkConversation);
-  wrapHistoryMethod("replaceState", checkConversation);
-  window.addEventListener("popstate", checkConversation);
-  window.setInterval(checkConversation, 1000);
+  wrapHistoryMethod("pushState", scheduleContextCheck);
+  wrapHistoryMethod("replaceState", scheduleContextCheck);
+  window.addEventListener("popstate", scheduleContextCheck);
+  window.addEventListener("hashchange", scheduleContextCheck);
+  window.addEventListener("focus", scheduleContextCheck);
+  window.addEventListener("pageshow", scheduleContextCheck);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      scheduleContextCheck();
+    }
+  });
+  window.addEventListener("pagehide", () => cancelActiveWait());
+  window.setInterval(() => checkPageContext(app), PAGE_CONTEXT_POLL_MS);
 }
 
 function wrapHistoryMethod(method: "pushState" | "replaceState", onChange: () => void): void {
@@ -618,6 +672,17 @@ function wrapHistoryMethod(method: "pushState" | "replaceState", onChange: () =>
     window.setTimeout(onChange, 0);
     return result;
   } as History[typeof method];
+}
+
+function checkPageContext(app: HTMLElement): void {
+  const nextContext = getPageContext();
+  if (nextContext.signature === currentPageContext.signature) {
+    currentPageContext = nextContext;
+    return;
+  }
+
+  currentPageContext = nextContext;
+  resetForConversationChange(app);
 }
 
 function resetForConversationChange(app: HTMLElement): void {
@@ -630,6 +695,99 @@ function resetForConversationChange(app: HTMLElement): void {
   viewState.selectedIndex = 0;
   viewState.modal = null;
   render(app);
+}
+
+function getPageContext(): PageContext {
+  const url = new URL(window.location.href);
+  const pageKind = detectPageKind(url);
+  const conversationId = detectConversationId(url);
+  const textFingerprint = fingerprintText(document.querySelector("main")?.textContent ?? document.body.textContent ?? "");
+  const signature = [url.origin, normalizedPathname(url), conversationId, pageKind].join("|");
+
+  return {
+    href: url.href,
+    origin: url.origin,
+    pathname: url.pathname,
+    conversationId,
+    pageKind,
+    textFingerprint,
+    signature
+  };
+}
+
+function detectConversationId(url: URL): string {
+  const patterns = [
+    /^\/c\/([^/?#]+)/,
+    /^\/chat\/([^/?#]+)/,
+    /^\/app\/[^/]+\/chat\/([^/?#]+)/,
+    /^\/u\/\d+\/c\/([^/?#]+)/
+  ];
+
+  for (const pattern of patterns) {
+    const match = url.pathname.match(pattern);
+    if (match?.[1]) {
+      return match[1];
+    }
+  }
+
+  return "";
+}
+
+function detectPageKind(url: URL): PageKind {
+  const host = url.hostname.toLowerCase();
+  const path = url.pathname.toLowerCase();
+  const text = (document.querySelector("main")?.textContent ?? document.body.textContent ?? "").toLowerCase();
+  const hasComposer = Boolean(document.querySelector("textarea, div[contenteditable='true'], [role='textbox']"));
+
+  if (!isSupportedChatHost(host)) {
+    return "unsupported";
+  }
+  if (/login|auth|signin|sign-in|oauth|登录|登入/.test(path) || /log in|sign in|sign up|登录|注册/.test(text)) {
+    return "login";
+  }
+  if (/not found|conversation not found|unable to load|you do not have access|找不到|无法访问|没有权限/.test(text)) {
+    return "unavailable";
+  }
+  if (detectConversationId(url)) {
+    return "conversation";
+  }
+  if (hasComposer) {
+    return "composer";
+  }
+
+  return "unknown";
+}
+
+function normalizedPathname(url: URL): string {
+  const conversationId = detectConversationId(url);
+  return conversationId ? url.pathname.replace(conversationId, ":conversation") : url.pathname;
+}
+
+function isSupportedChatHost(host: string): boolean {
+  return [
+    "chatgpt.com",
+    "chat.openai.com",
+    "claude.ai",
+    "gemini.google.com",
+    "aistudio.google.com",
+    "chat.deepseek.com",
+    "kimi.moonshot.cn",
+    "yuanbao.tencent.com",
+    "www.doubao.com",
+    "chat.qwen.ai",
+    "grok.com",
+    "www.perplexity.ai",
+    "poe.com"
+  ].some((candidate) => host === candidate || host.endsWith(`.${candidate}`));
+}
+
+function fingerprintText(value: string): string {
+  let hash = 0;
+  const normalized = value.replace(/\s+/g, " ").trim().slice(0, 2000);
+  for (let index = 0; index < normalized.length; index += 1) {
+    hash = (hash * 31 + normalized.charCodeAt(index)) >>> 0;
+  }
+  return hash.toString(16);
 }
 
 async function deliverSelectedThread(mode: DeliveryMode, app: HTMLElement): Promise<void> {
@@ -673,8 +831,9 @@ async function saveThreadWithMode(mode: DeliveryMode, selectedThread: NoosThread
     return { ok: result.ok, message: result.ok ? copy.downloadFinished : result.message ?? copy.downloadFinished };
   }
 
-  const result = await githubAdapter.saveThread(selectedThread);
-  return { ok: result.ok, message: result.message ?? copy.githubUnavailable };
+  const filename = createThreadFilename(selectedThread.title);
+  const result = await noosVaultAdapter.saveThread(selectedThread, { filename });
+  return { ok: result.ok, message: result.ok ? copy.vaultFinished : result.message ?? copy.vaultUnavailable };
 }
 
 function showValidationModal(thread: NoosThread): void {

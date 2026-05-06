@@ -11,6 +11,7 @@ export interface NoosThreadFrontmatter {
   target_agent?: string;
   status?: NoosThreadStatus | string;
   created_at?: string;
+  handoff_revision?: string;
   title?: string;
   tags?: string[];
   preferred_path?: string;

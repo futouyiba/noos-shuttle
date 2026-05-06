@@ -112,8 +112,26 @@ When validation passes, automatic actions may run immediately. When validation f
 
 1. Keep the extension UI label as `Save 2 Vault` / `存入库`.
 2. Implement local Hub vault storage before making Git the default save target.
-3. Keep GitHub as the first remote vault backend.
-4. Let Hub own repository setup, authentication checks, sync status, and retry UI.
-5. Let skills consume from both local vault and configured Git repositories.
+3. Treat the browser-writable download mirror as a v0 bridge into the local vault.
+4. Keep GitHub as the first remote vault backend.
+5. Let Hub own repository setup, authentication checks, sync status, and retry UI.
+6. Keep Git sync as a distinct Hub action, not a browser extension post-capture default.
+7. Let skills consume from both local vault and configured Git repositories.
 
 This preserves the fast browser workflow while giving downstream agents a durable path when the user actually needs one.
+
+## v0 Implementation Note
+
+Chrome extensions cannot silently write to `~/.noos` without a native host. In v0, `Save 2 Vault` writes a markdown file to:
+
+```text
+~/Downloads/NOOS/vault/handoffs/active/
+```
+
+NOOS Hub treats that directory as the browser vault mirror. Hub actions and resolver scripts also scan:
+
+```text
+~/.noos/vault/handoffs/active/
+```
+
+The Hub `Sync Handoff to Git` action copies valid NOOS handoffs into the project `.noos/handoffs/active/` directory, commits those handoff changes, and pushes the current branch. This keeps capture local-first while making Git sync explicit.

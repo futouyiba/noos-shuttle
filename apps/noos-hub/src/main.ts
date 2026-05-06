@@ -321,7 +321,7 @@ function renderOverview(health: HubHealth): string {
     </section>
     <section class="pipeline">
       ${pipelineStep("Capture", "ChatGPT / Claude / Gemini", adapterStatus(health, "capture"))}
-      ${pipelineStep("Transport", "Clipboard / Inbox / GitHub", adapterStatus(health, "transport"))}
+      ${pipelineStep("Vault", "NOOS Vault / Inbox / Git Sync", adapterStatus(health, "transport"))}
       ${pipelineStep("Resolve", "NOOS Resolver", "ready")}
       ${pipelineStep("Consume", "Codex / Claude Code", adapterStatus(health, "consumer"))}
     </section>
@@ -411,25 +411,26 @@ function renderHandoffs(health: HubHealth): string {
     <section class="section-head">
       <div>
         <p class="eyebrow">Handoffs</p>
-        <h2>交接稿入口</h2>
+        <h2>交接稿存储中心</h2>
       </div>
-      <button type="button" data-run="doctor">检查 Resolver</button>
+      <button type="button" data-run="sync-handoffs-git">同步 Handoff 到 Git</button>
     </section>
     <div class="handoff-layout">
       <article class="panel">
-        <h3>Active</h3>
-        <p>默认位置：<code>.noos/handoffs/active</code></p>
-        <div class="empty-state">当前 UI 先展示入口状态；下一步会接入 resolver JSON，列出真实 handoff。</div>
+        <h3>NOOS Vault</h3>
+        <p>本机存储中心：<code>${escapeHtml(health.noos_home)}/vault</code></p>
+        <p>Wiki 和 Handoff 都先落到本机 NOOS 文件系统，Git 同步是单独动作。</p>
+        <button type="button" data-run="create-vault">创建 NOOS Vault</button>
       </article>
       <article class="panel">
-        <h3>Local Inbox</h3>
-        <p>用户级收件箱：<code>${escapeHtml(health.noos_home)}/inbox</code></p>
-        <button type="button" data-run="create-inbox">创建 Inbox</button>
+        <h3>Browser Vault Mirror</h3>
+        <p>插件可写位置：<code>~/Downloads/NOOS/vault/handoffs/active</code></p>
+        <p>Hub 同步时会把这里的 handoff 汇入项目 active 目录。</p>
       </article>
       <article class="panel">
-        <h3>GitHub Handoff Path</h3>
-        <p>远程交付由 <code>.noos/project.json</code> 管理 repo/path，不在 NOOS config 中保存 token。</p>
-        <button type="button" data-run="doctor">检查 GitHub</button>
+        <h3>Git Sync</h3>
+        <p>远程共享由 <code>.noos/project.json</code> 和当前 git remote 管理，不在 NOOS config 中保存 token。</p>
+        <button type="button" data-run="sync-handoffs-git">同步 Handoff 到 Git</button>
       </article>
     </div>
   `;
@@ -604,7 +605,8 @@ function mockHealth(): HubHealth {
     adapters: [
       mockAdapter("browser-extension", "Browser Shuttle", "capture", "needs_action", "ChatGPT 网页端生成、捕获和交付 handoff 的扩展。"),
       mockAdapter("local-inbox", "Local Inbox", "transport", "missing", "本地 handoff 收件箱，用于 download 和跨工具交换。"),
-      mockAdapter("github", "GitHub", "transport", "ready", "通过 gh 登录状态和 repo handle 支持远程 handoff 交付。"),
+      mockAdapter("noos-vault", "NOOS Vault", "transport", "ready", "NOOS 本机存储中心，包含 Wiki 和 Handoff。"),
+      mockAdapter("github", "Git Sync", "transport", "ready", "把本机 NOOS Handoff Vault 同步到项目 Git 仓库。"),
       mockAdapter("workspace", "Workspace Kit", "workspace", "ready", "项目级 .noos 工作区和 agent 入口文件。"),
       mockAdapter("codex", "Codex", "consumer", "partial", "Codex 消费 NOOS handoff 的用户级 skill。"),
       mockAdapter("claude-code", "Claude Code", "consumer", "missing", "Claude Code 消费 NOOS handoff 的用户级和项目级 skill。")
