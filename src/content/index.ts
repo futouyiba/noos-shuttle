@@ -33,6 +33,7 @@ interface ActiveWait {
   observer: MutationObserver;
   timeoutId: number;
   fallbackStartId: number;
+  capturePollId: number;
   quietTimerId: number | null;
   hasStartedGenerating: boolean;
 }
@@ -45,6 +46,7 @@ interface ShuttlePosition {
 const WAIT_FOR_HANDOFF_TIMEOUT_MS = 120_000;
 const GENERATION_START_GRACE_MS = 1_500;
 const GENERATION_QUIET_MS = 1_200;
+const CAPTURE_POLL_MS = 1_500;
 const FAB_SIZE = 44;
 const EDGE_GAP = 12;
 const SHUTTLE_ICON_URL = getExtensionAssetUrl("icons/icon-128.png");
@@ -540,6 +542,10 @@ function waitForGeneratedHandoff(app: HTMLElement, baselineBegin: number): void 
       return;
     }
 
+    if (tryCapture()) {
+      return;
+    }
+
     if (isChatbotGenerating()) {
       hasStartedGenerating = true;
       activeWait.hasStartedGenerating = true;
@@ -559,6 +565,12 @@ function waitForGeneratedHandoff(app: HTMLElement, baselineBegin: number): void 
     observeGenerationState();
   });
   observer.observe(document.body, { attributes: true, childList: true, subtree: true, characterData: true });
+  const capturePollId = window.setInterval(() => {
+    if (!activeWait) {
+      return;
+    }
+    tryCapture();
+  }, CAPTURE_POLL_MS);
   const fallbackStartId = window.setTimeout(() => {
     if (!activeWait || hasStartedGenerating) {
       return;
@@ -574,7 +586,7 @@ function waitForGeneratedHandoff(app: HTMLElement, baselineBegin: number): void 
     viewState.message = copy.waitingTimedOut;
     render(app);
   }, WAIT_FOR_HANDOFF_TIMEOUT_MS);
-  activeWait = { observer, timeoutId, fallbackStartId, quietTimerId, hasStartedGenerating };
+  activeWait = { observer, timeoutId, fallbackStartId, capturePollId, quietTimerId, hasStartedGenerating };
   observeGenerationState();
 }
 
@@ -586,6 +598,7 @@ function cancelActiveWait(): void {
   activeWait.observer.disconnect();
   window.clearTimeout(activeWait.timeoutId);
   window.clearTimeout(activeWait.fallbackStartId);
+  window.clearInterval(activeWait.capturePollId);
   if (activeWait.quietTimerId !== null) {
     window.clearTimeout(activeWait.quietTimerId);
   }
