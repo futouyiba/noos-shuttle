@@ -131,7 +131,7 @@ scripts/noos-install.sh browser --mode manual-unpacked
 5. 使用预览区旁边的手动按钮复制、下载或存入库。
 6. 如果希望后续成功收取后自动复制、下载或入库，可以打开 `拉取后自动` 里的对应开关。
 
-`存入库` 是 local-first。在当前浏览器安全限制下，插件会先写入 `~/Downloads/NOOS/vault/handoffs/active/` 这个 NOOS 浏览器 vault mirror。NOOS Hub 可以把这个 mirror 导入 `~/.noos/vault/handoffs/active/`；如果要把 handoff 提交并推送到 Git，则继续使用 Hub 里的单独 Git 同步按钮。
+`存入库` 是 local-first。NOOS Hub 运行时，插件会通过 Hub 写入 `~/.noos/vault/handoffs/active/`。如果 Hub 不可用，插件会回退到 `~/Downloads/NOOS/vault/handoffs/active/` 这个 NOOS 浏览器 vault mirror，之后可由 Hub 导入；如果要把 handoff 提交并推送到 Git，则继续使用 Hub 里的单独 Git 同步按钮。
 
 中文浏览器默认使用中文 UI 和中文提示词；英文可在 `设置` 中切换。
 

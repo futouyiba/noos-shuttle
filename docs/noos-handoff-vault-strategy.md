@@ -152,3 +152,21 @@ The Git sync script still imports the browser mirror first, then copies local va
 
 - Import Browser Mirror: local NOOS filesystem only.
 - Sync Handoff to Git: project repository publishing for remote or cross-machine consumption.
+
+## Direct Hub Write Alpha
+
+When NOOS Hub is running, Browser Shuttle now attempts to write handoffs directly to Hub before using the Downloads mirror:
+
+```text
+Browser Shuttle
+  -> http://127.0.0.1:17642/v1/handoffs
+  -> ~/.noos/vault/handoffs/active/
+```
+
+If Hub is closed, blocked, or rejects the request, the extension still falls back to:
+
+```text
+~/Downloads/NOOS/vault/handoffs/active/
+```
+
+This keeps the current workflow reliable while moving the normal path toward the real local NOOS filesystem.

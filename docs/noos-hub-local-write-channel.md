@@ -175,3 +175,49 @@ The browser extension owns:
 6. Keep `Sync Handoff to Git` as an explicit Hub button.
 
 This gives a smooth default path while preserving a clear safety boundary: only Hub writes to the NOOS filesystem.
+
+## v0.2 Alpha Implementation
+
+The first direct-write implementation uses a deliberately small local protocol:
+
+```text
+GET  http://127.0.0.1:17642/health
+POST http://127.0.0.1:17642/v1/handoffs
+```
+
+The browser extension tries the Hub endpoint first. If Hub is unavailable, it falls back to:
+
+```text
+~/Downloads/NOOS/vault/handoffs/active/
+```
+
+Hub writes successful requests directly to:
+
+```text
+~/.noos/vault/handoffs/active/
+```
+
+Implemented checks:
+
+- Listen only on `127.0.0.1`.
+- Accept `POST /v1/handoffs` only.
+- Reject non-extension origins when an `Origin` header is present.
+- Validate NOOS begin/end markers before writing.
+- Sanitize filenames and force `.md`.
+- Keep writes inside `~/.noos/vault/handoffs/active/`.
+- Write through a temporary file and then rename.
+- Generate a unique filename when a target already exists.
+
+Known gaps:
+
+- Pairing token is not implemented yet.
+- Port discovery is fixed to `17642`; future Hub should persist runtime port data under `~/.noos/runtime/`.
+- Extension status UI does not yet show "Hub connected" separately from "Downloads fallback".
+- CORS still allows broad local response headers; request-level origin checks are the real guard in this alpha.
+
+The next hardening step is pairing:
+
+1. Hub creates a random token.
+2. Hub exposes the token through a user-initiated `Connect Browser Shuttle` action.
+3. The extension stores it in `chrome.storage.local`.
+4. `/v1/handoffs` requires `Authorization: Bearer <token>`.

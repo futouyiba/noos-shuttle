@@ -32,7 +32,9 @@
     "https://chat.qwen.ai/*",
     "https://grok.com/*",
     "https://www.perplexity.ai/*",
-    "https://poe.com/*"
+    "https://poe.com/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
   ],
   "background": {
     "service_worker": "assets/service-worker.js",

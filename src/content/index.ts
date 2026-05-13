@@ -833,7 +833,7 @@ async function saveThreadWithMode(mode: DeliveryMode, selectedThread: NoosThread
 
   const filename = createThreadFilename(selectedThread.title);
   const result = await noosVaultAdapter.saveThread(selectedThread, { filename });
-  return { ok: result.ok, message: result.ok ? copy.vaultFinished : result.message ?? copy.vaultUnavailable };
+  return { ok: result.ok, message: result.ok ? result.message ?? copy.vaultFinished : result.message ?? copy.vaultUnavailable };
 }
 
 function showValidationModal(thread: NoosThread): void {

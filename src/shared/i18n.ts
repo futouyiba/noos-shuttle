@@ -107,7 +107,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     captureBeforeDelivery: "Collect a NOOS Handoff before delivery.",
     copyFinished: "Copy finished.",
     downloadFinished: "Download finished.",
-    vaultFinished: "Saved to Browser Vault Mirror. Import it in NOOS Hub.",
+    vaultFinished: "Saved to NOOS Vault.",
     vaultUnavailable: "NOOS Vault save unavailable."
   },
   zh: {
@@ -160,7 +160,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     captureBeforeDelivery: "请先收取 NOOS 交接稿，再进行交付。",
     copyFinished: "复制完成。",
     downloadFinished: "下载完成。",
-    vaultFinished: "已存入 Browser Vault Mirror，可在 NOOS Hub 导入本机文件库。",
+    vaultFinished: "已存入 NOOS 文件库。",
     vaultUnavailable: "NOOS 文件库保存暂不可用。"
   }
 };

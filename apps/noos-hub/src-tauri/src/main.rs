@@ -1,7 +1,14 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::env;
+use std::fs;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::thread;
+
+const LOCAL_WRITE_PORT: u16 = 17642;
+const HUB_PROTOCOL_VERSION: u8 = 1;
 
 #[derive(Serialize)]
 struct HubHealth {
@@ -33,6 +40,37 @@ struct AdapterAction {
     id: String,
     label: String,
     requires_user_action: bool,
+}
+
+#[derive(Deserialize)]
+struct HandoffWriteRequest {
+    filename: String,
+    content: String,
+    source: Option<HandoffSource>,
+}
+
+#[derive(Deserialize)]
+struct HandoffSource {
+    app: Option<String>,
+    url: Option<String>,
+}
+
+#[derive(Serialize)]
+struct LocalWriteHealth {
+    ok: bool,
+    app: String,
+    protocol_version: u8,
+    port: u16,
+    vault_path: String,
+}
+
+#[derive(Serialize)]
+struct HandoffWriteResponse {
+    ok: bool,
+    backend: String,
+    location: Option<String>,
+    error_code: Option<String>,
+    message: String,
 }
 
 #[tauri::command]
@@ -89,10 +127,215 @@ fn run_hub_action(action: String) -> Result<String, String> {
 }
 
 fn main() {
+    start_local_write_server();
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![get_hub_health, run_hub_action])
         .run(tauri::generate_context!())
         .expect("error while running NOOS Hub");
+}
+
+fn start_local_write_server() {
+    thread::spawn(|| {
+        let address = format!("127.0.0.1:{LOCAL_WRITE_PORT}");
+        let listener = match TcpListener::bind(&address) {
+            Ok(listener) => listener,
+            Err(error) => {
+                eprintln!("NOOS Hub local write server unavailable on {address}: {error}");
+                return;
+            }
+        };
+
+        for stream in listener.incoming() {
+            match stream {
+                Ok(stream) => {
+                    thread::spawn(|| {
+                        if let Err(error) = handle_local_write_request(stream) {
+                            eprintln!("NOOS Hub local write request failed: {error}");
+                        }
+                    });
+                }
+                Err(error) => eprintln!("NOOS Hub local write connection failed: {error}"),
+            }
+        }
+    });
+}
+
+fn handle_local_write_request(mut stream: TcpStream) -> Result<(), String> {
+    let mut buffer = Vec::new();
+    let mut chunk = [0_u8; 8192];
+    let mut header_end = None;
+    let mut content_length = 0_usize;
+
+    loop {
+        let read = stream.read(&mut chunk).map_err(|error| error.to_string())?;
+        if read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+        if header_end.is_none() {
+            header_end = find_header_end(&buffer);
+            if let Some(end) = header_end {
+                let headers = String::from_utf8_lossy(&buffer[..end]);
+                content_length = parse_content_length(&headers);
+            }
+        }
+        if let Some(end) = header_end {
+            if buffer.len() >= end + 4 + content_length {
+                break;
+            }
+        }
+        if buffer.len() > 2_000_000 {
+            return write_json_response(
+                &mut stream,
+                413,
+                &HandoffWriteResponse {
+                    ok: false,
+                    backend: "hub_local".to_string(),
+                    location: None,
+                    error_code: Some("request_too_large".to_string()),
+                    message: "Request is too large.".to_string(),
+                },
+            );
+        }
+    }
+
+    let Some(end) = header_end else {
+        return write_json_response(
+            &mut stream,
+            400,
+            &HandoffWriteResponse {
+                ok: false,
+                backend: "hub_local".to_string(),
+                location: None,
+                error_code: Some("bad_request".to_string()),
+                message: "Missing HTTP headers.".to_string(),
+            },
+        );
+    };
+
+    let headers = String::from_utf8_lossy(&buffer[..end]);
+    let mut lines = headers.lines();
+    let request_line = lines.next().unwrap_or_default();
+    let parts: Vec<&str> = request_line.split_whitespace().collect();
+    let method = parts.first().copied().unwrap_or_default();
+    let path = parts.get(1).copied().unwrap_or_default();
+    let origin = header_value(&headers, "origin").unwrap_or_default();
+
+    if method == "OPTIONS" {
+        return write_options_response(&mut stream);
+    }
+
+    if !origin.is_empty() && !is_allowed_local_write_origin(&origin) {
+        return write_json_response(
+            &mut stream,
+            403,
+            &HandoffWriteResponse {
+                ok: false,
+                backend: "hub_local".to_string(),
+                location: None,
+                error_code: Some("origin_not_allowed".to_string()),
+                message: "Origin is not allowed.".to_string(),
+            },
+        );
+    }
+
+    if method == "GET" && path == "/health" {
+        return write_json_response(
+            &mut stream,
+            200,
+            &LocalWriteHealth {
+                ok: true,
+                app: "NOOS Hub".to_string(),
+                protocol_version: HUB_PROTOCOL_VERSION,
+                port: LOCAL_WRITE_PORT,
+                vault_path: noos_home()
+                    .join("vault/handoffs/active")
+                    .display()
+                    .to_string(),
+            },
+        );
+    }
+
+    if method != "POST" || path != "/v1/handoffs" {
+        return write_json_response(
+            &mut stream,
+            404,
+            &HandoffWriteResponse {
+                ok: false,
+                backend: "hub_local".to_string(),
+                location: None,
+                error_code: Some("not_found".to_string()),
+                message: "Endpoint not found.".to_string(),
+            },
+        );
+    }
+
+    let body_start = end + 4;
+    let body_end = body_start + content_length;
+    let body = &buffer[body_start..body_end.min(buffer.len())];
+    let request: HandoffWriteRequest =
+        serde_json::from_slice(body).map_err(|error| error.to_string())?;
+    let response = write_handoff_to_local_vault(request);
+    let status = if response.ok { 200 } else { 400 };
+    write_json_response(&mut stream, status, &response)
+}
+
+fn write_handoff_to_local_vault(request: HandoffWriteRequest) -> HandoffWriteResponse {
+    if !is_noos_handoff(&request.content) {
+        return HandoffWriteResponse {
+            ok: false,
+            backend: "hub_local".to_string(),
+            location: None,
+            error_code: Some("invalid_handoff".to_string()),
+            message: "Content does not contain NOOS thread markers.".to_string(),
+        };
+    }
+
+    let vault = noos_home().join("vault/handoffs/active");
+    if let Err(error) = fs::create_dir_all(&vault) {
+        return HandoffWriteResponse {
+            ok: false,
+            backend: "hub_local".to_string(),
+            location: None,
+            error_code: Some("vault_unavailable".to_string()),
+            message: error.to_string(),
+        };
+    }
+
+    let filename = sanitize_filename(&request.filename);
+    let target = unique_target_path(&vault, &filename);
+    let temp = target.with_extension("tmp");
+    let mut content = request.content;
+    if let Some(source) = request.source {
+        let app = source.app.unwrap_or_default();
+        let url = source.url.unwrap_or_default();
+        if !app.is_empty() || !url.is_empty() {
+            content.push_str("\n\n<!-- NOOS:HUB:SOURCE ");
+            content.push_str(&format!("app={} url={}", app, url));
+            content.push_str(" -->\n");
+        }
+    }
+
+    if let Err(error) =
+        fs::write(&temp, content.as_bytes()).and_then(|_| fs::rename(&temp, &target))
+    {
+        let _ = fs::remove_file(&temp);
+        return HandoffWriteResponse {
+            ok: false,
+            backend: "hub_local".to_string(),
+            location: None,
+            error_code: Some("write_failed".to_string()),
+            message: error.to_string(),
+        };
+    }
+
+    HandoffWriteResponse {
+        ok: true,
+        backend: "hub_local".to_string(),
+        location: Some(target.display().to_string()),
+        error_code: None,
+        message: format!("Saved to local NOOS Vault: {}", target.display()),
+    }
 }
 
 fn workspace_adapter(repo_root: &Path) -> AdapterHealth {
@@ -137,6 +380,11 @@ fn vault_adapter(noos_home: &Path) -> AdapterHealth {
         dir_check(
             "Browser vault mirror",
             home_dir().join("Downloads/NOOS/vault/handoffs/active"),
+        ),
+        check(
+            "Hub local write channel",
+            "ready",
+            Some(format!("http://127.0.0.1:{LOCAL_WRITE_PORT}")),
         ),
     ];
     adapter(
@@ -329,6 +577,109 @@ fn command_in_dir_status(directory: &Path, command: &str, args: &[&str]) -> bool
         .output()
         .map(|output| output.status.success())
         .unwrap_or(false)
+}
+
+fn find_header_end(buffer: &[u8]) -> Option<usize> {
+    buffer.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+fn parse_content_length(headers: &str) -> usize {
+    header_value(headers, "content-length")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0)
+}
+
+fn header_value(headers: &str, name: &str) -> Option<String> {
+    let target = name.to_ascii_lowercase();
+    headers.lines().find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        if key.trim().eq_ignore_ascii_case(&target) {
+            Some(value.trim().to_string())
+        } else {
+            None
+        }
+    })
+}
+
+fn is_allowed_local_write_origin(origin: &str) -> bool {
+    origin.starts_with("chrome-extension://")
+        || origin.starts_with("moz-extension://")
+        || origin == "http://127.0.0.1:1430"
+        || origin == "tauri://localhost"
+}
+
+fn is_noos_handoff(content: &str) -> bool {
+    content.contains("<!-- NOOS:THREAD:BEGIN -->") && content.contains("<!-- NOOS:THREAD:END -->")
+}
+
+fn sanitize_filename(filename: &str) -> String {
+    let mut base = filename
+        .replace(['/', '\\', ':'], "-")
+        .trim_start_matches('.')
+        .trim()
+        .to_string();
+
+    if !base.ends_with(".md") || base.len() <= 3 {
+        base = "noos-thread.md".to_string();
+    }
+
+    base
+}
+
+fn unique_target_path(directory: &Path, filename: &str) -> PathBuf {
+    let target = directory.join(filename);
+    if !target.exists() {
+        return target;
+    }
+
+    let stem = filename.strip_suffix(".md").unwrap_or(filename);
+    for index in 1..10_000 {
+        let candidate = directory.join(format!("{stem}-{index}.md"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+
+    directory.join(format!("{stem}-overflow.md"))
+}
+
+fn write_options_response(stream: &mut TcpStream) -> Result<(), String> {
+    let response = concat!(
+        "HTTP/1.1 204 No Content\r\n",
+        "Access-Control-Allow-Origin: *\r\n",
+        "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n",
+        "Access-Control-Allow-Headers: Content-Type, Authorization\r\n",
+        "Access-Control-Max-Age: 600\r\n",
+        "Content-Length: 0\r\n",
+        "\r\n"
+    );
+    stream
+        .write_all(response.as_bytes())
+        .map_err(|error| error.to_string())
+}
+
+fn write_json_response<T: Serialize>(
+    stream: &mut TcpStream,
+    status: u16,
+    value: &T,
+) -> Result<(), String> {
+    let status_text = match status {
+        200 => "OK",
+        204 => "No Content",
+        400 => "Bad Request",
+        403 => "Forbidden",
+        404 => "Not Found",
+        413 => "Payload Too Large",
+        _ => "OK",
+    };
+    let body = serde_json::to_string(value).map_err(|error| error.to_string())?;
+    let response = format!(
+        "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream
+        .write_all(response.as_bytes())
+        .map_err(|error| error.to_string())
 }
 
 fn check(label: &str, status: &str, detail: Option<String>) -> AdapterCheck {
