@@ -3,6 +3,8 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 const HUB_LOCAL_WRITE_URL = "http://127.0.0.1:17642/v1/handoffs";
+const HUB_PAIR_URL = "http://127.0.0.1:17642/pair";
+const HUB_TOKEN_STORAGE_KEY = "noosHubShuttleToken";
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!isVaultSaveMessage(message)) {
@@ -81,10 +83,34 @@ async function saveHandoffToHub(
   filename: string,
   content: string
 ): Promise<{ ok: boolean; location?: string; message?: string; errorCode?: string }> {
+  const firstAttempt = await postHandoffToHub(filename, content, await getHubToken());
+  if (firstAttempt.ok) {
+    return firstAttempt;
+  }
+  if (firstAttempt.errorCode !== "unauthorized") {
+    return firstAttempt;
+  }
+
+  const pairedToken = await pairWithHub();
+  if (!pairedToken) {
+    return firstAttempt;
+  }
+
+  return postHandoffToHub(filename, content, pairedToken);
+}
+
+async function postHandoffToHub(
+  filename: string,
+  content: string,
+  token: string | null
+): Promise<{ ok: boolean; location?: string; message?: string; errorCode?: string }> {
   try {
     const response = await fetch(HUB_LOCAL_WRITE_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+      },
       body: JSON.stringify({
         filename,
         content,
@@ -103,7 +129,7 @@ async function saveHandoffToHub(
       ok: response.ok && payload.ok === true,
       location: payload.location,
       message: payload.message,
-      errorCode: payload.error_code
+      errorCode: payload.error_code ?? (response.status === 401 ? "unauthorized" : undefined)
     };
   } catch (error) {
     return {
@@ -111,6 +137,33 @@ async function saveHandoffToHub(
       errorCode: "hub_unavailable",
       message: error instanceof Error ? error.message : "NOOS Hub local write unavailable."
     };
+  }
+}
+
+async function pairWithHub(): Promise<string | null> {
+  try {
+    const response = await fetch(HUB_PAIR_URL);
+    if (!response.ok) {
+      return null;
+    }
+    const payload = (await response.json()) as { token?: string };
+    if (!payload.token) {
+      return null;
+    }
+    await chrome.storage.local.set({ [HUB_TOKEN_STORAGE_KEY]: payload.token });
+    return payload.token;
+  } catch {
+    return null;
+  }
+}
+
+async function getHubToken(): Promise<string | null> {
+  try {
+    const result = await chrome.storage.local.get(HUB_TOKEN_STORAGE_KEY);
+    const token = result[HUB_TOKEN_STORAGE_KEY];
+    return typeof token === "string" ? token : null;
+  } catch {
+    return null;
   }
 }
 

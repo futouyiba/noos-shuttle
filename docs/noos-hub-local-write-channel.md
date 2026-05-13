@@ -210,14 +210,39 @@ Implemented checks:
 
 Known gaps:
 
-- Pairing token is not implemented yet.
 - Port discovery is fixed to `17642`; future Hub should persist runtime port data under `~/.noos/runtime/`.
 - Extension status UI does not yet show "Hub connected" separately from "Downloads fallback".
 - CORS still allows broad local response headers; request-level origin checks are the real guard in this alpha.
 
-The next hardening step is pairing:
+## v0.2 Pairing Token
 
-1. Hub creates a random token.
-2. Hub exposes the token through a user-initiated `Connect Browser Shuttle` action.
-3. The extension stores it in `chrome.storage.local`.
-4. `/v1/handoffs` requires `Authorization: Bearer <token>`.
+The alpha direct-write endpoint now has a minimal pairing token flow:
+
+```text
+Hub action: Connect Browser Shuttle
+  -> create ~/.noos/runtime/shuttle-token.json
+  -> open ~/.noos/runtime/shuttle-pairing.json for 120 seconds
+
+Browser Shuttle
+  -> POST /v1/handoffs without token
+  -> receive 401 unauthorized
+  -> GET /pair during the pairing window
+  -> store token in chrome.storage.local
+  -> retry POST /v1/handoffs with Authorization: Bearer <token>
+```
+
+`/pair` only returns a token during the user-opened pairing window and only to extension origins. After the token is claimed, Hub removes the pairing-window file.
+
+Implemented token checks:
+
+- `POST /v1/handoffs` requires `Authorization: Bearer <token>`.
+- Hub stores the token under `~/.noos/runtime/shuttle-token.json`.
+- Browser Shuttle stores the token in `chrome.storage.local`.
+- Hub `/health` reports whether a token exists, but does not return the token.
+
+Remaining hardening:
+
+- Add token rotation and disconnect UI.
+- Bind token metadata to the expected extension id where possible.
+- Show Hub connected / fallback status directly in the extension panel.
+- Move from fixed port to runtime discovery.

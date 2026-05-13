@@ -6,9 +6,11 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const LOCAL_WRITE_PORT: u16 = 17642;
 const HUB_PROTOCOL_VERSION: u8 = 1;
+const PAIRING_WINDOW_SECONDS: u64 = 120;
 
 #[derive(Serialize)]
 struct HubHealth {
@@ -62,6 +64,7 @@ struct LocalWriteHealth {
     protocol_version: u8,
     port: u16,
     vault_path: String,
+    paired: bool,
 }
 
 #[derive(Serialize)]
@@ -71,6 +74,18 @@ struct HandoffWriteResponse {
     location: Option<String>,
     error_code: Option<String>,
     message: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ShuttleTokenFile {
+    version: u8,
+    token: String,
+    created_at_epoch: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct PairingWindowFile {
+    enabled_until_epoch: u64,
 }
 
 #[tauri::command]
@@ -102,6 +117,7 @@ fn run_hub_action(action: String) -> Result<String, String> {
         "install-workspace" => run_script(&repo_root, &["scripts/noos-install.sh", "workspace"]),
         "create-inbox" => run_script(&repo_root, &["scripts/noos-install.sh", "inbox"]),
         "create-vault" => run_script(&repo_root, &["scripts/noos-install.sh", "vault"]),
+        "connect-browser-shuttle" => connect_browser_shuttle(),
         "import-browser-vault" => run_script(&repo_root, &["scripts/noos-import-browser-vault.sh"]),
         "sync-handoffs-git" => run_script(&repo_root, &["scripts/noos-sync-handoffs-git.sh"]),
         "browser-dev-profile" => run_script(
@@ -252,8 +268,27 @@ fn handle_local_write_request(mut stream: TcpStream) -> Result<(), String> {
                     .join("vault/handoffs/active")
                     .display()
                     .to_string(),
+                paired: read_shuttle_token().is_some(),
             },
         );
+    }
+
+    if method == "GET" && path == "/pair" {
+        if !is_allowed_pairing_origin(&origin) {
+            return write_json_response(
+                &mut stream,
+                403,
+                &HandoffWriteResponse {
+                    ok: false,
+                    backend: "hub_local".to_string(),
+                    location: None,
+                    error_code: Some("origin_not_allowed".to_string()),
+                    message: "Pairing origin is not allowed.".to_string(),
+                },
+            );
+        }
+
+        return write_pairing_response(&mut stream);
     }
 
     if method != "POST" || path != "/v1/handoffs" {
@@ -266,6 +301,20 @@ fn handle_local_write_request(mut stream: TcpStream) -> Result<(), String> {
                 location: None,
                 error_code: Some("not_found".to_string()),
                 message: "Endpoint not found.".to_string(),
+            },
+        );
+    }
+
+    if !is_authorized_handoff_write(&headers) {
+        return write_json_response(
+            &mut stream,
+            401,
+            &HandoffWriteResponse {
+                ok: false,
+                backend: "hub_local".to_string(),
+                location: None,
+                error_code: Some("unauthorized".to_string()),
+                message: "Browser Shuttle is not paired with NOOS Hub.".to_string(),
             },
         );
     }
@@ -395,6 +444,7 @@ fn vault_adapter(noos_home: &Path) -> AdapterHealth {
         checks,
         vec![
             action("create-vault", "创建 NOOS Vault", false),
+            action("connect-browser-shuttle", "连接 Browser Shuttle", true),
             action("import-browser-vault", "导入 Browser Mirror", false),
         ],
     )
@@ -579,6 +629,142 @@ fn command_in_dir_status(directory: &Path, command: &str, args: &[&str]) -> bool
         .unwrap_or(false)
 }
 
+fn connect_browser_shuttle() -> Result<String, String> {
+    let token = ensure_shuttle_token()?;
+    let pairing = PairingWindowFile {
+        enabled_until_epoch: now_epoch() + PAIRING_WINDOW_SECONDS,
+    };
+    let path = pairing_window_path();
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Invalid pairing window path.".to_string())?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    fs::write(
+        &path,
+        serde_json::to_string_pretty(&pairing).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+
+    Ok(format!(
+        "Browser Shuttle pairing is open for {PAIRING_WINDOW_SECONDS} seconds.\nEndpoint: http://127.0.0.1:{LOCAL_WRITE_PORT}\nToken file: {}\nToken prefix: {}...",
+        shuttle_token_path().display(),
+        &token.token.chars().take(8).collect::<String>()
+    ))
+}
+
+fn write_pairing_response(stream: &mut TcpStream) -> Result<(), String> {
+    let Some(pairing) = read_pairing_window() else {
+        return write_json_response(
+            stream,
+            403,
+            &HandoffWriteResponse {
+                ok: false,
+                backend: "hub_local".to_string(),
+                location: None,
+                error_code: Some("pairing_closed".to_string()),
+                message: "Open NOOS Hub and click Connect Browser Shuttle.".to_string(),
+            },
+        );
+    };
+
+    if pairing.enabled_until_epoch < now_epoch() {
+        let _ = fs::remove_file(pairing_window_path());
+        return write_json_response(
+            stream,
+            403,
+            &HandoffWriteResponse {
+                ok: false,
+                backend: "hub_local".to_string(),
+                location: None,
+                error_code: Some("pairing_expired".to_string()),
+                message: "Browser Shuttle pairing window expired.".to_string(),
+            },
+        );
+    }
+
+    match ensure_shuttle_token() {
+        Ok(token) => {
+            let _ = fs::remove_file(pairing_window_path());
+            write_json_response(stream, 200, &token)
+        }
+        Err(error) => write_json_response(
+            stream,
+            500,
+            &HandoffWriteResponse {
+                ok: false,
+                backend: "hub_local".to_string(),
+                location: None,
+                error_code: Some("pairing_failed".to_string()),
+                message: error,
+            },
+        ),
+    }
+}
+
+fn is_authorized_handoff_write(headers: &str) -> bool {
+    let Some(expected) = read_shuttle_token() else {
+        return false;
+    };
+    let Some(authorization) = header_value(headers, "authorization") else {
+        return false;
+    };
+    authorization == format!("Bearer {}", expected.token)
+}
+
+fn ensure_shuttle_token() -> Result<ShuttleTokenFile, String> {
+    if let Some(token) = read_shuttle_token() {
+        return Ok(token);
+    }
+
+    let token = ShuttleTokenFile {
+        version: 1,
+        token: random_token()?,
+        created_at_epoch: now_epoch(),
+    };
+    let path = shuttle_token_path();
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Invalid shuttle token path.".to_string())?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    fs::write(
+        &path,
+        serde_json::to_string_pretty(&token).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(token)
+}
+
+fn read_shuttle_token() -> Option<ShuttleTokenFile> {
+    let text = fs::read_to_string(shuttle_token_path()).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+fn read_pairing_window() -> Option<PairingWindowFile> {
+    let text = fs::read_to_string(pairing_window_path()).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+fn shuttle_token_path() -> PathBuf {
+    noos_home().join("runtime/shuttle-token.json")
+}
+
+fn pairing_window_path() -> PathBuf {
+    noos_home().join("runtime/shuttle-pairing.json")
+}
+
+fn random_token() -> Result<String, String> {
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes).map_err(|error| error.to_string())?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn now_epoch() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
 fn find_header_end(buffer: &[u8]) -> Option<usize> {
     buffer.windows(4).position(|window| window == b"\r\n\r\n")
 }
@@ -606,6 +792,10 @@ fn is_allowed_local_write_origin(origin: &str) -> bool {
         || origin.starts_with("moz-extension://")
         || origin == "http://127.0.0.1:1430"
         || origin == "tauri://localhost"
+}
+
+fn is_allowed_pairing_origin(origin: &str) -> bool {
+    origin.starts_with("chrome-extension://") || origin.starts_with("moz-extension://")
 }
 
 fn is_noos_handoff(content: &str) -> bool {
@@ -669,7 +859,9 @@ fn write_json_response<T: Serialize>(
         400 => "Bad Request",
         403 => "Forbidden",
         404 => "Not Found",
+        401 => "Unauthorized",
         413 => "Payload Too Large",
+        500 => "Internal Server Error",
         _ => "OK",
     };
     let body = serde_json::to_string(value).map_err(|error| error.to_string())?;

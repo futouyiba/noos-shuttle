@@ -170,3 +170,12 @@ If Hub is closed, blocked, or rejects the request, the extension still falls bac
 ```
 
 This keeps the current workflow reliable while moving the normal path toward the real local NOOS filesystem.
+
+The direct Hub write path now requires Browser Shuttle pairing:
+
+1. Open NOOS Hub.
+2. Click `Connect Browser Shuttle`.
+3. Within 120 seconds, trigger `Save 2 Vault` in the browser extension.
+4. The extension claims a token from Hub, stores it locally, and retries the save.
+
+After pairing, future saves can write directly to Hub while Hub is running. If Hub is unavailable, the extension still falls back to the Downloads mirror.

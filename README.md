@@ -133,6 +133,8 @@ This is Chrome's security requirement for unpacked extensions in a regular profi
 
 `Save 2 Vault` is local-first. When NOOS Hub is running, the extension writes through Hub to `~/.noos/vault/handoffs/active/`. If Hub is unavailable, the extension falls back to the browser vault mirror under `~/Downloads/NOOS/vault/handoffs/active/`, which Hub can import later. Git sync remains a separate Hub action when you want handoffs committed and pushed for remote agents.
 
+For first-time direct Hub writes, open NOOS Hub and click `Connect Browser Shuttle`, then use `Save 2 Vault` within the pairing window.
+
 Chinese browsers default to Chinese UI and Chinese prompts. You can switch languages in `Settings`.
 
 ## Downstream Agent Kit

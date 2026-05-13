@@ -133,6 +133,8 @@ scripts/noos-install.sh browser --mode manual-unpacked
 
 `存入库` 是 local-first。NOOS Hub 运行时，插件会通过 Hub 写入 `~/.noos/vault/handoffs/active/`。如果 Hub 不可用，插件会回退到 `~/Downloads/NOOS/vault/handoffs/active/` 这个 NOOS 浏览器 vault mirror，之后可由 Hub 导入；如果要把 handoff 提交并推送到 Git，则继续使用 Hub 里的单独 Git 同步按钮。
 
+首次通过 Hub 直写时，请先打开 NOOS Hub，点击 `连接 Browser Shuttle`，然后在配对窗口内使用插件的 `存入库`。
+
 中文浏览器默认使用中文 UI 和中文提示词；英文可在 `设置` 中切换。
 
 ## 下游 Agent Kit

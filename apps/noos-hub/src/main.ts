@@ -421,7 +421,13 @@ function renderHandoffs(health: HubHealth): string {
         <p>本机存储中心：<code>${escapeHtml(health.noos_home)}/vault</code></p>
         <p>Wiki 和 Handoff 都先落到本机 NOOS 文件系统，Git 同步是单独动作。</p>
         <button type="button" data-run="create-vault">创建 NOOS Vault</button>
+        <button type="button" data-run="connect-browser-shuttle">连接 Browser Shuttle</button>
         <button type="button" data-run="import-browser-vault">导入 Browser Mirror</button>
+      </article>
+      <article class="panel">
+        <h3>Hub Local Write</h3>
+        <p>本机写入端点：<code>http://127.0.0.1:17642</code></p>
+        <p>点击连接后，浏览器插件会在 120 秒配对窗口内领取 token；之后可直接写入本机 Vault。</p>
       </article>
       <article class="panel">
         <h3>Browser Vault Mirror</h3>
