@@ -34,6 +34,7 @@ jobs:
           npm test
           bash -n scripts/noos-install.sh
           bash -n scripts/noos-doctor.sh
+          bash -n scripts/noos-import-browser-vault.sh
           bash -n scripts/noos-sync-handoffs-git.sh
           bash -n scripts/package-extension.sh
           bash -n scripts/package-release-artifacts.sh

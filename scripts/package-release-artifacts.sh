@@ -36,6 +36,7 @@ tar \
   -czf "$HUB_PATH" \
   apps/noos-hub \
   scripts/noos-hub-launch.sh \
+  scripts/noos-import-browser-vault.sh \
   scripts/noos-sync-handoffs-git.sh \
   scripts/noos-install.sh \
   scripts/noos-doctor.sh

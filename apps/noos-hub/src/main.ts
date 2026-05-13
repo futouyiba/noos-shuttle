@@ -421,11 +421,12 @@ function renderHandoffs(health: HubHealth): string {
         <p>本机存储中心：<code>${escapeHtml(health.noos_home)}/vault</code></p>
         <p>Wiki 和 Handoff 都先落到本机 NOOS 文件系统，Git 同步是单独动作。</p>
         <button type="button" data-run="create-vault">创建 NOOS Vault</button>
+        <button type="button" data-run="import-browser-vault">导入 Browser Mirror</button>
       </article>
       <article class="panel">
         <h3>Browser Vault Mirror</h3>
         <p>插件可写位置：<code>~/Downloads/NOOS/vault/handoffs/active</code></p>
-        <p>Hub 同步时会把这里的 handoff 汇入项目 active 目录。</p>
+        <p>Hub 可以先把这里的 handoff 导入本机 Vault；Git 同步是后续单独动作。</p>
       </article>
       <article class="panel">
         <h3>Git Sync</h3>

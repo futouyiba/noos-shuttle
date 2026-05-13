@@ -135,3 +135,20 @@ NOOS Hub treats that directory as the browser vault mirror. Hub actions and reso
 ```
 
 The Hub `Sync Handoff to Git` action copies valid NOOS handoffs into the project `.noos/handoffs/active/` directory, commits those handoff changes, and pushes the current branch. This keeps capture local-first while making Git sync explicit.
+
+As of the phase-1 local-first implementation, browser mirror import is its own action:
+
+```sh
+scripts/noos-import-browser-vault.sh
+```
+
+That script copies valid NOOS handoffs from the browser mirror into:
+
+```text
+~/.noos/vault/handoffs/active/
+```
+
+The Git sync script still imports the browser mirror first, then copies local vault handoffs into the project `.noos/handoffs/active/` directory. The product distinction is:
+
+- Import Browser Mirror: local NOOS filesystem only.
+- Sync Handoff to Git: project repository publishing for remote or cross-machine consumption.

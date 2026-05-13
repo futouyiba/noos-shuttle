@@ -88,7 +88,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     continueSave: "Save anyway",
     warnings: "Warnings",
     untitledThread: "Untitled NOOS Thread",
-    vaultAdapterNote: "Current vault adapter: GitHub",
+    vaultAdapterNote: "Current vault path: Downloads mirror. Hub can import it into local NOOS Vault.",
     promptInserted: "Prompt inserted.",
     promptSent: "Prompt inserted and sent.",
     sendNotFound: "Prompt inserted, but the send button was not found.",
@@ -107,7 +107,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     captureBeforeDelivery: "Collect a NOOS Handoff before delivery.",
     copyFinished: "Copy finished.",
     downloadFinished: "Download finished.",
-    vaultFinished: "Saved to NOOS Vault.",
+    vaultFinished: "Saved to Browser Vault Mirror. Import it in NOOS Hub.",
     vaultUnavailable: "NOOS Vault save unavailable."
   },
   zh: {
@@ -141,7 +141,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     continueSave: "仍然入库",
     warnings: "校验提醒",
     untitledThread: "未命名 NOOS 交接稿",
-    vaultAdapterNote: "当前文件库适配：GitHub",
+    vaultAdapterNote: "当前入库路径：Downloads mirror。可在 NOOS Hub 导入本机文件库。",
     promptInserted: "提示词已写入。",
     promptSent: "提示词已写入并发送。",
     sendNotFound: "提示词已写入，但没有找到发送按钮。",
@@ -160,7 +160,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     captureBeforeDelivery: "请先收取 NOOS 交接稿，再进行交付。",
     copyFinished: "复制完成。",
     downloadFinished: "下载完成。",
-    vaultFinished: "已存入 NOOS 文件库。",
+    vaultFinished: "已存入 Browser Vault Mirror，可在 NOOS Hub 导入本机文件库。",
     vaultUnavailable: "NOOS 文件库保存暂不可用。"
   }
 };

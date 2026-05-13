@@ -99,6 +99,21 @@ Hub validates:
 - filename is sanitized
 - write path stays inside `~/.noos/vault/handoffs/active/`
 
+## Risks and Product Traps
+
+The final local write channel has several sharp edges:
+
+- Local port exposure: even a localhost-only service can be called by other local software and sometimes by web pages through browser-mediated requests. Hub must authenticate every write.
+- Token lifecycle: pairing tokens can be lost when the user changes Chrome profiles, reinstalls the extension, migrates machines, or runs dev and release builds side by side.
+- Hub availability: the browser extension can be active while Hub is closed. The extension must keep a recovery path rather than pretending the handoff reached the real vault.
+- Version drift: old Hub plus new extension, or new Hub plus old extension, can disagree on protocol shape. `/health` must report protocol version.
+- Path safety: the extension must never be allowed to choose arbitrary filesystem paths. It may suggest a filename; Hub decides the final path.
+- Duplicate writes: users may click save several times or collect multiple revisions. Hub should use sanitized filenames, content hash checks, and atomic writes.
+- Privacy boundary: handoffs can contain private project context. Git sync must remain a separate explicit action, and logs should not print full handoff bodies.
+- Cross-platform install: Native Messaging registration and filesystem conventions differ across macOS, Windows, and Linux. Localhost HTTP is easier to ship first.
+- Corporate browser policy: some managed machines may block localhost, extension host permissions, downloads, or Native Messaging.
+- UX ambiguity: users need to know whether a handoff is in the real local vault, only in the browser mirror, or synced to Git.
+
 ## UX Behavior
 
 The extension should use a three-step save strategy:
@@ -108,6 +123,28 @@ The extension should use a three-step save strategy:
 3. If the user chooses fallback, write to `Downloads/NOOS/vault/handoffs/active/`.
 
 The default should not silently fall back to Downloads forever. Downloads is a recovery bridge, not the primary vault.
+
+## Phase 1: Downloads Mirror Bridge
+
+The first implementation stage keeps the browser extension within Chrome's built-in permissions:
+
+```text
+Browser Shuttle
+  -> chrome.downloads
+  -> ~/Downloads/NOOS/vault/handoffs/active/
+  -> Hub action: Import Browser Mirror
+  -> ~/.noos/vault/handoffs/active/
+```
+
+This stage intentionally does not open a localhost write endpoint yet. It improves the current bridge by making the boundary explicit:
+
+- `Save 2 Vault` in the extension saves to the browser-writable mirror.
+- The extension UI labels this as a mirror that Hub can import.
+- Hub exposes `Import Browser Mirror` as a local-only action.
+- `Sync Handoff to Git` remains separate and can import from the local vault as part of its workflow.
+- Release packages include the standalone `scripts/noos-import-browser-vault.sh` helper.
+
+This gives users a predictable local file path today while preserving the final architecture where Hub owns direct writes to `~/.noos`.
 
 ## Hub Responsibilities
 

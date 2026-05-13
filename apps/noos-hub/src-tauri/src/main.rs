@@ -64,14 +64,25 @@ fn run_hub_action(action: String) -> Result<String, String> {
         "install-workspace" => run_script(&repo_root, &["scripts/noos-install.sh", "workspace"]),
         "create-inbox" => run_script(&repo_root, &["scripts/noos-install.sh", "inbox"]),
         "create-vault" => run_script(&repo_root, &["scripts/noos-install.sh", "vault"]),
+        "import-browser-vault" => run_script(&repo_root, &["scripts/noos-import-browser-vault.sh"]),
         "sync-handoffs-git" => run_script(&repo_root, &["scripts/noos-sync-handoffs-git.sh"]),
         "browser-dev-profile" => run_script(
             &repo_root,
-            &["scripts/noos-install.sh", "browser", "--mode", "dev-profile"],
+            &[
+                "scripts/noos-install.sh",
+                "browser",
+                "--mode",
+                "dev-profile",
+            ],
         ),
         "browser-manual-unpacked" => run_script(
             &repo_root,
-            &["scripts/noos-install.sh", "browser", "--mode", "manual-unpacked"],
+            &[
+                "scripts/noos-install.sh",
+                "browser",
+                "--mode",
+                "manual-unpacked",
+            ],
         ),
         _ => Err(format!("Unknown action: {action}")),
     }
@@ -134,7 +145,10 @@ fn vault_adapter(noos_home: &Path) -> AdapterHealth {
         "transport",
         "NOOS 本机存储中心，包含 Wiki 和 Handoff；浏览器插件先写入本机 vault mirror。",
         checks,
-        vec![action("create-vault", "创建 NOOS Vault", false)],
+        vec![
+            action("create-vault", "创建 NOOS Vault", false),
+            action("import-browser-vault", "导入 Browser Mirror", false),
+        ],
     )
 }
 
@@ -207,9 +221,16 @@ fn github_adapter(repo_root: &Path) -> AdapterHealth {
         if command_in_dir_status(repo_root, "git", &["remote", "get-url", "origin"]) {
             check("Git remote", "ready", Some("origin".to_string()))
         } else {
-            check("Git remote", "needs_action", Some("configure origin remote".to_string()))
+            check(
+                "Git remote",
+                "needs_action",
+                Some("configure origin remote".to_string()),
+            )
         },
-        file_check("Project GitHub config", repo_root.join(".noos/project.json")),
+        file_check(
+            "Project GitHub config",
+            repo_root.join(".noos/project.json"),
+        ),
     ];
 
     adapter(
@@ -246,7 +267,10 @@ fn adapter(
 }
 
 fn aggregate_status(checks: &[AdapterCheck]) -> String {
-    let missing = checks.iter().filter(|item| item.status == "missing").count();
+    let missing = checks
+        .iter()
+        .filter(|item| item.status == "missing")
+        .count();
     let needs_action = checks
         .iter()
         .filter(|item| item.status == "needs_action")

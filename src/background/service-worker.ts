@@ -35,7 +35,10 @@ function isVaultSaveMessage(value: unknown): value is VaultSaveMessage {
   return message.type === "NOOS_SAVE_HANDOFF_TO_VAULT" && typeof message.filename === "string" && typeof message.content === "string";
 }
 
-async function saveHandoffToVault(filename: string, content: string): Promise<{ ok: boolean; location: string; message: string }> {
+async function saveHandoffToVault(
+  filename: string,
+  content: string
+): Promise<{ ok: boolean; backend: string; location: string; importHint: string; message: string }> {
   const safeFilename = sanitizeFilename(filename);
   const relativePath = `NOOS/vault/handoffs/active/${safeFilename}`;
   const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
@@ -51,8 +54,10 @@ async function saveHandoffToVault(filename: string, content: string): Promise<{ 
 
     return {
       ok: true,
+      backend: "downloads_mirror",
       location: `Downloads/${relativePath}`,
-      message: `Saved to Downloads/${relativePath}.`
+      importHint: "Open NOOS Hub and run Import Browser Mirror to move this handoff into the local NOOS Vault.",
+      message: `Saved to Downloads/${relativePath}. Import it in NOOS Hub.`
     };
   } finally {
     URL.revokeObjectURL(objectUrl);

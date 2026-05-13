@@ -131,7 +131,7 @@ This is Chrome's security requirement for unpacked extensions in a regular profi
 5. Use the manual buttons near the preview to copy, download, or save the handoff.
 6. Use the `Auto after collect` toggles if you want future successful captures to copy, download, or save automatically.
 
-`Save 2 Vault` is local-first. The browser extension writes to the NOOS browser vault mirror under `~/Downloads/NOOS/vault/handoffs/active/`; NOOS Hub owns the separate Git sync action when you want those handoffs committed and pushed for remote agents.
+`Save 2 Vault` is local-first. In the current browser-safe phase, the extension writes to the NOOS browser vault mirror under `~/Downloads/NOOS/vault/handoffs/active/`. NOOS Hub can import that mirror into `~/.noos/vault/handoffs/active/`; Git sync remains a separate Hub action when you want handoffs committed and pushed for remote agents.
 
 Chinese browsers default to Chinese UI and Chinese prompts. You can switch languages in `Settings`.
 
@@ -264,6 +264,7 @@ git push origin v0.1.2
 - `docs/noos-install-architecture.md`: install architecture
 - `docs/noos-downstream-integration.md`: downstream agent integration design
 - `docs/noos-handoff-vault-strategy.md`: handoff vault storage strategy
+- `docs/noos-hub-local-write-channel.md`: Hub-owned local write channel design and risks
 - `docs/noos-shuttle-page-context-events.md`: browser page context event and state handling
 - `docs/noos-thread-format.md`: NOOS Thread v0.1 format
 - `docs/noos-shuttle-v0-design-breakdown.md`: v0 design breakdown

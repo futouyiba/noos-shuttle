@@ -4,7 +4,6 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NOOS_HOME="${NOOS_HOME:-$HOME/.noos}"
 LOCAL_VAULT="$NOOS_HOME/vault/handoffs/active"
-BROWSER_VAULT="$HOME/Downloads/NOOS/vault/handoffs/active"
 PROJECT_ACTIVE="$ROOT_DIR/.noos/handoffs/active"
 
 is_noos_handoff() {
@@ -28,12 +27,11 @@ copy_handoffs() {
   printf "%s" "$copied"
 }
 
-mkdir -p "$LOCAL_VAULT" "$BROWSER_VAULT" "$PROJECT_ACTIVE"
+mkdir -p "$LOCAL_VAULT" "$PROJECT_ACTIVE"
 
-browser_count="$(copy_handoffs "$BROWSER_VAULT" "$LOCAL_VAULT")"
+"$ROOT_DIR/scripts/noos-import-browser-vault.sh"
 project_count="$(copy_handoffs "$LOCAL_VAULT" "$PROJECT_ACTIVE")"
 
-echo "Imported $browser_count handoff(s) from $BROWSER_VAULT to $LOCAL_VAULT"
 echo "Copied $project_count handoff(s) from $LOCAL_VAULT to $PROJECT_ACTIVE"
 
 cd "$ROOT_DIR"

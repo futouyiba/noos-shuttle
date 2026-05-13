@@ -4,7 +4,9 @@ import type { SaveOptions, SaveResult, StorageAdapter } from "./StorageAdapter";
 
 interface VaultSaveResponse {
   ok: boolean;
+  backend?: string;
   location?: string;
+  importHint?: string;
   errorCode?: string;
   message?: string;
 }
