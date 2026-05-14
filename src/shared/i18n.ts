@@ -8,6 +8,7 @@ export interface ShuttleCopy {
   generateAndCollect: string;
   draftHandoff: string;
   collectHandoff: string;
+  extractCrystal: string;
   cancel: string;
   autoAfterCollect: string;
   autoCopy: string;
@@ -22,6 +23,8 @@ export interface ShuttleCopy {
   detectedHandoffs: string;
   chooseHandoffTitle: string;
   chooseHandoffIntro: string;
+  chooseCrystalTitle: string;
+  chooseCrystalIntro: string;
   deliverySuccessTitle: string;
   deliveryIssueTitle: string;
   validationWarningTitle: string;
@@ -48,9 +51,16 @@ export interface ShuttleCopy {
   conversationChanged: string;
   inputNotFound: string;
   noThreadDetected: string;
+  noCrystalDetected: string;
   chooseDetected: (count: number) => string;
   captured: string;
   capturedWithWarnings: string;
+  crystalSubmitted: string;
+  waitingForCrystal: string;
+  crystalCaptured: string;
+  crystalCapturedWithWarnings: string;
+  crystalSaved: (key: string) => string;
+  crystalSavedWithoutClipboard: (key: string) => string;
   autoDeliverySkipped: string;
   captureBeforeDelivery: string;
   copyFinished: string;
@@ -70,6 +80,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     generateAndCollect: "Generate & Collect",
     draftHandoff: "Generate Only",
     collectHandoff: "Collect Only",
+    extractCrystal: "Extract Crystal",
     cancel: "Cancel",
     autoAfterCollect: "Auto after collect",
     autoCopy: "Auto Copy",
@@ -84,6 +95,8 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     detectedHandoffs: "Detected Handoffs",
     chooseHandoffTitle: "Choose a handoff",
     chooseHandoffIntro: "Several NOOS handoffs were found. Pick the one to deliver.",
+    chooseCrystalTitle: "Choose a crystal",
+    chooseCrystalIntro: "Pick the crystal to save. The newest one is selected first.",
     deliverySuccessTitle: "Handoff delivered",
     deliveryIssueTitle: "Delivery needs attention",
     validationWarningTitle: "Review validation warnings",
@@ -110,9 +123,16 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     conversationChanged: "Conversation changed. Shuttle state refreshed.",
     inputNotFound: "Chat input box not found. The page layout may have changed.",
     noThreadDetected: "No NOOS Thread detected. Try Draft Handoff first.",
+    noCrystalDetected: "No NOOS Crystal detected.",
     chooseDetected: (count) => `Detected ${count} handoffs. Choose one to deliver.`,
     captured: "Handoff collected.",
     capturedWithWarnings: "Collected with validation warnings.",
+    crystalSubmitted: "Crystal prompt sent. Waiting for generation...",
+    waitingForCrystal: "Generation appears complete. Collecting the crystal...",
+    crystalCaptured: "Crystal collected.",
+    crystalCapturedWithWarnings: "Crystal collected with validation warnings.",
+    crystalSaved: (key) => `Crystal saved. Key copied: ${key}`,
+    crystalSavedWithoutClipboard: (key) => `Crystal saved. Copy this key manually: ${key}`,
     autoDeliverySkipped: "Collected with warnings. Review before delivery.",
     captureBeforeDelivery: "Collect a NOOS Handoff before delivery.",
     copyFinished: "Copy finished.",
@@ -128,6 +148,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     generateAndCollect: "生成并收取",
     draftHandoff: "单独生成",
     collectHandoff: "单独收取",
+    extractCrystal: "提取结晶",
     cancel: "取消",
     autoAfterCollect: "拉取后自动",
     autoCopy: "自动复制",
@@ -142,6 +163,8 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     detectedHandoffs: "检测到的交接稿",
     chooseHandoffTitle: "选择交接稿",
     chooseHandoffIntro: "检测到多份 NOOS 交接稿。请选择要交付的一份。",
+    chooseCrystalTitle: "选择结晶",
+    chooseCrystalIntro: "请选择要保存的 NOOS 结晶。默认优先选择最新的一份。",
     deliverySuccessTitle: "交接稿已交付",
     deliveryIssueTitle: "交付需要处理",
     validationWarningTitle: "请确认校验提醒",
@@ -168,9 +191,16 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     conversationChanged: "已切换会话，插件状态已刷新。",
     inputNotFound: "没有找到 ChatGPT 输入框。页面结构可能已经变化。",
     noThreadDetected: "没有检测到 NOOS 交接稿。可以先生成交接稿。",
+    noCrystalDetected: "没有检测到 NOOS 结晶。",
     chooseDetected: (count) => `检测到 ${count} 份交接稿。请选择要交付的一份。`,
     captured: "交接稿已收取。",
     capturedWithWarnings: "已收取，但存在校验提醒。",
+    crystalSubmitted: "结晶提示词已发送，正在等待生成...",
+    waitingForCrystal: "生成看起来已完成，正在收取结晶...",
+    crystalCaptured: "结晶已收取。",
+    crystalCapturedWithWarnings: "结晶已收取，但存在校验提醒。",
+    crystalSaved: (key) => `结晶已保存，检索 key 已复制：${key}`,
+    crystalSavedWithoutClipboard: (key) => `结晶已保存，请手动复制检索 key：${key}`,
     autoDeliverySkipped: "已收取，但存在校验提醒。请确认后再交付。",
     captureBeforeDelivery: "请先收取 NOOS 交接稿，再进行交付。",
     copyFinished: "复制完成。",

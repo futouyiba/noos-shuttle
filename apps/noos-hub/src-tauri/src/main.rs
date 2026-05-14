@@ -46,6 +46,7 @@ struct AdapterAction {
 
 #[derive(Deserialize)]
 struct HandoffWriteRequest {
+    kind: Option<String>,
     filename: String,
     content: String,
     source: Option<HandoffSource>,
@@ -264,10 +265,7 @@ fn handle_local_write_request(mut stream: TcpStream) -> Result<(), String> {
                 app: "NOOS Hub".to_string(),
                 protocol_version: HUB_PROTOCOL_VERSION,
                 port: LOCAL_WRITE_PORT,
-                vault_path: noos_home()
-                    .join("vault/handoffs/active")
-                    .display()
-                    .to_string(),
+                vault_path: noos_home().join("vault").display().to_string(),
                 paired: read_shuttle_token().is_some(),
             },
         );
@@ -324,23 +322,24 @@ fn handle_local_write_request(mut stream: TcpStream) -> Result<(), String> {
     let body = &buffer[body_start..body_end.min(buffer.len())];
     let request: HandoffWriteRequest =
         serde_json::from_slice(body).map_err(|error| error.to_string())?;
-    let response = write_handoff_to_local_vault(request);
+    let response = write_artifact_to_local_vault(request);
     let status = if response.ok { 200 } else { 400 };
     write_json_response(&mut stream, status, &response)
 }
 
-fn write_handoff_to_local_vault(request: HandoffWriteRequest) -> HandoffWriteResponse {
-    if !is_noos_handoff(&request.content) {
+fn write_artifact_to_local_vault(request: HandoffWriteRequest) -> HandoffWriteResponse {
+    let artifact_kind = artifact_kind(request.kind.as_deref());
+    if !is_valid_noos_artifact(&request.content, artifact_kind) {
         return HandoffWriteResponse {
             ok: false,
             backend: "hub_local".to_string(),
             location: None,
-            error_code: Some("invalid_handoff".to_string()),
-            message: "Content does not contain NOOS thread markers.".to_string(),
+            error_code: Some("invalid_artifact".to_string()),
+            message: "Content does not contain the expected NOOS markers.".to_string(),
         };
     }
 
-    let vault = noos_home().join("vault/handoffs/active");
+    let vault = noos_home().join(artifact_vault_path(artifact_kind));
     if let Err(error) = fs::create_dir_all(&vault) {
         return HandoffWriteResponse {
             ok: false,
@@ -426,6 +425,7 @@ fn vault_adapter(noos_home: &Path) -> AdapterHealth {
         dir_check("NOOS vault", noos_home.join("vault")),
         dir_check("Wiki vault", noos_home.join("vault/wiki")),
         dir_check("Handoff vault", noos_home.join("vault/handoffs/active")),
+        dir_check("Crystal vault", noos_home.join("vault/crystals/active")),
         dir_check(
             "Browser vault mirror",
             home_dir().join("Downloads/NOOS/vault/handoffs/active"),
@@ -799,8 +799,31 @@ fn is_allowed_pairing_origin(origin: &str) -> bool {
     origin.starts_with("chrome-extension://") || origin.starts_with("moz-extension://")
 }
 
-fn is_noos_handoff(content: &str) -> bool {
-    content.contains("<!-- NOOS:THREAD:BEGIN -->") && content.contains("<!-- NOOS:THREAD:END -->")
+fn artifact_kind(value: Option<&str>) -> &str {
+    match value {
+        Some("crystal") => "crystal",
+        _ => "handoff",
+    }
+}
+
+fn artifact_vault_path(kind: &str) -> &'static str {
+    match kind {
+        "crystal" => "vault/crystals/active",
+        _ => "vault/handoffs/active",
+    }
+}
+
+fn is_valid_noos_artifact(content: &str, kind: &str) -> bool {
+    match kind {
+        "crystal" => {
+            content.contains("<!-- NOOS:CRYSTAL:BEGIN -->")
+                && content.contains("<!-- NOOS:CRYSTAL:END -->")
+        }
+        _ => {
+            content.contains("<!-- NOOS:THREAD:BEGIN -->")
+                && content.contains("<!-- NOOS:THREAD:END -->")
+        }
+    }
 }
 
 fn sanitize_filename(filename: &str) -> String {

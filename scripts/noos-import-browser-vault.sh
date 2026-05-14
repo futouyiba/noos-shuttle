@@ -2,35 +2,52 @@
 set -euo pipefail
 
 NOOS_HOME="${NOOS_HOME:-$HOME/.noos}"
-LOCAL_VAULT="$NOOS_HOME/vault/handoffs/active"
-BROWSER_VAULT="$HOME/Downloads/NOOS/vault/handoffs/active"
 
-is_noos_handoff() {
+has_markers() {
   local file="$1"
-  grep -q "<!-- NOOS:THREAD:BEGIN -->" "$file" && grep -q "<!-- NOOS:THREAD:END -->" "$file"
+  local begin="$2"
+  local end="$3"
+  grep -Fq "$begin" "$file" && grep -Fq "$end" "$file"
 }
 
-copy_handoffs() {
+copy_artifacts() {
+  local label="$1"
+  local source_dir="$2"
+  local target_dir="$3"
+  local begin_marker="$4"
+  local end_marker="$5"
   local copied=0
   local skipped=0
 
-  mkdir -p "$LOCAL_VAULT" "$BROWSER_VAULT"
+  mkdir -p "$target_dir" "$source_dir"
 
   while IFS= read -r -d '' file; do
-    if is_noos_handoff "$file"; then
-      cp "$file" "$LOCAL_VAULT/$(basename "$file")"
+    if has_markers "$file" "$begin_marker" "$end_marker"; then
+      cp "$file" "$target_dir/$(basename "$file")"
       copied=$((copied + 1))
     else
       skipped=$((skipped + 1))
     fi
-  done < <(find "$BROWSER_VAULT" -maxdepth 1 -type f -name "*.md" -print0)
+  done < <(find "$source_dir" -maxdepth 1 -type f -name "*.md" -print0)
 
-  echo "Browser vault mirror: $BROWSER_VAULT"
-  echo "NOOS local handoff vault: $LOCAL_VAULT"
-  echo "Imported $copied handoff(s)."
+  echo "$label browser mirror: $source_dir"
+  echo "$label local vault: $target_dir"
+  echo "Imported $copied $label file(s)."
   if [[ "$skipped" -gt 0 ]]; then
-    echo "Skipped $skipped markdown file(s) without NOOS thread markers."
+    echo "Skipped $skipped markdown file(s) without expected NOOS markers."
   fi
 }
 
-copy_handoffs
+copy_artifacts \
+  "Handoff" \
+  "$HOME/Downloads/NOOS/vault/handoffs/active" \
+  "$NOOS_HOME/vault/handoffs/active" \
+  "<!-- NOOS:THREAD:BEGIN -->" \
+  "<!-- NOOS:THREAD:END -->"
+
+copy_artifacts \
+  "Crystal" \
+  "$HOME/Downloads/NOOS/vault/crystals/active" \
+  "$NOOS_HOME/vault/crystals/active" \
+  "<!-- NOOS:CRYSTAL:BEGIN -->" \
+  "<!-- NOOS:CRYSTAL:END -->"

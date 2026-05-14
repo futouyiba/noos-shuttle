@@ -179,3 +179,28 @@ The direct Hub write path now requires Browser Shuttle pairing:
 4. The extension claims a token from Hub, stores it locally, and retries the save.
 
 After pairing, future saves can write directly to Hub while Hub is running. If Hub is unavailable, the extension still falls back to the Downloads mirror.
+
+## NOOS Crystals
+
+NOOS Crystals are reusable discussion snapshots, not downstream execution handoffs. They use their own marker and vault path:
+
+```text
+<!-- NOOS:CRYSTAL:BEGIN -->
+...
+<!-- NOOS:CRYSTAL:END -->
+
+~/.noos/vault/crystals/active/
+```
+
+The browser extension's `Extract Crystal` action asks ChatGPT to produce a concise Markdown snapshot with:
+
+- confirmed conclusions
+- reasonable inferences
+- open questions
+- the three best entry points for the next discussion
+
+Each crystal includes a stable `crystal_key`. After saving, Browser Shuttle copies that key to the clipboard so a coding agent can retrieve the file with:
+
+```sh
+scripts/noos-find-crystal.sh <crystal-key>
+```

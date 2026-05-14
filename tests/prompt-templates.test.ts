@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createGenerateThreadPrompt } from "../src/core/prompt-templates";
+import { createGenerateCrystalPrompt, createGenerateThreadPrompt } from "../src/core/prompt-templates";
 
 describe("createGenerateThreadPrompt", () => {
   it("creates a Chinese handoff prompt by default", () => {
@@ -26,5 +26,16 @@ describe("createGenerateThreadPrompt", () => {
     expect(prompt).toContain("# Thread: <title>");
     expect(prompt).toContain("## Suggested Next-Agent Instructions");
     expect(prompt).toContain('if a section has no content, keep the heading and write "None"');
+  });
+
+  it("creates a Chinese crystal prompt", () => {
+    const prompt = createGenerateCrystalPrompt("https://chatgpt.com/c/test");
+
+    expect(prompt).toContain("NOOS Crystal / 讨论结晶");
+    expect(prompt).toContain("<!-- NOOS:CRYSTAL:BEGIN -->");
+    expect(prompt).toContain("type: noos_crystal");
+    expect(prompt).toContain("crystal_key");
+    expect(prompt).toContain("## 已确认结论");
+    expect(prompt).toContain("下一轮最值得继续讨论的 3 个入口");
   });
 });

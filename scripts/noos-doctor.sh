@@ -47,7 +47,9 @@ check_dir "$NOOS_HOME/inbox" "NOOS inbox"
 check_dir "$NOOS_HOME/vault" "NOOS vault"
 check_dir "$NOOS_HOME/vault/wiki" "NOOS wiki vault"
 check_dir "$NOOS_HOME/vault/handoffs/active" "NOOS handoff vault"
+check_dir "$NOOS_HOME/vault/crystals/active" "NOOS crystal vault"
 check_dir "$HOME/Downloads/NOOS/vault/handoffs/active" "Browser vault mirror"
+check_dir "$HOME/Downloads/NOOS/vault/crystals/active" "Browser crystal mirror"
 check_file "$NOOS_HOME/config.json" "User config"
 
 echo
@@ -56,6 +58,7 @@ check_file "$ROOT_DIR/.noos/project.json" "Project config"
 check_file "$ROOT_DIR/.noos/agent-registry.json" "Agent registry"
 check_dir "$ROOT_DIR/.noos/handoffs/active" "Active handoffs"
 check_dir "$ROOT_DIR/.noos/handoffs/done" "Done handoffs"
+check_dir "$ROOT_DIR/.noos/crystals/active" "Active crystals"
 check_file "$ROOT_DIR/AGENTS.md" "Codex entry"
 check_file "$ROOT_DIR/CLAUDE.md" "Claude Code entry"
 

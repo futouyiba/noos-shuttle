@@ -1,4 +1,4 @@
-import { createPreferredPath } from "./filename";
+import { createCrystalPreferredPath, createPreferredPath, slugify } from "./filename";
 import type { ShuttleLocale } from "../shared/i18n";
 
 export function createGenerateThreadPrompt(
@@ -107,4 +107,115 @@ The body must include these exact section headings. Do not rewrite, merge, or re
 ## Relevant Files or Links
 
 Make it concise but complete enough for another agent to continue the work without rereading the full conversation.`;
+}
+
+export function createGenerateCrystalPrompt(
+  sourceUrl = globalThis.location?.href ?? "",
+  locale: ShuttleLocale = "zh"
+): string {
+  const today = new Date().toISOString().slice(0, 10);
+  const keyExample = `${today.replace(/-/g, "")}-${slugify("example-crystal")}`;
+  const examplePath = createCrystalPreferredPath(keyExample, new Date(`${today}T00:00:00.000Z`));
+
+  if (locale === "zh") {
+    return `请基于当前对话生成一份 NOOS Crystal / 讨论结晶。
+
+用途：把本轮对话里可沉淀、后续可复用的信息保存成 Markdown，供用户、Codex 或其他 agent 之后按 key 检索使用。
+
+不要复述全过程。只保留后续有用的信息。请用中文输出。
+
+只输出一个 fenced markdown code block。不要在 code block 外写解释、寒暄或补充说明。
+
+输出格式必须是：
+
+\`\`\`markdown
+<!-- NOOS:CRYSTAL:BEGIN -->
+...
+<!-- NOOS:CRYSTAL:END -->
+\`\`\`
+
+结晶必须被以下精确标记包裹：
+
+<!-- NOOS:CRYSTAL:BEGIN -->
+...
+<!-- NOOS:CRYSTAL:END -->
+
+使用 YAML frontmatter，字段保持英文键名：
+- type: noos_crystal
+- version: 0.1
+- source_app: chatgpt
+- source_url: ${sourceUrl}
+- status: active
+- created_at: ${today}
+- crystal_key: 一个稳定、短小、表意的英文/拼音 key，例如 ${keyExample}
+- title: 中文标题
+- summary: 一句话摘要，方便在列表中选择
+- tags
+- preferred_path，路径格式参考：${examplePath}
+
+正文必须包含以下章节：
+# 结晶：<标题>
+
+## 已确认结论
+## 合理推断
+## 未决问题
+## 下一轮最值得继续讨论的 3 个入口
+
+要求：
+1. 不要复述全过程。
+2. 只保留后续有用的信息。
+3. 区分：已确认结论 / 合理推断 / 未决问题。
+4. 输出 Markdown。
+5. 末尾给出“下一轮最值得继续讨论的 3 个入口”。`;
+  }
+
+  return `Please generate a NOOS Crystal / discussion snapshot from the current conversation.
+
+Purpose: preserve reusable conclusions and context as Markdown so the user, Codex, or another agent can retrieve it later by key.
+
+Do not recap the whole process. Keep only information that is useful later.
+
+Output only one fenced markdown code block. Do not include any explanation outside the code block.
+
+The output format must be:
+
+\`\`\`markdown
+<!-- NOOS:CRYSTAL:BEGIN -->
+...
+<!-- NOOS:CRYSTAL:END -->
+\`\`\`
+
+The crystal must be wrapped by these exact markers:
+
+<!-- NOOS:CRYSTAL:BEGIN -->
+...
+<!-- NOOS:CRYSTAL:END -->
+
+Use YAML frontmatter with:
+- type: noos_crystal
+- version: 0.1
+- source_app: chatgpt
+- source_url: ${sourceUrl}
+- status: active
+- created_at: ${today}
+- crystal_key: a stable, short, semantic key, for example ${keyExample}
+- title
+- summary: one concise sentence for chooser lists
+- tags
+- preferred_path, using this pattern: ${examplePath}
+
+The body must include:
+# Crystal: <title>
+
+## Confirmed Conclusions
+## Reasonable Inferences
+## Open Questions
+## 3 Best Entry Points for the Next Round
+
+Requirements:
+1. Do not recap the full conversation.
+2. Preserve only reusable information.
+3. Separate confirmed conclusions, reasonable inferences, and open questions.
+4. Output Markdown.
+5. End with the 3 best entry points for the next round.`;
 }

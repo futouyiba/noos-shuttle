@@ -91,13 +91,25 @@ Payload:
 }
 ```
 
+The endpoint also accepts NOOS Crystal writes through the same local channel:
+
+```json
+{
+  "kind": "crystal",
+  "filename": "2026-05-14-discussion-snapshot.md",
+  "content": "<NOOS crystal markdown>"
+}
+```
+
+When `kind` is omitted, Hub treats the artifact as a handoff for backward compatibility. `kind: "crystal"` writes to `~/.noos/vault/crystals/active/` and validates `NOOS:CRYSTAL` markers.
+
 Hub validates:
 
 - token matches
 - request origin is allowed when available
 - content contains NOOS begin/end markers
 - filename is sanitized
-- write path stays inside `~/.noos/vault/handoffs/active/`
+- write path stays inside the matching artifact vault, such as `~/.noos/vault/handoffs/active/` or `~/.noos/vault/crystals/active/`
 
 ## Risks and Product Traps
 
@@ -191,10 +203,16 @@ The browser extension tries the Hub endpoint first. If Hub is unavailable, it fa
 ~/Downloads/NOOS/vault/handoffs/active/
 ```
 
-Hub writes successful requests directly to:
+Hub writes successful handoff requests directly to:
 
 ```text
 ~/.noos/vault/handoffs/active/
+```
+
+Crystal requests with `kind: "crystal"` are written directly to:
+
+```text
+~/.noos/vault/crystals/active/
 ```
 
 Implemented checks:
@@ -204,7 +222,7 @@ Implemented checks:
 - Reject non-extension origins when an `Origin` header is present.
 - Validate NOOS begin/end markers before writing.
 - Sanitize filenames and force `.md`.
-- Keep writes inside `~/.noos/vault/handoffs/active/`.
+- Keep writes inside the matching NOOS Vault artifact directory.
 - Write through a temporary file and then rename.
 - Generate a unique filename when a target already exists.
 

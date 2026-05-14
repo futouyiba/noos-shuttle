@@ -4,8 +4,18 @@ export function createThreadFilename(title: string, date = new Date()): string {
   return `${isoDate}-${slug}.md`;
 }
 
+export function createCrystalFilename(titleOrKey: string, date = new Date()): string {
+  const isoDate = date.toISOString().slice(0, 10);
+  const slug = slugify(titleOrKey) || "noos-crystal";
+  return `${isoDate}-${slug}.md`;
+}
+
 export function createPreferredPath(title: string, date = new Date()): string {
   return `.noos/handoffs/active/${createThreadFilename(title, date)}`;
+}
+
+export function createCrystalPreferredPath(titleOrKey: string, date = new Date()): string {
+  return `.noos/crystals/active/${createCrystalFilename(titleOrKey, date)}`;
 }
 
 export function slugify(input: string): string {

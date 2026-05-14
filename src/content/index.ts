@@ -1,7 +1,9 @@
-import { createThreadFilename } from "../core/filename";
-import { createGenerateThreadPrompt } from "../core/prompt-templates";
+import { createCrystalFilename, createThreadFilename } from "../core/filename";
+import { createGenerateCrystalPrompt, createGenerateThreadPrompt } from "../core/prompt-templates";
 import { captureNoosThreads } from "../core/thread-capture";
+import { captureNoosCrystals } from "../core/crystal-capture";
 import type { NoosThread } from "../core/noos-thread";
+import type { NoosCrystal } from "../core/noos-crystal";
 import { COPY, type ShuttleLocale, getStoredLocale, storeLocale } from "../shared/i18n";
 import { ClipboardAdapter } from "../storage/ClipboardAdapter";
 import { DownloadAdapter } from "../storage/DownloadAdapter";
@@ -16,6 +18,7 @@ type ModalState =
   | { kind: "success"; title: string; message: string }
   | { kind: "warnings"; title: string; message: string; warnings: string[] }
   | { kind: "choose-thread" }
+  | { kind: "choose-crystal" }
   | null;
 
 interface ViewState {
@@ -24,7 +27,9 @@ interface ViewState {
   state: ShuttleState;
   message: string;
   threads: NoosThread[];
+  crystals: NoosCrystal[];
   selectedIndex: number;
+  selectedCrystalIndex: number;
   locale: ShuttleLocale;
   deliveryModes: DeliveryMode[];
   vaultRoute: VaultRoute;
@@ -82,7 +87,9 @@ const viewState: ViewState = {
   state: "idle",
   message: COPY[getStoredLocale()].ready,
   threads: [],
+  crystals: [],
   selectedIndex: 0,
+  selectedCrystalIndex: 0,
   locale: getStoredLocale(),
   deliveryModes: getStoredDeliveryModes(),
   vaultRoute: "checking",
@@ -159,6 +166,7 @@ function render(app: HTMLElement): void {
             <div class="actions">
               <button type="button" data-action="generate">${copy.draftHandoff}</button>
               <button type="button" data-action="capture">${copy.collectHandoff}</button>
+              <button type="button" data-action="generate-crystal">${copy.extractCrystal}</button>
             </div>
             ${renderVaultRoute(copy)}
             ${renderThreads(selectedThread)}
@@ -277,6 +285,30 @@ function threadChoiceSummary(thread: NoosThread, copy: (typeof COPY)[ShuttleLoca
   return parts.length > 0 ? parts.join(" · ") : copy.captured;
 }
 
+function crystalChoiceSummary(crystal: NoosCrystal, copy: (typeof COPY)[ShuttleLocale]): string {
+  const parts = [
+    crystal.frontmatter?.created_at,
+    crystal.key,
+    crystal.summary
+  ].filter(Boolean);
+
+  if (crystal.warnings.length > 0) {
+    parts.push(`${copy.warnings}: ${crystal.warnings.length}`);
+  }
+
+  return parts.join(" · ");
+}
+
+function crystalPreview(crystal: NoosCrystal): string {
+  return crystal.bodyMarkdown
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("---"))
+    .slice(0, 4)
+    .join(" ")
+    .slice(0, 220);
+}
+
 function renderModal(): string {
   const modal = viewState.modal;
   const copy = COPY[viewState.locale];
@@ -299,6 +331,30 @@ function renderModal(): string {
                 `<button type="button" data-action="choose-thread-${index}">
                   <strong>${escapeHtml(thread.title)}</strong>
                   <span>${escapeHtml(threadChoiceSummary(thread, copy))}</span>
+                </button>`
+            )
+            .join("")}
+        </div>
+      </section>
+    </div>`;
+  }
+
+  if (modal.kind === "choose-crystal") {
+    return `<div class="modal-backdrop" role="presentation">
+      <section class="modal" role="dialog" aria-modal="true" aria-label="${copy.chooseCrystalTitle}">
+        <header class="modal-header">
+          <strong>${copy.chooseCrystalTitle}</strong>
+          <button class="icon-button" type="button" data-action="modal-close" aria-label="${copy.close}">x</button>
+        </header>
+        <p>${copy.chooseCrystalIntro}</p>
+        <div class="thread-list">
+          ${viewState.crystals
+            .map(
+              (crystal, index) =>
+                `<button type="button" data-action="choose-crystal-${index}" aria-pressed="${index === viewState.selectedCrystalIndex}">
+                  <strong>${escapeHtml(crystal.title)}</strong>
+                  <span>${escapeHtml(crystalChoiceSummary(crystal, copy))}</span>
+                  <small>${escapeHtml(crystalPreview(crystal))}</small>
                 </button>`
             )
             .join("")}
@@ -364,6 +420,13 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
     return;
   }
 
+  if (action.startsWith("choose-crystal-")) {
+    viewState.selectedCrystalIndex = Number(action.replace("choose-crystal-", ""));
+    viewState.modal = null;
+    await deliverSelectedCrystal(app);
+    return;
+  }
+
   if (action === "modal-copy" || action === "modal-download" || action === "modal-vault") {
     viewState.modal = null;
     const mode = action === "modal-copy" ? "copy" : action === "modal-download" ? "download" : "vault";
@@ -426,6 +489,11 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
 
   if (action === "generate-capture") {
     await generateAndCollect(app);
+    return;
+  }
+
+  if (action === "generate-crystal") {
+    await generateAndCollectCrystal(app);
     return;
   }
 
@@ -502,6 +570,36 @@ async function generateAndCollect(app: HTMLElement): Promise<void> {
   viewState.message = copy.generationSubmitted;
   render(app);
   waitForGeneratedHandoff(app, baselineBegin);
+}
+
+async function generateAndCollectCrystal(app: HTMLElement): Promise<void> {
+  const copy = COPY[viewState.locale];
+  const baselineBegin = newestCrystalMarkerBegin(captureNoosCrystals(getPageText()).crystals);
+  const inserted = insertIntoChatInput(createGenerateCrystalPrompt(window.location.href, viewState.locale));
+
+  if (!inserted) {
+    viewState.state = "error";
+    viewState.message = copy.inputNotFound;
+    render(app);
+    return;
+  }
+
+  cancelActiveWait();
+  viewState.state = "waiting";
+  viewState.open = false;
+  viewState.message = copy.waitingForCrystal;
+  render(app);
+
+  const sent = await submitChatInput();
+  if (!sent) {
+    viewState.message = copy.sendNotFound;
+    render(app);
+    return;
+  }
+
+  viewState.message = copy.crystalSubmitted;
+  render(app);
+  waitForGeneratedCrystal(app, baselineBegin);
 }
 
 function applyManualCapture(): void {
@@ -635,6 +733,102 @@ function waitForGeneratedHandoff(app: HTMLElement, baselineBegin: number): void 
   observeGenerationState();
 }
 
+function waitForGeneratedCrystal(app: HTMLElement, baselineBegin: number): void {
+  const copy = COPY[viewState.locale];
+
+  const tryCapture = (): boolean => {
+    const result = captureNoosCrystals(getPageText());
+    const candidate = findNewestCrystalAfter(result.crystals, baselineBegin);
+    if (!candidate) {
+      return false;
+    }
+
+    viewState.crystals = result.crystals;
+    viewState.selectedCrystalIndex = result.crystals.indexOf(candidate);
+    viewState.state = candidate.warnings.length ? "warning" : "captured";
+    viewState.message = candidate.warnings.length ? copy.crystalCapturedWithWarnings : copy.crystalCaptured;
+    viewState.open = true;
+    cancelActiveWait();
+
+    viewState.modal = { kind: "choose-crystal" };
+    render(app);
+    return true;
+  };
+
+  let quietTimerId: number | null = null;
+  let hasStartedGenerating = false;
+
+  const completeAfterQuietPeriod = () => {
+    if (!activeWait || !hasStartedGenerating || isChatbotGenerating()) {
+      return;
+    }
+
+    if (quietTimerId !== null) {
+      window.clearTimeout(quietTimerId);
+    }
+    quietTimerId = window.setTimeout(() => {
+      if (!activeWait || isChatbotGenerating()) {
+        return;
+      }
+      viewState.message = copy.waitingForCrystal;
+      render(app);
+      tryCapture();
+    }, GENERATION_QUIET_MS);
+    if (activeWait) {
+      activeWait.quietTimerId = quietTimerId;
+    }
+  };
+
+  const observeGenerationState = () => {
+    if (!activeWait) {
+      return;
+    }
+    if (tryCapture()) {
+      return;
+    }
+    if (isChatbotGenerating()) {
+      hasStartedGenerating = true;
+      activeWait.hasStartedGenerating = true;
+      if (quietTimerId !== null) {
+        window.clearTimeout(quietTimerId);
+        quietTimerId = null;
+        activeWait.quietTimerId = null;
+      }
+      viewState.message = copy.waitingForGenerationStart;
+      return;
+    }
+    completeAfterQuietPeriod();
+  };
+
+  const observer = new MutationObserver(() => {
+    observeGenerationState();
+  });
+  observer.observe(document.body, { attributes: true, childList: true, subtree: true, characterData: true });
+  const capturePollId = window.setInterval(() => {
+    if (!activeWait) {
+      return;
+    }
+    tryCapture();
+  }, CAPTURE_POLL_MS);
+  const fallbackStartId = window.setTimeout(() => {
+    if (!activeWait || hasStartedGenerating) {
+      return;
+    }
+    hasStartedGenerating = true;
+    activeWait.hasStartedGenerating = true;
+    completeAfterQuietPeriod();
+  }, GENERATION_START_GRACE_MS);
+  const timeoutId = window.setTimeout(() => {
+    cancelActiveWait();
+    viewState.state = "error";
+    viewState.open = true;
+    viewState.message = copy.waitingTimedOut;
+    render(app);
+  }, WAIT_FOR_HANDOFF_TIMEOUT_MS);
+  activeWait = { observer, timeoutId, fallbackStartId, capturePollId, quietTimerId, hasStartedGenerating };
+  observeGenerationState();
+}
+
 function cancelActiveWait(): void {
   if (!activeWait) {
     return;
@@ -654,10 +848,24 @@ function newestMarkerBegin(threads: NoosThread[]): number {
   return threads.reduce((max, thread) => Math.max(max, thread.markerRange.begin), -1);
 }
 
+function newestCrystalMarkerBegin(crystals: NoosCrystal[]): number {
+  return crystals.reduce((max, crystal) => Math.max(max, crystal.markerRange.begin), -1);
+}
+
 function findNewestThreadAfter(threads: NoosThread[], baselineBegin: number): NoosThread | undefined {
   for (let index = threads.length - 1; index >= 0; index -= 1) {
     if (threads[index].markerRange.begin > baselineBegin) {
       return threads[index];
+    }
+  }
+
+  return undefined;
+}
+
+function findNewestCrystalAfter(crystals: NoosCrystal[], baselineBegin: number): NoosCrystal | undefined {
+  for (let index = crystals.length - 1; index >= 0; index -= 1) {
+    if (crystals[index].markerRange.begin > baselineBegin) {
+      return crystals[index];
     }
   }
 
@@ -722,7 +930,9 @@ function resetForConversationChange(app: HTMLElement): void {
   viewState.state = "idle";
   viewState.message = COPY[viewState.locale].conversationChanged;
   viewState.threads = [];
+  viewState.crystals = [];
   viewState.selectedIndex = 0;
+  viewState.selectedCrystalIndex = 0;
   viewState.modal = null;
   render(app);
 }
@@ -869,6 +1079,53 @@ async function saveThreadWithMode(mode: DeliveryMode, selectedThread: NoosThread
     viewState.vaultRoute = "mirror";
   }
   return { ok: result.ok, message: result.ok ? result.message ?? copy.vaultFinished : result.message ?? copy.vaultUnavailable };
+}
+
+async function deliverSelectedCrystal(app: HTMLElement): Promise<void> {
+  const copy = COPY[viewState.locale];
+  const crystal = viewState.crystals[viewState.selectedCrystalIndex];
+  if (!crystal) {
+    viewState.state = "error";
+    viewState.message = copy.noCrystalDetected;
+    render(app);
+    return;
+  }
+
+  const filename = createCrystalFilename(crystal.key || crystal.title);
+  const response = await chrome.runtime.sendMessage<
+    { type: "NOOS_SAVE_CRYSTAL_TO_VAULT"; filename: string; content: string },
+    { ok?: boolean; backend?: string; location?: string; message?: string }
+  >({
+    type: "NOOS_SAVE_CRYSTAL_TO_VAULT",
+    filename,
+    content: crystal.rawMarkdown
+  });
+
+  if (response?.backend === "hub_local") {
+    viewState.vaultRoute = "hub";
+  } else if (response?.backend === "downloads_mirror") {
+    viewState.vaultRoute = "mirror";
+  }
+
+  let copiedKey = true;
+  try {
+    await navigator.clipboard.writeText(crystal.key);
+  } catch {
+    copiedKey = false;
+  }
+  viewState.state = response?.ok ? "saved" : "error";
+  viewState.message = response?.ok
+    ? copiedKey
+      ? copy.crystalSaved(crystal.key)
+      : copy.crystalSavedWithoutClipboard(crystal.key)
+    : response?.message ?? copy.vaultUnavailable;
+  viewState.modal = {
+    kind: "success",
+    title: response?.ok ? copy.deliverySuccessTitle : copy.deliveryIssueTitle,
+    message: viewState.message
+  };
+  viewState.open = true;
+  render(app);
 }
 
 async function refreshVaultStatus(app: HTMLElement): Promise<void> {

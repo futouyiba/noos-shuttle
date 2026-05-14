@@ -20,6 +20,7 @@ NOOS Shuttle 是一套 AI 上下文穿梭工具。它的目标不是只做一个
 当前 v0 重点：
 
 - 在 ChatGPT 网页里生成和捕获 NOOS handoff
+- 从 ChatGPT 对话中提取可复用的 NOOS 结晶，并按 key 保存
 - 支持中文/英文提示词和 UI
 - 将 handoff 复制、下载或存入本机 NOOS Vault
 - 为 Codex、Claude Code 等下游 coding agent 安装消费 handoff 的 skill
@@ -135,6 +136,12 @@ scripts/noos-install.sh browser --mode manual-unpacked
 
 首次通过 Hub 直写时，请先打开 NOOS Hub，点击 `连接 Browser Shuttle`，然后在配对窗口内使用插件的 `存入库`。
 
+当当前对话里形成的是可复用结论，而不是要交给下游 coding agent 的任务时，使用 `提取结晶`。它会让 ChatGPT 输出 `NOOS Crystal`，Hub 可用时保存到 `~/.noos/vault/crystals/active/`，并把 `crystal_key` 复制到剪贴板。Coding agent 可以用下面的命令按 key 查找：
+
+```sh
+scripts/noos-find-crystal.sh <crystal-key>
+```
+
 中文浏览器默认使用中文 UI 和中文提示词；英文可在 `设置` 中切换。
 
 ## 下游 Agent Kit
@@ -192,6 +199,8 @@ python3 .noos/skills/noos-transfer-handoff/scripts/plan_transfer.py --repo-root 
   vault/
     wiki/
     handoffs/
+      active/
+    crystals/
       active/
 ```
 

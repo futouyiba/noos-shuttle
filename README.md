@@ -20,6 +20,7 @@ This repository is a NOOS Shuttle monorepo. It currently contains:
 Current v0 focus:
 
 - Generate and capture NOOS handoffs in ChatGPT Web
+- Extract reusable NOOS Crystals from ChatGPT conversations and save them by key
 - Support Chinese and English prompts and UI
 - Copy, download, or save handoffs into the local NOOS Vault
 - Install downstream handoff-consumption skills for Codex, Claude Code, and similar coding agents
@@ -135,6 +136,12 @@ This is Chrome's security requirement for unpacked extensions in a regular profi
 
 For first-time direct Hub writes, open NOOS Hub and click `Connect Browser Shuttle`, then use `Save 2 Vault` within the pairing window.
 
+Use `Extract Crystal` when the current conversation contains reusable conclusions rather than a downstream coding task. It asks ChatGPT to produce a `NOOS Crystal`, saves it to `~/.noos/vault/crystals/active/` when Hub is available, and copies the `crystal_key` to the clipboard. Coding agents can locate it with:
+
+```sh
+scripts/noos-find-crystal.sh <crystal-key>
+```
+
 Chinese browsers default to Chinese UI and Chinese prompts. You can switch languages in `Settings`.
 
 ## Downstream Agent Kit
@@ -192,6 +199,8 @@ User-level:
   vault/
     wiki/
     handoffs/
+      active/
+    crystals/
       active/
 ```
 

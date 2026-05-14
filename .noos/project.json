@@ -5,6 +5,10 @@
     "active": ".noos/handoffs/active",
     "done": ".noos/handoffs/done"
   },
+  "crystal_dirs": {
+    "active": ".noos/crystals/active",
+    "done": ".noos/crystals/done"
+  },
   "github": {
     "repo": "futouyiba/noos-shuttle",
     "default_branch": "main",

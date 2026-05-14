@@ -9,7 +9,21 @@ const HUB_TOKEN_STORAGE_KEY = "noosHubShuttleToken";
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (isVaultSaveMessage(message)) {
-    saveHandoffToVault(message.filename, message.content)
+    saveMarkdownToVault(message.filename, message.content, "handoff")
+      .then(sendResponse)
+      .catch((error) => {
+        sendResponse({
+          ok: false,
+          errorCode: "vault_failed",
+          message: error instanceof Error ? error.message : "NOOS Vault save failed."
+        });
+      });
+
+    return true;
+  }
+
+  if (isCrystalSaveMessage(message)) {
+    saveMarkdownToVault(message.filename, message.content, "crystal")
       .then(sendResponse)
       .catch((error) => {
         sendResponse({
@@ -36,6 +50,12 @@ interface VaultSaveMessage {
   content: string;
 }
 
+interface CrystalSaveMessage {
+  type: "NOOS_SAVE_CRYSTAL_TO_VAULT";
+  filename: string;
+  content: string;
+}
+
 interface VaultStatusMessage {
   type: "NOOS_GET_VAULT_STATUS";
 }
@@ -55,6 +75,15 @@ function isVaultSaveMessage(value: unknown): value is VaultSaveMessage {
 
   const message = value as Partial<VaultSaveMessage>;
   return message.type === "NOOS_SAVE_HANDOFF_TO_VAULT" && typeof message.filename === "string" && typeof message.content === "string";
+}
+
+function isCrystalSaveMessage(value: unknown): value is CrystalSaveMessage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const message = value as Partial<CrystalSaveMessage>;
+  return message.type === "NOOS_SAVE_CRYSTAL_TO_VAULT" && typeof message.filename === "string" && typeof message.content === "string";
 }
 
 function isVaultStatusMessage(value: unknown): value is VaultStatusMessage {
@@ -93,11 +122,12 @@ async function getVaultStatus(): Promise<VaultStatusResponse> {
   };
 }
 
-async function saveHandoffToVault(
+async function saveMarkdownToVault(
   filename: string,
-  content: string
+  content: string,
+  kind: "handoff" | "crystal"
 ): Promise<{ ok: boolean; backend: string; location: string; importHint: string; message: string }> {
-  const hubResult = await saveHandoffToHub(filename, content);
+  const hubResult = await saveMarkdownToHub(filename, content, kind);
   if (hubResult.ok) {
     return {
       ok: true,
@@ -109,7 +139,8 @@ async function saveHandoffToVault(
   }
 
   const safeFilename = sanitizeFilename(filename);
-  const relativePath = `NOOS/vault/handoffs/active/${safeFilename}`;
+  const artifactLabel = kind === "crystal" ? "crystal" : "handoff";
+  const relativePath = `NOOS/vault/${kind === "crystal" ? "crystals" : "handoffs"}/active/${safeFilename}`;
   const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
   const objectUrl = URL.createObjectURL(blob);
 
@@ -125,7 +156,7 @@ async function saveHandoffToVault(
       ok: true,
       backend: "downloads_mirror",
       location: `Downloads/${relativePath}`,
-      importHint: "Open NOOS Hub and run Import Browser Mirror to move this handoff into the local NOOS Vault.",
+      importHint: `Open NOOS Hub and run Import Browser Mirror to move this ${artifactLabel} into the local NOOS Vault.`,
       message: `Saved to Downloads/${relativePath}. Import it in NOOS Hub.`
     };
   } finally {
@@ -133,11 +164,12 @@ async function saveHandoffToVault(
   }
 }
 
-async function saveHandoffToHub(
+async function saveMarkdownToHub(
   filename: string,
-  content: string
+  content: string,
+  kind: "handoff" | "crystal"
 ): Promise<{ ok: boolean; location?: string; message?: string; errorCode?: string }> {
-  const firstAttempt = await postHandoffToHub(filename, content, await getHubToken());
+  const firstAttempt = await postMarkdownToHub(filename, content, kind, await getHubToken());
   if (firstAttempt.ok) {
     return firstAttempt;
   }
@@ -150,12 +182,13 @@ async function saveHandoffToHub(
     return firstAttempt;
   }
 
-  return postHandoffToHub(filename, content, pairedToken);
+  return postMarkdownToHub(filename, content, kind, pairedToken);
 }
 
-async function postHandoffToHub(
+async function postMarkdownToHub(
   filename: string,
   content: string,
+  kind: "handoff" | "crystal",
   token: string | null
 ): Promise<{ ok: boolean; location?: string; message?: string; errorCode?: string }> {
   try {
@@ -166,6 +199,7 @@ async function postHandoffToHub(
         ...(token ? { Authorization: `Bearer ${token}` } : {})
       },
       body: JSON.stringify({
+        kind,
         filename,
         content,
         source: {
