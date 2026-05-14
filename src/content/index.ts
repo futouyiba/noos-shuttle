@@ -64,7 +64,7 @@ interface PageContext {
 
 const WAIT_FOR_HANDOFF_TIMEOUT_MS = 120_000;
 const GENERATION_START_GRACE_MS = 1_500;
-const GENERATION_QUIET_MS = 1_200;
+const GENERATION_QUIET_MS = 2_500;
 const CAPTURE_POLL_MS = 1_500;
 const PAGE_CONTEXT_POLL_MS = 1_000;
 const PAGE_CONTEXT_DEBOUNCE_MS = 250;
@@ -685,10 +685,6 @@ function waitForGeneratedHandoff(app: HTMLElement, baselineBegin: number): void 
       return;
     }
 
-    if (tryCapture()) {
-      return;
-    }
-
     if (isChatbotGenerating()) {
       hasStartedGenerating = true;
       activeWait.hasStartedGenerating = true;
@@ -712,7 +708,7 @@ function waitForGeneratedHandoff(app: HTMLElement, baselineBegin: number): void 
     if (!activeWait) {
       return;
     }
-    tryCapture();
+    observeGenerationState();
   }, CAPTURE_POLL_MS);
   const fallbackStartId = window.setTimeout(() => {
     if (!activeWait || hasStartedGenerating) {
@@ -783,9 +779,6 @@ function waitForGeneratedCrystal(app: HTMLElement, baselineBegin: number): void 
     if (!activeWait) {
       return;
     }
-    if (tryCapture()) {
-      return;
-    }
     if (isChatbotGenerating()) {
       hasStartedGenerating = true;
       activeWait.hasStartedGenerating = true;
@@ -808,7 +801,7 @@ function waitForGeneratedCrystal(app: HTMLElement, baselineBegin: number): void 
     if (!activeWait) {
       return;
     }
-    tryCapture();
+    observeGenerationState();
   }, CAPTURE_POLL_MS);
   const fallbackStartId = window.setTimeout(() => {
     if (!activeWait || hasStartedGenerating) {

@@ -13,15 +13,14 @@ export function createGenerateThreadPrompt(
 
 这份交接稿的用途，是把当前讨论交给 Codex、Claude Code、OpenCode 等编码代理继续执行。
 
-只输出一个 fenced markdown code block。不要在 code block 外写解释、寒暄或补充说明。
+直接输出 marker 包裹的 Markdown 正文，不要使用 fenced code block，不要在 marker 外写解释、寒暄或补充说明。
+避免使用三反引号；如必须引用代码，优先使用缩进代码块或简短行内代码，防止 Markdown 围栏不闭合。
 
 输出格式必须是：
 
-\`\`\`markdown
 <!-- NOOS:THREAD:BEGIN -->
 ...
 <!-- NOOS:THREAD:END -->
-\`\`\`
 
 交接稿必须被以下精确标记包裹：
 
@@ -63,15 +62,14 @@ frontmatter 必须让用户可以区分多份交接稿：title、created_at、ha
 
 The purpose is to hand off this discussion to a coding agent such as Codex, Claude Code, or OpenCode.
 
-Output only one fenced markdown code block. Do not include any explanation outside the code block.
+Output the marker-wrapped Markdown directly. Do not use a fenced code block, and do not include any explanation outside the markers.
+Avoid triple backticks. If code is necessary, prefer indented code blocks or short inline code to avoid broken Markdown fences.
 
 The output format must be:
 
-\`\`\`markdown
 <!-- NOOS:THREAD:BEGIN -->
 ...
 <!-- NOOS:THREAD:END -->
-\`\`\`
 
 The handoff must be wrapped by these exact markers:
 
@@ -124,15 +122,14 @@ export function createGenerateCrystalPrompt(
 
 不要复述全过程。只保留后续有用的信息。请用中文输出。
 
-只输出一个 fenced markdown code block。不要在 code block 外写解释、寒暄或补充说明。
+直接输出 marker 包裹的 Markdown 正文，不要使用 fenced code block，不要在 marker 外写解释、寒暄或补充说明。
+避免使用三反引号；如必须引用代码，优先使用缩进代码块或简短行内代码，防止 Markdown 围栏不闭合。
 
 输出格式必须是：
 
-\`\`\`markdown
 <!-- NOOS:CRYSTAL:BEGIN -->
 ...
 <!-- NOOS:CRYSTAL:END -->
-\`\`\`
 
 结晶必须被以下精确标记包裹：
 
@@ -175,15 +172,14 @@ Purpose: preserve reusable conclusions and context as Markdown so the user, Code
 
 Do not recap the whole process. Keep only information that is useful later.
 
-Output only one fenced markdown code block. Do not include any explanation outside the code block.
+Output the marker-wrapped Markdown directly. Do not use a fenced code block, and do not include any explanation outside the markers.
+Avoid triple backticks. If code is necessary, prefer indented code blocks or short inline code to avoid broken Markdown fences.
 
 The output format must be:
 
-\`\`\`markdown
 <!-- NOOS:CRYSTAL:BEGIN -->
 ...
 <!-- NOOS:CRYSTAL:END -->
-\`\`\`
 
 The crystal must be wrapped by these exact markers:
 

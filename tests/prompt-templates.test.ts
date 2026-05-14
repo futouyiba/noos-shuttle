@@ -6,7 +6,7 @@ describe("createGenerateThreadPrompt", () => {
     const prompt = createGenerateThreadPrompt("https://chatgpt.com/c/test");
 
     expect(prompt).toContain("请基于当前对话生成一份 NOOS Thread / 交接稿");
-    expect(prompt).toContain("fenced markdown code block");
+    expect(prompt).toContain("不要使用 fenced code block");
     expect(prompt).toContain("source_url: https://chatgpt.com/c/test");
     expect(prompt).toContain("handoff_revision");
     expect(prompt).toContain("让用户可以区分多份交接稿");
@@ -19,7 +19,7 @@ describe("createGenerateThreadPrompt", () => {
     const prompt = createGenerateThreadPrompt("https://chatgpt.com/c/test", "en");
 
     expect(prompt).toContain("Please generate a NOOS Thread / Handoff");
-    expect(prompt).toContain("fenced markdown code block");
+    expect(prompt).toContain("Do not use a fenced code block");
     expect(prompt).toContain("source_url: https://chatgpt.com/c/test");
     expect(prompt).toContain("handoff_revision");
     expect(prompt).toContain("distinguish multiple handoffs");
