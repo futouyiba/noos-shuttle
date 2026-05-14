@@ -195,6 +195,57 @@
   padding: 12px 14px;
 }
 
+.vault-route {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 8px;
+  align-items: center;
+  margin: 0 14px 12px;
+  padding: 9px 10px;
+  border: 1px solid rgba(23, 32, 26, 0.12);
+  border-radius: 7px;
+  background: #f7faf8;
+}
+
+.vault-route span {
+  color: #5c665f;
+  font: 700 10px/1.2 system-ui, sans-serif;
+  text-transform: uppercase;
+}
+
+.vault-route strong {
+  color: #243229;
+  font: 650 12px/1.28 system-ui, sans-serif;
+}
+
+.vault-route button {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1px solid rgba(23, 32, 26, 0.14);
+  border-radius: 6px;
+  background: #ffffff;
+  color: #17201a;
+  cursor: pointer;
+  font: 650 11px/1.2 system-ui, sans-serif;
+}
+
+.vault-route--hub {
+  border-color: rgba(29, 107, 79, 0.28);
+  background: #f1faf5;
+}
+
+.vault-route--needs-pairing {
+  border-color: rgba(139, 90, 17, 0.28);
+  background: #fff8ec;
+}
+
+.vault-route--mirror {
+  border-color: rgba(36, 90, 120, 0.22);
+  background: #f4f9fb;
+}
+
 .actions button,
 .preview-actions button {
   min-height: 34px;

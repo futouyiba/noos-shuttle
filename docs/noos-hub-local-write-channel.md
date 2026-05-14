@@ -244,5 +244,15 @@ Remaining hardening:
 
 - Add token rotation and disconnect UI.
 - Bind token metadata to the expected extension id where possible.
-- Show Hub connected / fallback status directly in the extension panel.
 - Move from fixed port to runtime discovery.
+
+## Extension Status UI
+
+Browser Shuttle displays the active vault route in its panel:
+
+- Hub direct write connected.
+- Hub is running but Browser Shuttle is not paired.
+- Hub is unavailable; saves use the Browser Vault Mirror.
+- Checking route while the background service worker probes Hub.
+
+The status is refreshed when the panel opens, when the user clicks refresh, and after a vault save. This keeps the user-facing language aligned with the actual storage path used for the latest operation.

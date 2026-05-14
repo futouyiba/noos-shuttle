@@ -435,6 +435,7 @@ fn vault_adapter(noos_home: &Path) -> AdapterHealth {
             "ready",
             Some(format!("http://127.0.0.1:{LOCAL_WRITE_PORT}")),
         ),
+        file_check("Browser Shuttle token", shuttle_token_path()),
     ];
     adapter(
         "noos-vault",

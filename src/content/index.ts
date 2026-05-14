@@ -11,6 +11,7 @@ import styles from "./styles.css?inline";
 
 type ShuttleState = "idle" | "prompt-ready" | "waiting" | "captured" | "needs-choice" | "warning" | "saved" | "error";
 type DeliveryMode = "copy" | "download" | "vault";
+type VaultRoute = "checking" | "hub" | "needs-pairing" | "mirror";
 type ModalState =
   | { kind: "success"; title: string; message: string }
   | { kind: "warnings"; title: string; message: string; warnings: string[] }
@@ -26,6 +27,7 @@ interface ViewState {
   selectedIndex: number;
   locale: ShuttleLocale;
   deliveryModes: DeliveryMode[];
+  vaultRoute: VaultRoute;
   modal: ModalState;
 }
 
@@ -83,6 +85,7 @@ const viewState: ViewState = {
   selectedIndex: 0,
   locale: getStoredLocale(),
   deliveryModes: getStoredDeliveryModes(),
+  vaultRoute: "checking",
   modal: null
 };
 
@@ -109,6 +112,7 @@ function bootstrap(): void {
 
   render(app);
   installConversationWatcher(app);
+  void refreshVaultStatus(app);
   window.addEventListener("resize", () => {
     shuttlePosition = clampPosition(shuttlePosition);
     applyShuttlePosition(app, shuttlePosition);
@@ -156,6 +160,7 @@ function render(app: HTMLElement): void {
               <button type="button" data-action="generate">${copy.draftHandoff}</button>
               <button type="button" data-action="capture">${copy.collectHandoff}</button>
             </div>
+            ${renderVaultRoute(copy)}
             ${renderThreads(selectedThread)}
             <div class="settings">
               <button class="settings-toggle" type="button" data-action="settings">${copy.settings}</button>
@@ -189,6 +194,9 @@ function render(app: HTMLElement): void {
 
     viewState.open = !viewState.open;
     render(app);
+    if (viewState.open) {
+      void refreshVaultStatus(app);
+    }
   });
   installDragHandlers(app);
 
@@ -205,6 +213,23 @@ function render(app: HTMLElement): void {
 function renderDeliveryOption(mode: DeliveryMode, label: string): string {
   const pressed = viewState.deliveryModes.includes(mode);
   return `<button class="delivery-option" type="button" data-action="delivery-${mode}" aria-pressed="${pressed}">${label}</button>`;
+}
+
+function renderVaultRoute(copy: (typeof COPY)[ShuttleLocale]): string {
+  const message =
+    viewState.vaultRoute === "hub"
+      ? copy.vaultStatusHub
+      : viewState.vaultRoute === "needs-pairing"
+        ? copy.vaultStatusNeedsPairing
+        : viewState.vaultRoute === "mirror"
+          ? copy.vaultStatusMirror
+          : copy.vaultStatusChecking;
+
+  return `<div class="vault-route vault-route--${viewState.vaultRoute}">
+    <span>${escapeHtml(copy.vaultAdapterNote)}</span>
+    <strong>${escapeHtml(message)}</strong>
+    <button type="button" data-action="refresh-vault">${escapeHtml(copy.vaultStatusRefresh)}</button>
+  </div>`;
 }
 
 function renderThreads(selectedThread: NoosThread | undefined): string {
@@ -391,6 +416,11 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
     viewState.state = "idle";
     viewState.message = copy.waitCancelled;
     render(app);
+    return;
+  }
+
+  if (action === "refresh-vault") {
+    await refreshVaultStatus(app);
     return;
   }
 
@@ -833,7 +863,33 @@ async function saveThreadWithMode(mode: DeliveryMode, selectedThread: NoosThread
 
   const filename = createThreadFilename(selectedThread.title);
   const result = await noosVaultAdapter.saveThread(selectedThread, { filename });
+  if (result.backend === "hub_local") {
+    viewState.vaultRoute = "hub";
+  } else if (result.backend === "downloads_mirror") {
+    viewState.vaultRoute = "mirror";
+  }
   return { ok: result.ok, message: result.ok ? result.message ?? copy.vaultFinished : result.message ?? copy.vaultUnavailable };
+}
+
+async function refreshVaultStatus(app: HTMLElement): Promise<void> {
+  try {
+    const response = await chrome.runtime.sendMessage<
+      { type: "NOOS_GET_VAULT_STATUS" },
+      { hubAvailable?: boolean; paired?: boolean }
+    >({ type: "NOOS_GET_VAULT_STATUS" });
+
+    if (response?.hubAvailable && response.paired) {
+      viewState.vaultRoute = "hub";
+    } else if (response?.hubAvailable) {
+      viewState.vaultRoute = "needs-pairing";
+    } else {
+      viewState.vaultRoute = "mirror";
+    }
+  } catch {
+    viewState.vaultRoute = "mirror";
+  }
+
+  render(app);
 }
 
 function showValidationModal(thread: NoosThread): void {

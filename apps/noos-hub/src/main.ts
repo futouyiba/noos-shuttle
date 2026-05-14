@@ -427,7 +427,7 @@ function renderHandoffs(health: HubHealth): string {
       <article class="panel">
         <h3>Hub Local Write</h3>
         <p>本机写入端点：<code>http://127.0.0.1:17642</code></p>
-        <p>点击连接后，浏览器插件会在 120 秒配对窗口内领取 token；之后可直接写入本机 Vault。</p>
+        <p>点击连接后，浏览器插件会在 120 秒配对窗口内领取 token；之后插件面板会显示 Hub 直写或 fallback 状态。</p>
       </article>
       <article class="panel">
         <h3>Browser Vault Mirror</h3>

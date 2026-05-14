@@ -11,6 +11,7 @@ export interface SaveOptions {
 export interface SaveResult {
   ok: boolean;
   adapterId: string;
+  backend?: string;
   location?: string;
   errorCode?: string;
   message?: string;

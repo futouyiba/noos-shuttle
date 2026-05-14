@@ -32,6 +32,7 @@ export class NoosVaultAdapter implements StorageAdapter {
       return {
         ok: response?.ok ?? false,
         adapterId: this.id,
+        backend: response?.backend,
         location: response?.location,
         errorCode: response?.errorCode,
         message: response?.message ?? "NOOS Vault save failed."

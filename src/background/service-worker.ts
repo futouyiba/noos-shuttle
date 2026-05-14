@@ -3,31 +3,49 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 const HUB_LOCAL_WRITE_URL = "http://127.0.0.1:17642/v1/handoffs";
+const HUB_HEALTH_URL = "http://127.0.0.1:17642/health";
 const HUB_PAIR_URL = "http://127.0.0.1:17642/pair";
 const HUB_TOKEN_STORAGE_KEY = "noosHubShuttleToken";
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (!isVaultSaveMessage(message)) {
-    return false;
+  if (isVaultSaveMessage(message)) {
+    saveHandoffToVault(message.filename, message.content)
+      .then(sendResponse)
+      .catch((error) => {
+        sendResponse({
+          ok: false,
+          errorCode: "vault_failed",
+          message: error instanceof Error ? error.message : "NOOS Vault save failed."
+        });
+      });
+
+    return true;
   }
 
-  saveHandoffToVault(message.filename, message.content)
-    .then(sendResponse)
-    .catch((error) => {
-      sendResponse({
-        ok: false,
-        errorCode: "vault_failed",
-        message: error instanceof Error ? error.message : "NOOS Vault save failed."
-      });
-    });
+  if (isVaultStatusMessage(message)) {
+    getVaultStatus().then(sendResponse);
+    return true;
+  }
 
-  return true;
+  return false;
 });
 
 interface VaultSaveMessage {
   type: "NOOS_SAVE_HANDOFF_TO_VAULT";
   filename: string;
   content: string;
+}
+
+interface VaultStatusMessage {
+  type: "NOOS_GET_VAULT_STATUS";
+}
+
+interface VaultStatusResponse {
+  ok: boolean;
+  backend: "hub_local" | "downloads_mirror";
+  hubAvailable: boolean;
+  paired: boolean;
+  message: string;
 }
 
 function isVaultSaveMessage(value: unknown): value is VaultSaveMessage {
@@ -37,6 +55,42 @@ function isVaultSaveMessage(value: unknown): value is VaultSaveMessage {
 
   const message = value as Partial<VaultSaveMessage>;
   return message.type === "NOOS_SAVE_HANDOFF_TO_VAULT" && typeof message.filename === "string" && typeof message.content === "string";
+}
+
+function isVaultStatusMessage(value: unknown): value is VaultStatusMessage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  return (value as Partial<VaultStatusMessage>).type === "NOOS_GET_VAULT_STATUS";
+}
+
+async function getVaultStatus(): Promise<VaultStatusResponse> {
+  const token = await getHubToken();
+  try {
+    const response = await fetch(HUB_HEALTH_URL);
+    const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; paired?: boolean };
+    if (response.ok && payload.ok) {
+      const paired = Boolean(token);
+      return {
+        ok: true,
+        backend: paired ? "hub_local" : "downloads_mirror",
+        hubAvailable: true,
+        paired,
+        message: paired ? "Hub local write connected." : "NOOS Hub is running. Pair Browser Shuttle before direct writes."
+      };
+    }
+  } catch {
+    // Fall through to the mirror status.
+  }
+
+  return {
+    ok: true,
+    backend: "downloads_mirror",
+    hubAvailable: false,
+    paired: false,
+    message: "NOOS Hub is not reachable. Saves will use the Browser Vault Mirror."
+  };
 }
 
 async function saveHandoffToVault(

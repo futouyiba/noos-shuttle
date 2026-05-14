@@ -32,6 +32,11 @@ export interface ShuttleCopy {
   warnings: string;
   untitledThread: string;
   vaultAdapterNote: string;
+  vaultStatusChecking: string;
+  vaultStatusHub: string;
+  vaultStatusNeedsPairing: string;
+  vaultStatusMirror: string;
+  vaultStatusRefresh: string;
   promptInserted: string;
   promptSent: string;
   sendNotFound: string;
@@ -88,7 +93,12 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     continueSave: "Save anyway",
     warnings: "Warnings",
     untitledThread: "Untitled NOOS Thread",
-    vaultAdapterNote: "Current vault path: Downloads mirror. Hub can import it into local NOOS Vault.",
+    vaultAdapterNote: "Vault route",
+    vaultStatusChecking: "Checking vault route...",
+    vaultStatusHub: "Hub direct write connected.",
+    vaultStatusNeedsPairing: "Hub is running. Click Connect Browser Shuttle in NOOS Hub, then save again.",
+    vaultStatusMirror: "Hub unavailable. Saves use Browser Vault Mirror.",
+    vaultStatusRefresh: "Refresh",
     promptInserted: "Prompt inserted.",
     promptSent: "Prompt inserted and sent.",
     sendNotFound: "Prompt inserted, but the send button was not found.",
@@ -141,7 +151,12 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     continueSave: "仍然入库",
     warnings: "校验提醒",
     untitledThread: "未命名 NOOS 交接稿",
-    vaultAdapterNote: "当前入库路径：Downloads mirror。可在 NOOS Hub 导入本机文件库。",
+    vaultAdapterNote: "入库路径",
+    vaultStatusChecking: "正在检查入库路径...",
+    vaultStatusHub: "Hub 直写已连接。",
+    vaultStatusNeedsPairing: "Hub 正在运行。请先在 NOOS Hub 点击连接 Browser Shuttle，然后再次保存。",
+    vaultStatusMirror: "Hub 不可用。将使用 Browser Vault Mirror。",
+    vaultStatusRefresh: "刷新",
     promptInserted: "提示词已写入。",
     promptSent: "提示词已写入并发送。",
     sendNotFound: "提示词已写入，但没有找到发送按钮。",
