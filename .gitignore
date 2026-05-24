@@ -9,6 +9,7 @@ coverage/
 output/
 .claude/skills/
 .noos/local.json
+.noos/runtime/
 __pycache__/
 *.pyc
 target/

@@ -32,11 +32,56 @@ ensure_noos_home() {
     "$NOOS_HOME/cache" \
     "$NOOS_HOME/vault/wiki" \
     "$NOOS_HOME/vault/handoffs/active" \
+    "$NOOS_HOME/vault/handoffs/done" \
     "$NOOS_HOME/vault/handoffs/archived" \
     "$NOOS_HOME/vault/crystals/active" \
+    "$NOOS_HOME/vault/crystals/curated" \
     "$NOOS_HOME/vault/crystals/archived" \
+    "$NOOS_HOME/vault/results/inbox" \
+    "$NOOS_HOME/vault/results/accepted" \
+    "$NOOS_HOME/vault/results/archived" \
+    "$NOOS_HOME/vault/artifacts/files" \
+    "$NOOS_HOME/vault/artifacts/sidecars" \
+    "$NOOS_HOME/vault/artifacts/thumbs" \
+    "$NOOS_HOME/vault/briefs/active" \
+    "$NOOS_HOME/vault/briefs/archived" \
+    "$NOOS_HOME/vault/packs/context/active" \
+    "$NOOS_HOME/vault/packs/context/archived" \
+    "$NOOS_HOME/vault/packs/prompt/active" \
+    "$NOOS_HOME/vault/packs/prompt/sent" \
+    "$NOOS_HOME/vault/packs/prompt/archived" \
+    "$NOOS_HOME/vault/threads/active" \
+    "$NOOS_HOME/vault/threads/archived" \
+    "$NOOS_HOME/vault/runtime/projections/current" \
+    "$NOOS_HOME/vault/runtime/projections/history" \
+    "$NOOS_HOME/vault/index" \
+    "$NOOS_HOME/vault/inbox" \
+    "$NOOS_HOME/vault/outbox" \
+    "$NOOS_HOME/vault/tmp" \
+    "$NOOS_HOME/vault/logs" \
+    "$NOOS_HOME/vault/references/raw" \
+    "$NOOS_HOME/vault/references/briefs" \
+    "$NOOS_HOME/vault/references/patterns" \
+    "$NOOS_HOME/vault/references/anti-patterns" \
+    "$NOOS_HOME/vault/references/flows" \
+    "$NOOS_HOME/vault/references/assets" \
+    "$NOOS_HOME/vault/skills/installed" \
+    "$NOOS_HOME/vault/skills/local" \
+    "$NOOS_HOME/vault/skills/archived" \
+    "$NOOS_HOME/vault/sync/git" \
+    "$NOOS_HOME/vault/sync/exports" \
+    "$NOOS_HOME/vault/sync/imports" \
+    "$NOOS_HOME/vault/policies" \
     "$HOME/Downloads/NOOS/vault/handoffs/active" \
     "$HOME/Downloads/NOOS/vault/crystals/active"
+  for index_file in keys objects backlinks; do
+    if [[ ! -f "$NOOS_HOME/vault/index/$index_file.json" ]]; then
+      printf '{}\n' > "$NOOS_HOME/vault/index/$index_file.json"
+    fi
+  done
+  if [[ ! -f "$NOOS_HOME/vault/index/graph.json" ]]; then
+    printf '{ "edges": [] }\n' > "$NOOS_HOME/vault/index/graph.json"
+  fi
   if [[ ! -f "$NOOS_HOME/config.json" ]]; then
     cp "$ROOT_DIR/.noos/config.example.json" "$NOOS_HOME/config.json"
     echo "Created $NOOS_HOME/config.json"

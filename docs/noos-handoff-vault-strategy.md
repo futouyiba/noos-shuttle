@@ -159,7 +159,7 @@ When NOOS Hub is running, Browser Shuttle now attempts to write handoffs directl
 
 ```text
 Browser Shuttle
-  -> http://127.0.0.1:17642/v1/handoffs
+  -> http://127.0.0.1:17642/v1/ingest
   -> ~/.noos/vault/handoffs/active/
 ```
 
@@ -171,14 +171,13 @@ If Hub is closed, blocked, or rejects the request, the extension still falls bac
 
 This keeps the current workflow reliable while moving the normal path toward the real local NOOS filesystem.
 
-The direct Hub write path now requires Browser Shuttle pairing:
+The direct Hub write path now uses automatic Browser Shuttle connection:
 
-1. Open NOOS Hub.
-2. Click `Connect Browser Shuttle`.
-3. Within 120 seconds, trigger `Save 2 Vault` in the browser extension.
-4. The extension claims a token from Hub, stores it locally, and retries the save.
+1. Keep NOOS Hub running.
+2. Trigger `Save 2 Vault` in the browser extension.
+3. Browser Shuttle checks Hub health, claims a local write token if needed, stores it locally, and retries the save with `Authorization: Bearer <token>`.
 
-After pairing, future saves can write directly to Hub while Hub is running. If Hub is unavailable, the extension still falls back to the Downloads mirror.
+After the first successful connection, future saves can write directly to Hub while Hub is running. If Hub is unavailable, the extension still falls back to the Downloads mirror.
 
 ## NOOS Crystals
 

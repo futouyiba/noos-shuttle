@@ -39,8 +39,19 @@ export function parseMarkdownFrontmatter(markdown: string): ParsedMarkdown {
 
 function parseSimpleYaml(source: string): NoosThreadFrontmatter {
   const frontmatter: Record<string, string | string[]> = {};
+  let currentKey: string | undefined;
 
   for (const line of source.split(/\r?\n/)) {
+    const listItem = line.match(/^\s*-\s+(.*)$/);
+    if (listItem && currentKey) {
+      const currentValue = frontmatter[currentKey];
+      const nextValue = cleanYamlScalar(listItem[1].trim());
+      frontmatter[currentKey] = Array.isArray(currentValue)
+        ? [...currentValue, nextValue]
+        : [nextValue].filter(Boolean);
+      continue;
+    }
+
     const match = line.match(/^([A-Za-z0-9_]+):\s*(.*)$/);
     if (!match) {
       continue;
@@ -54,8 +65,10 @@ function parseSimpleYaml(source: string): NoosThreadFrontmatter {
         .split(",")
         .map((item) => cleanYamlScalar(item.trim()))
         .filter(Boolean);
+      currentKey = key;
     } else {
       frontmatter[key] = cleanYamlScalar(value);
+      currentKey = value ? undefined : key;
     }
   }
 

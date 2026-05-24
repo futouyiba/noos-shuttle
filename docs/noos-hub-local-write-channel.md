@@ -45,7 +45,7 @@ Native Messaging is powerful, but it requires installing a browser-specific host
 
 The local write endpoint must not be an unauthenticated open port.
 
-Hub should create a machine-local pairing secret:
+Hub creates a machine-local browser write token:
 
 ```text
 ~/.noos/runtime/shuttle-token.json
@@ -56,24 +56,23 @@ Suggested shape:
 ```json
 {
   "version": 1,
-  "origin": "chrome-extension://<extension-id>",
   "token": "<random 256-bit token>",
   "created_at": "2026-05-06T00:00:00Z"
 }
 ```
 
-The extension obtains the token through one explicit pairing step:
+The extension obtains the token automatically when Hub is running:
 
-1. User opens NOOS Hub.
-2. Hub shows `Connect Browser Shuttle`.
-3. Hub opens or copies a one-time pairing URL/token.
-4. Extension stores the token in `chrome.storage.local`.
-5. Future saves use the stored token.
+1. Browser Shuttle checks `GET /health`.
+2. If it has no local token, it calls `GET /pair`.
+3. Hub returns the machine-local token over `127.0.0.1`.
+4. Browser Shuttle stores the token in `chrome.storage.local`.
+5. Future writes use `Authorization: Bearer <token>`.
 
 Requests include:
 
 ```http
-POST http://127.0.0.1:<port>/v1/handoffs
+POST http://127.0.0.1:<port>/v1/ingest
 Authorization: Bearer <token>
 Content-Type: application/json
 ```
@@ -82,41 +81,64 @@ Payload:
 
 ```json
 {
-  "filename": "2026-05-06-example.md",
-  "content": "<NOOS handoff markdown>",
+  "protocol_version": 1,
+  "request_id": "uuid",
+  "idempotency_key": "sha256-source-url-type-content",
+  "object_type": "handoff",
   "source": {
-    "app": "chatgpt",
-    "url": "https://chatgpt.com/..."
+    "app": "browser-shuttle",
+    "url": "https://chatgpt.com/...",
+    "captured_at": "2026-05-21T10:30:00+08:00"
+  },
+  "suggested": {
+    "lookup_key": "optional-semantic-key",
+    "filename": "2026-05-21-example.md",
+    "status": "active"
+  },
+  "content": {
+    "media_type": "text/markdown",
+    "text": "<NOOS handoff markdown>"
   }
 }
 ```
 
-The endpoint also accepts NOOS Crystal writes through the same local channel:
+The same endpoint accepts NOOS Crystal writes:
 
 ```json
 {
-  "kind": "crystal",
-  "filename": "2026-05-14-discussion-snapshot.md",
-  "content": "<NOOS crystal markdown>"
+  "protocol_version": 1,
+  "object_type": "crystal",
+  "suggested": {
+    "filename": "2026-05-21-discussion-snapshot.md",
+    "status": "active"
+  },
+  "content": {
+    "media_type": "text/markdown",
+    "text": "<NOOS crystal markdown>"
+  }
 }
 ```
 
-When `kind` is omitted, Hub treats the artifact as a handoff for backward compatibility. `kind: "crystal"` writes to `~/.noos/vault/crystals/active/` and validates `NOOS:CRYSTAL` markers.
+`POST /v1/handoffs` remains a compatibility shim for older Browser Shuttle builds. The compatibility shape still accepts `kind`, `filename`, and `content`, then internally normalizes into `/v1/ingest`.
 
 Hub validates:
 
 - token matches
 - request origin is allowed when available
 - content contains NOOS begin/end markers
-- filename is sanitized
+- filename is sanitized, but Hub derives the canonical lookup key and final filename
 - write path stays inside the matching artifact vault, such as `~/.noos/vault/handoffs/active/` or `~/.noos/vault/crystals/active/`
+- object metadata is written into `~/.noos/vault/index/keys.json` and `objects.json`
+- every indexed object includes `object_id`, `lookup_key`, `path`, `type`, `source`, and `created_at`
+- repeated writes with the same `idempotency_key` return the original receipt instead of writing another file
 
 ## Risks and Product Traps
 
 The final local write channel has several sharp edges:
 
 - Local port exposure: even a localhost-only service can be called by other local software and sometimes by web pages through browser-mediated requests. Hub must authenticate every write.
-- Token lifecycle: pairing tokens can be lost when the user changes Chrome profiles, reinstalls the extension, migrates machines, or runs dev and release builds side by side.
+- Token lifecycle: browser write tokens can be lost when the user changes Chrome profiles, reinstalls the extension, migrates machines, or runs dev and release builds side by side.
+- Local trust boundary: local software running as the same OS user can theoretically request a token from `127.0.0.1`. This is an explicit local-first product tradeoff; sensitive boundaries rely on OS account isolation, not a manual pairing ritual.
 - Hub availability: the browser extension can be active while Hub is closed. The extension must keep a recovery path rather than pretending the handoff reached the real vault.
 - Version drift: old Hub plus new extension, or new Hub plus old extension, can disagree on protocol shape. `/health` must report protocol version.
 - Path safety: the extension must never be allowed to choose arbitrary filesystem paths. It may suggest a filename; Hub decides the final path.
@@ -163,7 +185,7 @@ This gives users a predictable local file path today while preserving the final 
 Hub owns:
 
 - creating the local vault directories
-- pairing Browser Shuttle
+- issuing and resetting the Browser Shuttle local write token
 - receiving handoffs
 - validating and writing handoff files
 - showing recent handoffs
@@ -181,7 +203,7 @@ The browser extension owns:
 
 1. Add a Hub background listener on `127.0.0.1` with a random available port.
 2. Persist the port and token under `~/.noos/runtime/`.
-3. Add `Connect Browser Shuttle` in Hub.
+3. Add Browser Shuttle connection status and reset in Hub.
 4. Add extension settings for local Hub connection status.
 5. Change `NoosVaultAdapter` to try Hub HTTP first, Downloads mirror second.
 6. Keep `Sync Handoff to Git` as an explicit Hub button.
@@ -194,7 +216,8 @@ The first direct-write implementation uses a deliberately small local protocol:
 
 ```text
 GET  http://127.0.0.1:17642/health
-POST http://127.0.0.1:17642/v1/handoffs
+GET  http://127.0.0.1:17642/pair
+POST http://127.0.0.1:17642/v1/ingest
 ```
 
 The browser extension tries the Hub endpoint first. If Hub is unavailable, it falls back to:
@@ -209,7 +232,7 @@ Hub writes successful handoff requests directly to:
 ~/.noos/vault/handoffs/active/
 ```
 
-Crystal requests with `kind: "crystal"` are written directly to:
+Crystal requests with `object_type: "crystal"` are written directly to:
 
 ```text
 ~/.noos/vault/crystals/active/
@@ -218,13 +241,14 @@ Crystal requests with `kind: "crystal"` are written directly to:
 Implemented checks:
 
 - Listen only on `127.0.0.1`.
-- Accept `POST /v1/handoffs` only.
+- Accept `POST /v1/ingest` and compatibility endpoints.
 - Reject non-extension origins when an `Origin` header is present.
 - Validate NOOS begin/end markers before writing.
-- Sanitize filenames and force `.md`.
+- Sanitize filenames, derive a stable lookup key, and force `.md`.
 - Keep writes inside the matching NOOS Vault artifact directory.
 - Write through a temporary file and then rename.
 - Generate a unique filename when a target already exists.
+- Update `vault/index/keys.json`, `objects.json`, `graph.json`, and `backlinks.json`.
 
 Known gaps:
 
@@ -232,35 +256,31 @@ Known gaps:
 - Extension status UI does not yet show "Hub connected" separately from "Downloads fallback".
 - CORS still allows broad local response headers; request-level origin checks are the real guard in this alpha.
 
-## v0.2 Pairing Token
+## v0.2 Browser Connection Token
 
-The alpha direct-write endpoint now has a minimal pairing token flow:
+The direct-write endpoint now has a minimal automatic connection token flow:
 
 ```text
-Hub action: Connect Browser Shuttle
-  -> create ~/.noos/runtime/shuttle-token.json
-  -> open ~/.noos/runtime/shuttle-pairing.json for 120 seconds
-
 Browser Shuttle
-  -> POST /v1/handoffs without token
+  -> POST /v1/ingest without token
   -> receive 401 unauthorized
-  -> GET /pair during the pairing window
+  -> GET /pair from localhost
   -> store token in chrome.storage.local
-  -> retry POST /v1/handoffs with Authorization: Bearer <token>
+  -> retry POST /v1/ingest with Authorization: Bearer <token>
 ```
 
-`/pair` only returns a token during the user-opened pairing window and only to extension origins. After the token is claimed, Hub removes the pairing-window file.
+`/pair` returns the local token when Hub is running on `127.0.0.1`. This removes the manual pairing step for the common same-machine browser-plus-Hub case.
 
 Implemented token checks:
 
-- `POST /v1/handoffs` requires `Authorization: Bearer <token>`.
+- `POST /v1/ingest` requires `Authorization: Bearer <token>`.
 - Hub stores the token under `~/.noos/runtime/shuttle-token.json`.
 - Browser Shuttle stores the token in `chrome.storage.local`.
 - Hub `/health` reports whether a token exists, but does not return the token.
 
 Remaining hardening:
 
-- Add token rotation and disconnect UI.
+- Add token rotation and richer disconnect UI.
 - Bind token metadata to the expected extension id where possible.
 - Move from fixed port to runtime discovery.
 
@@ -269,7 +289,7 @@ Remaining hardening:
 Browser Shuttle displays the active vault route in its panel:
 
 - Hub direct write connected.
-- Hub is running but Browser Shuttle is not paired.
+- Hub is running but the browser connection needs repair.
 - Hub is unavailable; saves use the Browser Vault Mirror.
 - Checking route while the background service worker probes Hub.
 

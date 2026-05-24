@@ -24,6 +24,12 @@ const GENERATION_ACTIVE_SELECTORS = [
   "button[aria-label='停止']"
 ];
 
+const FILE_INPUT_SELECTORS = [
+  "input[type='file']",
+  "form input[type='file']",
+  "[data-testid*='file'] input[type='file']"
+];
+
 export function getPageText(): string {
   const main = document.querySelector("main");
   return collectMarkdownAndComments(main ?? document.body).trim();
@@ -45,6 +51,33 @@ export function insertIntoChatInput(text: string): boolean {
 
   input.textContent = text;
   input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
+  return true;
+}
+
+interface AttachMarkdownFileOptions {
+  root?: ParentNode | null;
+}
+
+export function attachMarkdownFileToChatInput(filename: string, content: string, options: AttachMarkdownFileOptions = {}): boolean {
+  return attachMarkdownFilesToChatInput([{ filename, content }], options);
+}
+
+export function attachMarkdownFilesToChatInput(
+  files: Array<{ filename: string; content: string }>,
+  options: AttachMarkdownFileOptions = {}
+): boolean {
+  const input = findFileInput(options.root ?? document) ?? (options.root ? findFileInput(document) : null);
+  if (!input || files.length === 0) {
+    return false;
+  }
+
+  const dataTransfer = new DataTransfer();
+  for (const file of files) {
+    dataTransfer.items.add(new File([file.content], file.filename, { type: "text/markdown" }));
+  }
+  input.files = dataTransfer.files;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
   return true;
 }
 
@@ -75,7 +108,7 @@ export async function submitChatInput(): Promise<boolean> {
 }
 
 export function isChatbotGenerating(): boolean {
-  return Boolean(findGenerationActiveButton()) || !findSendButton();
+  return Boolean(findGenerationActiveButton());
 }
 
 function findChatInput(): HTMLElement | null {
@@ -84,6 +117,18 @@ function findChatInput(): HTMLElement | null {
     const visible = candidates.find((candidate) => isVisible(candidate) && !candidate.closest("[aria-hidden='true']"));
     if (visible) {
       return visible;
+    }
+  }
+
+  return null;
+}
+
+function findFileInput(root: ParentNode): HTMLInputElement | null {
+  for (const selector of FILE_INPUT_SELECTORS) {
+    const candidates = Array.from(root.querySelectorAll<HTMLInputElement>(selector));
+    const usable = candidates.find((candidate) => !candidate.disabled && !candidate.closest("[aria-hidden='true']"));
+    if (usable) {
+      return usable;
     }
   }
 
@@ -186,6 +231,10 @@ function renderNode(node: Node, mode: "block" | "inline"): string {
     return "\n";
   }
 
+  if (tagName === "hr") {
+    return "---";
+  }
+
   if (tagName === "pre") {
     return node.textContent?.trim() ?? "";
   }
@@ -194,13 +243,21 @@ function renderNode(node: Node, mode: "block" | "inline"): string {
     return mode === "inline" ? `\`${normalizeInlineText(node.textContent ?? "")}\`` : node.textContent?.trim() ?? "";
   }
 
+  if (tagName === "ul" || tagName === "ol") {
+    return renderList(node, tagName === "ol");
+  }
+
   if (/^h[1-6]$/.test(tagName)) {
     const level = Number(tagName.slice(1));
     return `${"#".repeat(level)} ${renderChildren(node, "inline").trim()}`;
   }
 
   if (tagName === "li") {
-    return `- ${renderChildren(node, "inline").trim()}`;
+    return renderListItem(node, "-", 0);
+  }
+
+  if (tagName === "p") {
+    return renderChildren(node, "inline").trim();
   }
 
   if (tagName === "blockquote") {
@@ -226,6 +283,47 @@ function renderChildren(node: Node, mode: "block" | "inline"): string {
   return pieces.join(mode === "inline" ? " " : "\n");
 }
 
+function renderList(list: HTMLElement, ordered: boolean): string {
+  const items = Array.from(list.children).filter((child): child is HTMLElement => child instanceof HTMLElement && child.tagName.toLowerCase() === "li");
+
+  return items
+    .map((item, index) => renderListItem(item, ordered ? `${index + 1}.` : "-", 0))
+    .filter(Boolean)
+    .join("\n");
+}
+
+function renderListItem(item: HTMLElement, marker: string, depth: number): string {
+  const contentPieces: string[] = [];
+  const nestedLists: string[] = [];
+
+  Array.from(item.childNodes).forEach((child) => {
+    if (child instanceof HTMLElement && ["ul", "ol"].includes(child.tagName.toLowerCase())) {
+      nestedLists.push(renderNestedList(child, depth + 1));
+      return;
+    }
+
+    const rendered = renderNode(child, "inline").trim();
+    if (rendered) {
+      contentPieces.push(rendered);
+    }
+  });
+
+  const indent = "  ".repeat(depth);
+  const content = contentPieces.join(" ").replace(/\s+/g, " ").trim();
+  const currentLine = content ? `${indent}${marker} ${content}` : "";
+  return [currentLine, ...nestedLists].filter(Boolean).join("\n");
+}
+
+function renderNestedList(list: HTMLElement, depth: number): string {
+  const ordered = list.tagName.toLowerCase() === "ol";
+  const items = Array.from(list.children).filter((child): child is HTMLElement => child instanceof HTMLElement && child.tagName.toLowerCase() === "li");
+
+  return items
+    .map((item, index) => renderListItem(item, ordered ? `${index + 1}.` : "-", depth))
+    .filter(Boolean)
+    .join("\n");
+}
+
 function isBlockElement(element: HTMLElement): boolean {
   return [
     "article",
@@ -238,7 +336,6 @@ function isBlockElement(element: HTMLElement): boolean {
     "footer",
     "form",
     "header",
-    "hr",
     "main",
     "nav",
     "ol",

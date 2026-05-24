@@ -9,6 +9,7 @@
     "dev": "vite build --watch",
     "package:extension": "scripts/package-extension.sh",
     "package:release": "scripts/package-release-artifacts.sh",
+    "verify:extension-project": "node scripts/verify-extension-project-import.mjs",
     "hub:dev": "npm --prefix apps/noos-hub run tauri:dev",
     "hub:build": "npm run hub:web:build && cargo build --manifest-path apps/noos-hub/src-tauri/Cargo.toml",
     "hub:bundle": "npm --prefix apps/noos-hub run tauri:build",
@@ -23,6 +24,7 @@
   },
   "devDependencies": {
     "@types/chrome": "^0.0.326",
+    "@types/node": "^25.9.1",
     "playwright": "^1.59.1",
     "typescript": "^5.9.3",
     "vite": "^7.1.12",

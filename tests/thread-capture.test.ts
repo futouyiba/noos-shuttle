@@ -62,6 +62,121 @@ describe("captureNoosThreads", () => {
     expect(result.threads).toHaveLength(2);
   });
 
+  it("ignores placeholder marker examples from generation prompts", () => {
+    const result = captureNoosThreads(`<!-- NOOS:THREAD:BEGIN -->
+...
+<!-- NOOS:THREAD:END -->
+
+${VALID_THREAD}`);
+
+    expect(result.threads).toHaveLength(1);
+    expect(result.threads[0].title).toBe("build-noos-shuttle");
+  });
+
+  it("ignores placeholder marker examples when ellipsis is rendered as inline code", () => {
+    const result = captureNoosThreads(`<!-- NOOS:THREAD:BEGIN -->
+\`...\`
+<!-- NOOS:THREAD:END -->
+
+<!-- NOOS:THREAD:BEGIN -->
+\`…\`
+<!-- NOOS:THREAD:END -->
+
+${VALID_THREAD}`);
+
+    expect(result.threads).toHaveLength(1);
+    expect(result.threads[0].title).toBe("build-noos-shuttle");
+  });
+
+  it("repairs common ChatGPT line wrapping inside frontmatter", () => {
+    const result = captureNoosThreads(`<!-- NOOS:THREAD:BEGIN -->
+---
+type: noos_thread
+version: 0.1
+source_app: chatgpt
+source_url:
+https://chatgpt.com/c/example
+target_agent: codex
+status: active
+created_at: 2026-05-02
+title: wrapped-frontmatter
+tags:
+- noos
+- shuttle preferred_path: .noos/handoffs/active/2026-05-02-wrapped-frontmatter.md
+---
+
+# Thread: Wrapped Frontmatter
+
+## Intent
+Repair common browser extraction wrapping.
+
+## Context Summary
+ChatGPT can render a list item and the next key on one visual line.
+
+## Task
+Keep frontmatter usable.
+
+## Constraints
+Only repair known NOOS frontmatter keys.
+
+## Acceptance Criteria
+- [ ] Parses path and tags.
+
+## Suggested Next-Agent Instructions
+Continue from the repaired handoff.
+
+## Open Questions
+None.
+
+<!-- NOOS:THREAD:END -->`);
+
+    expect(result.threads).toHaveLength(1);
+    expect(result.threads[0].frontmatter?.source_url).toBe("https://chatgpt.com/c/example");
+    expect(result.threads[0].frontmatter?.preferred_path).toBe(".noos/handoffs/active/2026-05-02-wrapped-frontmatter.md");
+    expect(result.threads[0].frontmatter?.tags).toEqual(["noos", "shuttle"]);
+  });
+
+  it("repairs frontmatter keys collapsed into one rendered paragraph", () => {
+    const result = captureNoosThreads(`<!-- NOOS:THREAD:BEGIN -->
+---
+type: noos_thread version: 0.1 source_app: chatgpt source_url: https://chatgpt.com/c/example target_agent: codex status: active created_at: 2026-05-02 title: collapsed-frontmatter tags:
+- noos
+- shuttle preferred_path: .noos/handoffs/active/2026-05-02-collapsed-frontmatter.md
+---
+
+# Thread: Collapsed Frontmatter
+
+## Intent
+Repair collapsed browser extraction.
+
+## Context Summary
+ChatGPT can expose multiple frontmatter text nodes as one paragraph.
+
+## Task
+Keep frontmatter usable.
+
+## Constraints
+Only split known NOOS frontmatter keys.
+
+## Acceptance Criteria
+- [ ] Parses required frontmatter.
+
+## Suggested Next-Agent Instructions
+Continue from the repaired handoff.
+
+## Open Questions
+None.
+
+<!-- NOOS:THREAD:END -->`);
+
+    expect(result.threads).toHaveLength(1);
+    expect(result.threads[0].frontmatter?.type).toBe("noos_thread");
+    expect(result.threads[0].frontmatter?.version).toBe("0.1");
+    expect(result.threads[0].frontmatter?.title).toBe("collapsed-frontmatter");
+    expect(result.threads[0].frontmatter?.preferred_path).toBe(".noos/handoffs/active/2026-05-02-collapsed-frontmatter.md");
+    expect(result.threads[0].warnings).toEqual([]);
+  });
+
   it("warns when required sections are missing but keeps the raw handoff", () => {
     const result = captureNoosThreads(`<!-- NOOS:THREAD:BEGIN -->
 ---

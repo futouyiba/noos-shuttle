@@ -13,6 +13,9 @@ export interface SaveResult {
   adapterId: string;
   backend?: string;
   location?: string;
+  lookupKey?: string;
+  key?: string;
+  objectId?: string;
   errorCode?: string;
   message?: string;
 }
