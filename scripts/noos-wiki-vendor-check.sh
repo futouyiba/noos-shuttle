@@ -101,7 +101,8 @@ do
   fi
 done
 
-if git -C "$ROOT_DIR" status --short -- "apps/llm-wiki" | rg -q '^[AM]'; then
+tracked_wiki_count="$(git -C "$ROOT_DIR" ls-files --cached -- apps/llm-wiki | wc -l | tr -d '[:space:]')"
+if [[ "$tracked_wiki_count" -gt 0 ]]; then
   ok "LLM Wiki files are visible to the noos-shuttle git index"
 else
   fail "LLM Wiki files are not visible as staged/tracked repository content"
