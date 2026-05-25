@@ -138,10 +138,13 @@ NOOS uses four primary object meanings:
 4. After a handoff is collected, review the preview and validation warnings.
 5. Use the manual buttons near the preview to copy, download, or save the handoff.
 6. Use the `Auto after collect` toggles if you want future successful captures to copy, download, or save automatically.
+7. Enable `Capture full conversation transcript` when you want `Save 2 Vault` to write a NOOS Context Pack with `handoff.md`, `transcript.full.md`, `transcript.index.json`, `key-excerpts.md`, `decision-capsule.md`, and `execution-digest.md`.
 
 `Save 2 Vault` is local-first. When NOOS Hub is running, the extension writes through Hub to `~/.noos/vault/handoffs/active/`. If Hub is unavailable, the extension falls back to the browser vault mirror under `~/Downloads/NOOS/vault/handoffs/active/`, which Hub can import later. Git sync remains a separate Hub action when you want handoffs committed and pushed for remote agents.
 
 For first-time direct Hub writes, keep NOOS Hub running and use `Save 2 Vault`. Browser Shuttle connects automatically and stores a local token in the browser profile. If Hub is unavailable, saves fall back to the Browser Vault Mirror.
+
+When full transcript capture is enabled, Context Packs are written under `~/.noos/vault/context-packs/` through Hub, or under `~/Downloads/NOOS/vault/context-packs/` as the browser mirror fallback. Long ChatGPT conversations may be marked partial when the page does not expose a reliable scroll path to prove all turns were loaded.
 
 Use `Extract Crystal` when the current conversation contains reusable conclusions rather than a downstream coding task. It asks ChatGPT to produce a `NOOS Crystal`, saves it to `~/.noos/vault/crystals/active/` when Hub is available, and copies the `crystal_key` to the clipboard. Coding agents can locate it with:
 
@@ -243,6 +246,8 @@ User-level:
     crystals/{active,curated,archived}/
     results/{inbox,accepted,archived}/
     artifacts/{files,sidecars,thumbs}/
+    wiki/
+    context-packs/
     packs/context/{active,archived}/
     packs/prompt/{active,sent,archived}/
     runtime/projections/{current,history}/
@@ -325,6 +330,7 @@ git push origin v0.1.2
 
 - `docs/noos-install-architecture.md`: install architecture
 - `docs/noos-downstream-integration.md`: downstream agent integration design
+- `docs/noos-context-pack-background-layer.md`: Context Pack / transcript background layer design review
 - `docs/noos-handoff-vault-strategy.md`: handoff vault storage strategy
 - `docs/noos-llm-wiki-bridge.md`: NOOS to LLM Wiki source bridge design
 - `docs/noos-vault-object-model.md`: Vault object model, key/index, ingest protocol, prompt feeding, and runtime projection

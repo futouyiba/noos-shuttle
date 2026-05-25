@@ -121,13 +121,35 @@ The same endpoint accepts NOOS Crystal writes:
 
 `POST /v1/handoffs` remains a compatibility shim for older Browser Shuttle builds. The compatibility shape still accepts `kind`, `filename`, and `content`, then internally normalizes into `/v1/ingest`.
 
+Context Pack file requests use `kind: "context_pack_file"` and a safe relative `filename` such as:
+
+```json
+{
+  "kind": "context_pack_file",
+  "filename": "2026-05-25-chatgpt-context/manifest.yaml",
+  "content": "type: noos_context_pack\n..."
+}
+```
+
+Hub writes those files under:
+
+```text
+~/.noos/vault/context-packs/
+```
+
+Browser fallback writes the same relative structure under:
+
+```text
+~/Downloads/NOOS/vault/context-packs/
+```
+
 Hub validates:
 
 - token matches
 - request origin is allowed when available
 - content contains NOOS begin/end markers
 - filename is sanitized, but Hub derives the canonical lookup key and final filename
-- write path stays inside the matching artifact vault, such as `~/.noos/vault/handoffs/active/` or `~/.noos/vault/crystals/active/`
+- write path stays inside the matching artifact vault, such as `~/.noos/vault/handoffs/active/`, `~/.noos/vault/crystals/active/`, or `~/.noos/vault/context-packs/`
 - object metadata is written into `~/.noos/vault/index/keys.json` and `objects.json`
 - every indexed object includes `object_id`, `lookup_key`, `path`, `type`, `source`, and `created_at`
 - repeated writes with the same `idempotency_key` return the original receipt instead of writing another file

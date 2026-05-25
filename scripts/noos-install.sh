@@ -72,8 +72,10 @@ ensure_noos_home() {
     "$NOOS_HOME/vault/sync/exports" \
     "$NOOS_HOME/vault/sync/imports" \
     "$NOOS_HOME/vault/policies" \
+    "$NOOS_HOME/vault/context-packs" \
     "$HOME/Downloads/NOOS/vault/handoffs/active" \
-    "$HOME/Downloads/NOOS/vault/crystals/active"
+    "$HOME/Downloads/NOOS/vault/crystals/active" \
+    "$HOME/Downloads/NOOS/vault/context-packs"
   for index_file in keys objects backlinks; do
     if [[ ! -f "$NOOS_HOME/vault/index/$index_file.json" ]]; then
       printf '{}\n' > "$NOOS_HOME/vault/index/$index_file.json"
@@ -96,7 +98,8 @@ install_workspace() {
     "$ROOT_DIR/.noos/handoffs/done" \
     "$ROOT_DIR/.noos/crystals/active" \
     "$ROOT_DIR/.noos/crystals/done" \
-    "$ROOT_DIR/.noos/context/briefs"
+    "$ROOT_DIR/.noos/context/briefs" \
+    "$ROOT_DIR/.noos/context-packs"
 
   echo "Workspace kit ready in $ROOT_DIR/.noos"
 }

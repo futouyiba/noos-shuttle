@@ -859,8 +859,10 @@ fn write_ingest_object_to_local_vault(request: IngestWriteRequest) -> HandoffWri
         );
     }
 
-    if let Some(source) = &request.source {
-        append_source_comment(&mut markdown, source);
+    if object_type != "context_pack_file" {
+        if let Some(source) = &request.source {
+            append_source_comment(&mut markdown, source);
+        }
     }
 
     let noos_home = noos_home();
@@ -915,8 +917,27 @@ fn write_ingest_object_to_local_vault(request: IngestWriteRequest) -> HandoffWri
         return write_error("vault_unavailable", &error.to_string());
     }
 
-    let filename = sanitize_filename(&format!("{lookup_key}.md"));
-    let target = unique_target_path(&vault, &filename);
+    let target = if object_type == "context_pack_file" {
+        match request
+            .suggested
+            .as_ref()
+            .and_then(|suggested| suggested.filename.as_deref())
+            .and_then(sanitize_relative_path)
+        {
+            Some(relative_path) => vault.join(relative_path),
+            None => {
+                return write_error("invalid_path", "Context pack file path is invalid.");
+            }
+        }
+    } else {
+        let filename = sanitize_filename(&format!("{lookup_key}.md"));
+        unique_target_path(&vault, &filename)
+    };
+    if let Some(parent) = target.parent() {
+        if let Err(error) = fs::create_dir_all(parent) {
+            return write_error("vault_unavailable", &error.to_string());
+        }
+    }
     let temp = target.with_extension("tmp");
     if let Err(error) =
         fs::write(&temp, markdown.as_bytes()).and_then(|_| fs::rename(&temp, &target))
@@ -1698,6 +1719,7 @@ fn vault_adapter(noos_home: &Path) -> AdapterHealth {
         dir_check("Wiki vault", noos_home.join("vault/wiki")),
         dir_check("Handoff vault", noos_home.join("vault/handoffs/active")),
         dir_check("Crystal vault", noos_home.join("vault/crystals/active")),
+        dir_check("Context Pack vault", noos_home.join("vault/context-packs")),
         dir_check(
             "Browser handoff mirror",
             home_dir().join("Downloads/NOOS/vault/handoffs/active"),
@@ -2263,12 +2285,14 @@ fn artifact_kind(value: Option<&str>) -> &str {
     match value {
         Some("crystal") => "crystal",
         Some("result") => "result",
+        Some("context_pack_file") => "context_pack_file",
         _ => "handoff",
     }
 }
 
 fn is_valid_noos_artifact(content: &str, kind: &str) -> bool {
     match kind {
+        "context_pack_file" => !content.trim().is_empty(),
         "crystal" => {
             content.contains("<!-- NOOS:CRYSTAL:BEGIN -->")
                 && content.contains("<!-- NOOS:CRYSTAL:END -->")
@@ -2290,6 +2314,7 @@ fn normalize_object_type(value: Option<&str>) -> &'static str {
         "crystal" | "noos_crystal" => "crystal",
         "result" | "noos_result" => "result",
         "artifact" | "noos_artifact" => "artifact",
+        "context_pack_file" | "context-pack-file" => "context_pack_file",
         "context_pack" | "context-pack" | "noos_context_pack" => "context_pack",
         "prompt_pack" | "prompt-pack" | "noos_prompt_pack" => "prompt_pack",
         "brief" | "noos_brief" => "brief",
@@ -2322,6 +2347,7 @@ fn object_vault_path(object_type: &str, status: &str) -> String {
         "crystal" => format!("vault/crystals/{}", status_dir(status, "active")),
         "result" => format!("vault/results/{}", status_dir(status, "inbox")),
         "artifact" => "vault/artifacts/sidecars".to_string(),
+        "context_pack_file" => "vault/context-packs".to_string(),
         "context_pack" => format!("vault/packs/context/{}", status_dir(status, "active")),
         "prompt_pack" => format!("vault/packs/prompt/{}", status_dir(status, "active")),
         "brief" => format!("vault/briefs/{}", status_dir(status, "active")),
@@ -2471,6 +2497,34 @@ fn sanitize_filename(filename: &str) -> String {
     }
 
     base
+}
+
+fn sanitize_relative_path(path: &str) -> Option<PathBuf> {
+    let parts: Vec<String> = path
+        .split(['/', '\\'])
+        .filter_map(|part| {
+            let clean = part
+                .replace(':', "-")
+                .trim_start_matches('.')
+                .trim()
+                .to_string();
+            if clean.is_empty() || clean == "." || clean == ".." {
+                None
+            } else {
+                Some(clean)
+            }
+        })
+        .collect();
+
+    if parts.is_empty() {
+        return None;
+    }
+
+    let mut relative = PathBuf::new();
+    for part in parts {
+        relative.push(part);
+    }
+    Some(relative)
 }
 
 fn unique_target_path(directory: &Path, filename: &str) -> PathBuf {

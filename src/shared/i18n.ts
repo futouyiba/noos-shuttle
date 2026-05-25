@@ -39,6 +39,7 @@ export interface ShuttleCopy {
   vaultObjectsAttachedToProject: (keys: string[]) => string;
   vaultObjectsDownloadedForProject: (keys: string[]) => string;
   vaultObjectsInserted: (keys: string[]) => string;
+  captureFullTranscript: string;
   copyText: string;
   downloadFile: string;
   saveToVault: string;
@@ -92,6 +93,7 @@ export interface ShuttleCopy {
   copyFinished: string;
   downloadFinished: string;
   vaultFinished: string;
+  contextPackSaved: string;
   vaultUnavailable: string;
 }
 
@@ -145,6 +147,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     vaultObjectsDownloadedForProject: (keys) =>
       `Project source input was not found. Downloaded NOOS objects for manual upload: ${formatKeyList(keys, ", ")}`,
     vaultObjectsInserted: (keys) => `Inserted NOOS object text: ${formatKeyList(keys, ", ")}`,
+    captureFullTranscript: "Capture full conversation transcript",
     copyText: "Copy Text",
     downloadFile: "Download",
     saveToVault: "Save 2 Vault",
@@ -198,6 +201,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     copyFinished: "Copy finished.",
     downloadFinished: "Download finished.",
     vaultFinished: "Saved to NOOS Vault.",
+    contextPackSaved: "Context Pack saved to NOOS Vault.",
     vaultUnavailable: "NOOS Vault save unavailable."
   },
   zh: {
@@ -239,6 +243,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     vaultObjectsAttachedToProject: (keys) => `已附加到 Project 源：${formatKeyList(keys, "、")}`,
     vaultObjectsDownloadedForProject: (keys) => `没有找到 Project 源上传入口，已下载这些 NOOS 对象，可手动上传：${formatKeyList(keys, "、")}`,
     vaultObjectsInserted: (keys) => `已写入 NOOS 对象正文：${formatKeyList(keys, "、")}`,
+    captureFullTranscript: "同时抓取完整对话 transcript",
     copyText: "复制文本",
     downloadFile: "下载文件",
     saveToVault: "存入库",
@@ -292,6 +297,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     copyFinished: "复制完成。",
     downloadFinished: "下载完成。",
     vaultFinished: "已存入 NOOS 文件库。",
+    contextPackSaved: "Context Pack 已存入 NOOS 文件库。",
     vaultUnavailable: "NOOS 文件库保存暂不可用。"
   }
 };

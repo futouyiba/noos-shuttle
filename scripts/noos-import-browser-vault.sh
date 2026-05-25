@@ -51,3 +51,31 @@ copy_artifacts \
   "$NOOS_HOME/vault/crystals/active" \
   "<!-- NOOS:CRYSTAL:BEGIN -->" \
   "<!-- NOOS:CRYSTAL:END -->"
+
+copy_context_packs() {
+  local source_dir="$HOME/Downloads/NOOS/vault/context-packs"
+  local target_dir="$NOOS_HOME/vault/context-packs"
+  local copied=0
+  local skipped=0
+
+  mkdir -p "$source_dir" "$target_dir"
+
+  while IFS= read -r -d '' pack_dir; do
+    if [[ -f "$pack_dir/manifest.yaml" ]] && grep -Fq "type: noos_context_pack" "$pack_dir/manifest.yaml"; then
+      rm -rf "$target_dir/$(basename "$pack_dir")"
+      cp -R "$pack_dir" "$target_dir/"
+      copied=$((copied + 1))
+    else
+      skipped=$((skipped + 1))
+    fi
+  done < <(find "$source_dir" -mindepth 1 -maxdepth 1 -type d -print0)
+
+  echo "Context Pack browser mirror: $source_dir"
+  echo "Context Pack local vault: $target_dir"
+  echo "Imported $copied Context Pack(s)."
+  if [[ "$skipped" -gt 0 ]]; then
+    echo "Skipped $skipped directories without a noos_context_pack manifest."
+  fi
+}
+
+copy_context_packs

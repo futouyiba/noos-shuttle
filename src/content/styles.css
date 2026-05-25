@@ -245,6 +245,22 @@
   left: 12px;
 }
 
+.transcript-option {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  min-height: 30px;
+  color: #344039;
+  font: 650 11px/1.25 system-ui, sans-serif;
+}
+
+.transcript-option input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: #245a78;
+}
+
 .actions {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
