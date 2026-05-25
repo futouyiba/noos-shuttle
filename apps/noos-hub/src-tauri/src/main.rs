@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use std::env;
 use std::fs;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
@@ -16,6 +16,9 @@ const HUB_HEALTH_CACHE_TTL_SECS: u64 = 5;
 const LOCAL_WRITE_IO_TIMEOUT_SECS: u64 = 5;
 const SLEEP_GUARD_CHECK_INTERVAL_SECS: u64 = 60;
 const SLEEP_GUARD_EXIT_AFTER_GAP_SECS: u64 = 10 * 60;
+const SLEEP_RECOVERY_MAX_ATTEMPTS: u8 = 3;
+const LOCAL_WRITE_RECOVERY_PROBE_TIMEOUT_MS: u64 = 1_500;
+const SLEEP_RECOVERY_CPU_LIMIT_PERCENT: f32 = 75.0;
 
 #[derive(Clone, Serialize)]
 struct HubHealth {
@@ -169,10 +172,72 @@ struct CachedHubHealth {
 }
 
 static HUB_HEALTH_CACHE: OnceLock<Mutex<Option<CachedHubHealth>>> = OnceLock::new();
+static SLEEP_RECOVERY_STATUS: OnceLock<Mutex<SleepRecoveryStatus>> = OnceLock::new();
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SleepRecoveryState {
+    Running,
+    Suspended,
+    Resumed,
+    Recovering,
+    Healthy,
+    Degraded,
+    Relaunching,
+}
+
+#[derive(Clone, Serialize)]
+struct SleepRecoveryStatus {
+    state: SleepRecoveryState,
+    last_reason: String,
+    last_resume_epoch: Option<u64>,
+    last_gap_secs: Option<u64>,
+    attempts: u8,
+    local_write_healthy: bool,
+    relaunch_recommended: bool,
+    message: String,
+}
 
 #[tauri::command]
 fn get_hub_health() -> Result<HubHealth, String> {
     cached_hub_health()
+}
+
+#[tauri::command]
+fn get_sleep_recovery_status() -> Result<SleepRecoveryStatus, String> {
+    Ok(current_sleep_recovery_status())
+}
+
+#[tauri::command]
+fn mark_sleep_suspended() -> Result<SleepRecoveryStatus, String> {
+    let suspended = SleepRecoveryStatus {
+        state: SleepRecoveryState::Suspended,
+        last_reason: "frontend tauri suspended event".to_string(),
+        last_resume_epoch: None,
+        last_gap_secs: None,
+        attempts: 0,
+        local_write_healthy: false,
+        relaunch_recommended: false,
+        message: "System suspended; NOOS Hub will recover after resume.".to_string(),
+    };
+    set_sleep_recovery_status(suspended.clone());
+    Ok(suspended)
+}
+
+#[tauri::command]
+fn recover_from_sleep(
+    reason: String,
+    gap_secs: Option<u64>,
+) -> Result<SleepRecoveryStatus, String> {
+    Ok(recover_local_write_after_sleep(&reason, gap_secs))
+}
+
+#[tauri::command]
+fn simulate_sleep_resume(gap_secs: Option<u64>) -> Result<SleepRecoveryStatus, String> {
+    Ok(recover_local_write_after_sleep(
+        "manual sleep/resume recovery simulation",
+        gap_secs.or(Some(sleep_resume_gap_threshold_secs() + 1)),
+    ))
 }
 
 fn cached_hub_health() -> Result<HubHealth, String> {
@@ -281,7 +346,14 @@ fn main() {
     start_local_write_server();
     start_sleep_resume_guard();
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![get_hub_health, run_hub_action])
+        .invoke_handler(tauri::generate_handler![
+            get_hub_health,
+            run_hub_action,
+            get_sleep_recovery_status,
+            mark_sleep_suspended,
+            recover_from_sleep,
+            simulate_sleep_resume
+        ])
         .run(tauri::generate_context!())
         .expect("error while running NOOS Hub");
 }
@@ -298,14 +370,226 @@ fn start_sleep_resume_guard() {
             let current_epoch = now_epoch();
             let gap = current_epoch.saturating_sub(previous_epoch);
             previous_epoch = current_epoch;
-            if gap > SLEEP_GUARD_EXIT_AFTER_GAP_SECS {
+            if gap > sleep_resume_gap_threshold_secs() {
                 eprintln!(
-                    "NOOS Hub detected a long system sleep/resume gap ({gap}s); exiting for a clean restart."
+                    "NOOS Hub detected a long system sleep/resume gap ({gap}s); starting recovery."
                 );
-                std::process::exit(0);
+                let status = recover_local_write_after_sleep("backend wall-clock gap", Some(gap));
+                eprintln!("NOOS Hub sleep/resume recovery: {}", status.message);
+                if status.relaunch_recommended
+                    && env::var("NOOS_HUB_AUTO_RELAUNCH_AFTER_SLEEP").is_ok()
+                {
+                    relaunch_hub_process();
+                }
             }
         }
     });
+}
+
+fn sleep_resume_gap_threshold_secs() -> u64 {
+    env::var("NOOS_HUB_SLEEP_GAP_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(SLEEP_GUARD_EXIT_AFTER_GAP_SECS)
+}
+
+fn current_sleep_recovery_status() -> SleepRecoveryStatus {
+    let status = SLEEP_RECOVERY_STATUS.get_or_init(|| {
+        Mutex::new(SleepRecoveryStatus {
+            state: SleepRecoveryState::Running,
+            last_reason: "startup".to_string(),
+            last_resume_epoch: None,
+            last_gap_secs: None,
+            attempts: 0,
+            local_write_healthy: true,
+            relaunch_recommended: false,
+            message: "NOOS Hub is running.".to_string(),
+        })
+    });
+    status
+        .lock()
+        .map(|guard| guard.clone())
+        .unwrap_or_else(|_| SleepRecoveryStatus {
+            state: SleepRecoveryState::Degraded,
+            last_reason: "status lock poisoned".to_string(),
+            last_resume_epoch: Some(now_epoch()),
+            last_gap_secs: None,
+            attempts: 0,
+            local_write_healthy: false,
+            relaunch_recommended: true,
+            message: "Sleep recovery status is unavailable; relaunch is recommended.".to_string(),
+        })
+}
+
+fn set_sleep_recovery_status(next: SleepRecoveryStatus) {
+    let status = SLEEP_RECOVERY_STATUS.get_or_init(|| Mutex::new(next.clone()));
+    if let Ok(mut guard) = status.lock() {
+        *guard = next;
+    }
+}
+
+fn recover_local_write_after_sleep(reason: &str, gap_secs: Option<u64>) -> SleepRecoveryStatus {
+    recover_local_write_after_sleep_with_probes(
+        reason,
+        gap_secs,
+        local_write_health_probe,
+        sleep_recovery_cpu_abnormal,
+        start_local_write_server,
+        true,
+    )
+}
+
+fn recover_local_write_after_sleep_with_probes(
+    reason: &str,
+    gap_secs: Option<u64>,
+    mut local_write_healthy: impl FnMut() -> bool,
+    mut cpu_abnormal: impl FnMut() -> bool,
+    mut restart_local_write: impl FnMut(),
+    sleep_between_attempts: bool,
+) -> SleepRecoveryStatus {
+    set_sleep_recovery_status(SleepRecoveryStatus {
+        state: SleepRecoveryState::Resumed,
+        last_reason: reason.to_string(),
+        last_resume_epoch: Some(now_epoch()),
+        last_gap_secs: gap_secs,
+        attempts: 0,
+        local_write_healthy: false,
+        relaunch_recommended: false,
+        message: "System resumed; preparing NOOS Hub recovery.".to_string(),
+    });
+    invalidate_hub_health_cache();
+
+    for attempt in 1..=SLEEP_RECOVERY_MAX_ATTEMPTS {
+        set_sleep_recovery_status(SleepRecoveryStatus {
+            state: SleepRecoveryState::Recovering,
+            last_reason: reason.to_string(),
+            last_resume_epoch: Some(now_epoch()),
+            last_gap_secs: gap_secs,
+            attempts: attempt,
+            local_write_healthy: false,
+            relaunch_recommended: false,
+            message: format!("Checking local write service after wake, attempt {attempt}."),
+        });
+
+        if local_write_healthy() {
+            if cpu_abnormal() {
+                let degraded = SleepRecoveryStatus {
+                    state: SleepRecoveryState::Relaunching,
+                    last_reason: reason.to_string(),
+                    last_resume_epoch: Some(now_epoch()),
+                    last_gap_secs: gap_secs,
+                    attempts: attempt,
+                    local_write_healthy: true,
+                    relaunch_recommended: true,
+                    message: "NOOS Hub local write service recovered after wake, but process CPU remains abnormal; relaunch is recommended.".to_string(),
+                };
+                set_sleep_recovery_status(degraded.clone());
+                invalidate_hub_health_cache();
+                return degraded;
+            }
+
+            let healthy = SleepRecoveryStatus {
+                state: SleepRecoveryState::Healthy,
+                last_reason: reason.to_string(),
+                last_resume_epoch: Some(now_epoch()),
+                last_gap_secs: gap_secs,
+                attempts: attempt,
+                local_write_healthy: true,
+                relaunch_recommended: false,
+                message: "NOOS Hub recovered after wake; local write service is healthy."
+                    .to_string(),
+            };
+            set_sleep_recovery_status(healthy.clone());
+            invalidate_hub_health_cache();
+            return healthy;
+        }
+
+        restart_local_write();
+        if sleep_between_attempts {
+            thread::sleep(Duration::from_millis(250 * u64::from(attempt)));
+        }
+    }
+
+    let degraded = SleepRecoveryStatus {
+        state: SleepRecoveryState::Relaunching,
+        last_reason: reason.to_string(),
+        last_resume_epoch: Some(now_epoch()),
+        last_gap_secs: gap_secs,
+        attempts: SLEEP_RECOVERY_MAX_ATTEMPTS,
+        local_write_healthy: false,
+        relaunch_recommended: true,
+        message: "NOOS Hub could not recover the local write service after wake; relaunch is recommended.".to_string(),
+    };
+    set_sleep_recovery_status(degraded.clone());
+    invalidate_hub_health_cache();
+    degraded
+}
+
+fn local_write_health_probe() -> bool {
+    let Ok(address) = format!("127.0.0.1:{LOCAL_WRITE_PORT}").parse::<SocketAddr>() else {
+        return false;
+    };
+    let timeout = Duration::from_millis(LOCAL_WRITE_RECOVERY_PROBE_TIMEOUT_MS);
+    let Ok(mut stream) = TcpStream::connect_timeout(&address, timeout) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+    let request = b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+    if stream.write_all(request).is_err() {
+        return false;
+    }
+    let mut response = [0_u8; 256];
+    let Ok(read) = stream.read(&mut response) else {
+        return false;
+    };
+    String::from_utf8_lossy(&response[..read]).starts_with("HTTP/1.1 200")
+}
+
+fn sleep_recovery_cpu_abnormal() -> bool {
+    let Some(cpu_percent) = current_process_cpu_percent() else {
+        return false;
+    };
+    cpu_percent_exceeds_limit(cpu_percent, sleep_recovery_cpu_limit_percent())
+}
+
+fn cpu_percent_exceeds_limit(cpu_percent: f32, limit_percent: f32) -> bool {
+    cpu_percent > limit_percent
+}
+
+fn sleep_recovery_cpu_limit_percent() -> f32 {
+    env::var("NOOS_HUB_SLEEP_CPU_LIMIT")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .unwrap_or(SLEEP_RECOVERY_CPU_LIMIT_PERCENT)
+}
+
+fn current_process_cpu_percent() -> Option<f32> {
+    let pid = std::process::id().to_string();
+    let output = Command::new("ps")
+        .args(["-p", &pid, "-o", "%cpu="])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+}
+
+fn relaunch_hub_process() {
+    let Ok(current_exe) = env::current_exe() else {
+        eprintln!("NOOS Hub relaunch requested but current executable could not be resolved.");
+        return;
+    };
+    match Command::new(current_exe).spawn() {
+        Ok(_) => {
+            eprintln!("NOOS Hub spawned a replacement process after failed sleep recovery.");
+            std::process::exit(0);
+        }
+        Err(error) => {
+            eprintln!("NOOS Hub failed to spawn replacement process: {error}");
+        }
+    }
 }
 
 fn start_local_write_server() {
@@ -2299,4 +2583,78 @@ fn home_dir() -> PathBuf {
     env::var("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("."))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn sleep_recovery_cpu_gate_only_flags_values_above_limit() {
+        assert!(!cpu_percent_exceeds_limit(24.9, 25.0));
+        assert!(!cpu_percent_exceeds_limit(25.0, 25.0));
+        assert!(cpu_percent_exceeds_limit(25.1, 25.0));
+    }
+
+    #[test]
+    fn sleep_recovery_marks_healthy_when_local_write_recovers() {
+        let restarts = Cell::new(0);
+
+        let status = recover_local_write_after_sleep_with_probes(
+            "unit test healthy recovery",
+            Some(601),
+            || true,
+            || false,
+            || restarts.set(restarts.get() + 1),
+            false,
+        );
+
+        assert_eq!(status.state, SleepRecoveryState::Healthy);
+        assert_eq!(status.attempts, 1);
+        assert!(status.local_write_healthy);
+        assert!(!status.relaunch_recommended);
+        assert_eq!(status.last_gap_secs, Some(601));
+        assert_eq!(restarts.get(), 0);
+    }
+
+    #[test]
+    fn sleep_recovery_recommends_relaunch_when_cpu_remains_abnormal() {
+        let restarts = Cell::new(0);
+
+        let status = recover_local_write_after_sleep_with_probes(
+            "unit test cpu abnormal",
+            Some(602),
+            || true,
+            || true,
+            || restarts.set(restarts.get() + 1),
+            false,
+        );
+
+        assert_eq!(status.state, SleepRecoveryState::Relaunching);
+        assert_eq!(status.attempts, 1);
+        assert!(status.local_write_healthy);
+        assert!(status.relaunch_recommended);
+        assert_eq!(restarts.get(), 0);
+    }
+
+    #[test]
+    fn sleep_recovery_restarts_and_relaunches_after_exhausted_attempts() {
+        let restarts = Cell::new(0);
+
+        let status = recover_local_write_after_sleep_with_probes(
+            "unit test exhausted recovery",
+            Some(603),
+            || false,
+            || false,
+            || restarts.set(restarts.get() + 1),
+            false,
+        );
+
+        assert_eq!(status.state, SleepRecoveryState::Relaunching);
+        assert_eq!(status.attempts, SLEEP_RECOVERY_MAX_ATTEMPTS);
+        assert!(!status.local_write_healthy);
+        assert!(status.relaunch_recommended);
+        assert_eq!(restarts.get(), u32::from(SLEEP_RECOVERY_MAX_ATTEMPTS));
+    }
 }

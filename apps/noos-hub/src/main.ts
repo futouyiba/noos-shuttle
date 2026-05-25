@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import noosLogoUrl from "./assets/noos-logo.png";
 import "./styles.css";
 
@@ -35,6 +36,26 @@ interface HubHealth {
   vault_stats: VaultStats;
   recent_files: RecentVaultFiles;
   adapters: AdapterHealth[];
+}
+
+type SleepRecoveryState =
+  | "running"
+  | "suspended"
+  | "resumed"
+  | "recovering"
+  | "healthy"
+  | "degraded"
+  | "relaunching";
+
+interface SleepRecoveryStatus {
+  state: SleepRecoveryState;
+  last_reason: string;
+  last_resume_epoch?: number;
+  last_gap_secs?: number;
+  attempts: number;
+  local_write_healthy: boolean;
+  relaunch_recommended: boolean;
+  message: string;
 }
 
 interface LocalWriteSummary {
@@ -109,6 +130,7 @@ const modelModes: Array<{
 ];
 
 let currentHealth: HubHealth | null = null;
+let currentRecoveryStatus: SleepRecoveryStatus | null = null;
 let activeSection = "noos";
 let healthLoadInFlight = false;
 
@@ -119,7 +141,9 @@ if (!app) {
 const appElement = app;
 
 renderShell();
+void installSleepRecoveryListeners();
 void loadHealth();
+void loadSleepRecoveryStatus();
 
 function renderShell(): void {
   appElement.innerHTML = `
@@ -152,6 +176,7 @@ function renderShell(): void {
           <h1>NOOS Operating System</h1>
         </div>
         <div class="topbar-actions">
+          <span class="recovery-pill" data-recovery-state="running">Sleep recovery: ready</span>
           <button type="button" data-action="refresh">刷新</button>
           <button type="button" data-action="doctor">运行 Doctor</button>
         </div>
@@ -207,6 +232,89 @@ async function loadHealth(options: { force?: boolean } = {}): Promise<void> {
   } finally {
     healthLoadInFlight = false;
   }
+}
+
+async function loadSleepRecoveryStatus(): Promise<void> {
+  try {
+    currentRecoveryStatus = await invoke<SleepRecoveryStatus>("get_sleep_recovery_status");
+  } catch {
+    currentRecoveryStatus = mockSleepRecoveryStatus();
+  }
+  renderSleepRecoveryStatus();
+}
+
+async function installSleepRecoveryListeners(): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+
+  await listen("tauri://suspended", () => {
+    void markSleepSuspended();
+  });
+
+  await listen("tauri://resumed", () => {
+    void recoverFromSleep("frontend tauri resumed event");
+  });
+}
+
+async function recoverFromSleep(reason: string): Promise<void> {
+  currentRecoveryStatus = {
+    ...(currentRecoveryStatus ?? mockSleepRecoveryStatus()),
+    state: "recovering",
+    message: "Recovering local write service after wake."
+  };
+  renderSleepRecoveryStatus();
+
+  try {
+    currentRecoveryStatus = await invoke<SleepRecoveryStatus>("recover_from_sleep", {
+      reason,
+      gapSecs: null
+    });
+    renderSleepRecoveryStatus();
+    await loadHealth({ force: true });
+  } catch (error) {
+    currentRecoveryStatus = {
+      state: "degraded",
+      last_reason: reason,
+      attempts: 0,
+      local_write_healthy: false,
+      relaunch_recommended: true,
+      message: String(error)
+    };
+    renderSleepRecoveryStatus();
+  }
+}
+
+async function markSleepSuspended(): Promise<void> {
+  try {
+    currentRecoveryStatus = await invoke<SleepRecoveryStatus>("mark_sleep_suspended");
+  } catch {
+    currentRecoveryStatus = {
+      ...(currentRecoveryStatus ?? mockSleepRecoveryStatus()),
+      state: "suspended",
+      message: "System suspended; Hub will recover after resume."
+    };
+  }
+  renderSleepRecoveryStatus();
+}
+
+function renderSleepRecoveryStatus(): void {
+  const pill = appElement.querySelector<HTMLElement>(".recovery-pill");
+  if (!pill || !currentRecoveryStatus) {
+    return;
+  }
+
+  const state = currentRecoveryStatus.state;
+  pill.dataset.recoveryState = state;
+  pill.textContent =
+    state === "healthy" || state === "running"
+      ? "Sleep recovery: ready"
+      : state === "recovering" || state === "resumed"
+        ? "Sleep recovery: recovering"
+        : state === "relaunching"
+          ? "Sleep recovery: relaunch recommended"
+          : `Sleep recovery: ${state}`;
+  pill.title = currentRecoveryStatus.message;
 }
 
 async function getHubHealth(): Promise<HubHealth> {
@@ -771,6 +879,17 @@ function mockHealth(): HubHealth {
       mockAdapter("codex", "Codex", "consumer", "partial", "Codex 消费 NOOS handoff 的用户级 skill。"),
       mockAdapter("claude-code", "Claude Code", "consumer", "missing", "Claude Code 消费 NOOS handoff 的用户级和项目级 skill。")
     ]
+  };
+}
+
+function mockSleepRecoveryStatus(): SleepRecoveryStatus {
+  return {
+    state: "running",
+    last_reason: "browser preview",
+    attempts: 0,
+    local_write_healthy: true,
+    relaunch_recommended: false,
+    message: "NOOS Hub sleep recovery is ready."
   };
 }
 

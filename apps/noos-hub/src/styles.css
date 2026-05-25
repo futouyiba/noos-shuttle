@@ -163,8 +163,36 @@ nav button:hover {
 
 .topbar-actions {
   display: flex;
+  align-items: center;
   gap: 8px;
   flex: 0 0 auto;
+}
+
+.recovery-pill {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  border: 1px solid rgba(23, 32, 26, 0.12);
+  border-radius: 7px;
+  background: #ffffff;
+  color: #254738;
+  font: 750 12px/1.2 system-ui, sans-serif;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.recovery-pill[data-recovery-state="recovering"],
+.recovery-pill[data-recovery-state="resumed"] {
+  border-color: rgba(35, 103, 173, 0.28);
+  background: #eef6ff;
+  color: #174a7a;
+}
+
+.recovery-pill[data-recovery-state="degraded"],
+.recovery-pill[data-recovery-state="relaunching"] {
+  border-color: rgba(161, 58, 58, 0.28);
+  background: #fff2f0;
+  color: #8d2b25;
 }
 
 .section-actions {
