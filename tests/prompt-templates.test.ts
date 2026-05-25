@@ -13,6 +13,8 @@ describe("createGenerateThreadPrompt", () => {
     expect(prompt).toContain("# 交接：<标题>");
     expect(prompt).toContain("## 建议给下一位代理的指令");
     expect(prompt).toContain("如果某一节没有内容，也保留标题并写“无”");
+    expect(prompt).not.toContain("<!-- NOOS:THREAD:BEGIN -->");
+    expect(prompt).not.toContain("<!-- NOOS:THREAD:END -->");
   });
 
   it("creates an English handoff prompt when requested", () => {
@@ -26,13 +28,16 @@ describe("createGenerateThreadPrompt", () => {
     expect(prompt).toContain("# Thread: <title>");
     expect(prompt).toContain("## Suggested Next-Agent Instructions");
     expect(prompt).toContain('if a section has no content, keep the heading and write "None"');
+    expect(prompt).not.toContain("<!-- NOOS:THREAD:BEGIN -->");
+    expect(prompt).not.toContain("<!-- NOOS:THREAD:END -->");
   });
 
   it("creates a Chinese crystal prompt", () => {
     const prompt = createGenerateCrystalPrompt("https://chatgpt.com/c/test");
 
     expect(prompt).toContain("NOOS Crystal / 讨论结晶");
-    expect(prompt).toContain("<!-- NOOS:CRYSTAL:BEGIN -->");
+    expect(prompt).not.toContain("<!-- NOOS:CRYSTAL:BEGIN -->");
+    expect(prompt).not.toContain("<!-- NOOS:CRYSTAL:END -->");
     expect(prompt).toContain("type: noos_crystal");
     expect(prompt).toContain("crystal_key");
     expect(prompt).toContain("## 已确认结论");

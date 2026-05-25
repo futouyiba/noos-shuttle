@@ -69,22 +69,35 @@ export function captureNoosThreads(source: string, detectedAt = new Date().toISO
 }
 
 function normalizeCapturedThread(rawMarkdown: string): string {
-  const firstFence = rawMarkdown.indexOf("---");
+  const unfenced = stripMarkerWrappedCodeFence(rawMarkdown);
+  const firstFence = unfenced.indexOf("---");
   if (firstFence === -1) {
-    return rawMarkdown;
+    return unfenced;
   }
 
-  const secondFence = rawMarkdown.indexOf("\n---", firstFence + 3);
+  const secondFence = unfenced.indexOf("\n---", firstFence + 3);
   if (secondFence === -1) {
-    return rawMarkdown;
+    return unfenced;
   }
 
-  const beforeFrontmatter = rawMarkdown.slice(0, firstFence + 3);
-  const frontmatter = rawMarkdown.slice(firstFence + 3, secondFence);
-  const afterFrontmatter = rawMarkdown.slice(secondFence);
+  const beforeFrontmatter = unfenced.slice(0, firstFence + 3);
+  const frontmatter = unfenced.slice(firstFence + 3, secondFence);
+  const afterFrontmatter = unfenced.slice(secondFence);
   const repairedFrontmatter = repairFrontmatterLineBreaks(frontmatter);
 
   return `${beforeFrontmatter}${repairedFrontmatter}${afterFrontmatter}`;
+}
+
+function stripMarkerWrappedCodeFence(rawMarkdown: string): string {
+  const pattern = new RegExp(
+    `^\\s*${escapeRegExp(NOOS_BEGIN_MARKER)}\\s*` +
+      "```(?:markdown|md)?\\s*\\n" +
+      "([\\s\\S]*?)\\n```\\s*" +
+      `${escapeRegExp(NOOS_END_MARKER)}\\s*$`,
+    "i"
+  );
+  const match = rawMarkdown.match(pattern);
+  return match?.[1] ? `${NOOS_BEGIN_MARKER}\n${match[1].trim()}\n${NOOS_END_MARKER}` : rawMarkdown;
 }
 
 function repairFrontmatterLineBreaks(frontmatter: string): string {
@@ -132,9 +145,22 @@ function isPlaceholderThread(rawMarkdown: string): boolean {
     .replace(/^\s*<!-- NOOS:THREAD:BEGIN -->\s*/, "")
     .replace(/\s*<!-- NOOS:THREAD:END -->\s*$/, "")
     .trim();
-  const withoutCodeTicks = withoutMarkers.replace(/^`+\s*/, "").replace(/\s*`+$/, "").trim();
+  const withoutCodeTicks = withoutMarkers
+    .replace(/^```(?:markdown|md)?\s*/i, "")
+    .replace(/\s*```$/, "")
+    .replace(/^`+\s*/, "")
+    .replace(/\s*`+$/, "")
+    .trim();
 
-  return withoutCodeTicks === "..." || withoutCodeTicks === "…";
+  return (
+    withoutCodeTicks === "..." ||
+    withoutCodeTicks === "…" ||
+    withoutCodeTicks === "<handoff markdown>" ||
+    withoutCodeTicks === "<thread markdown>" ||
+    withoutCodeTicks === "<交接稿 markdown>" ||
+    withoutCodeTicks === "<交接稿正文>" ||
+    (!withoutCodeTicks.includes("---") && /^(\.{3}|…|<[^>]+>)$/u.test(withoutCodeTicks))
+  );
 }
 
 function deriveTitle(frontmatterTitle: string | undefined, bodyMarkdown: string): string {

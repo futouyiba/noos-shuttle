@@ -1,6 +1,11 @@
 import { createCrystalPreferredPath, createPreferredPath, slugify } from "./filename";
 import type { ShuttleLocale } from "../shared/i18n";
 
+const THREAD_BEGIN_MARKER_INSTRUCTION = "`<` + `!-- NOOS:THREAD:BEGIN --` + `>`";
+const THREAD_END_MARKER_INSTRUCTION = "`<` + `!-- NOOS:THREAD:END --` + `>`";
+const CRYSTAL_BEGIN_MARKER_INSTRUCTION = "`<` + `!-- NOOS:CRYSTAL:BEGIN --` + `>`";
+const CRYSTAL_END_MARKER_INSTRUCTION = "`<` + `!-- NOOS:CRYSTAL:END --` + `>`";
+
 export function createGenerateThreadPrompt(
   sourceUrl = globalThis.location?.href ?? "",
   locale: ShuttleLocale = "zh"
@@ -16,17 +21,11 @@ export function createGenerateThreadPrompt(
 直接输出 marker 包裹的 Markdown 正文，不要使用 fenced code block，不要在 marker 外写解释、寒暄或补充说明。
 避免使用三反引号；如必须引用代码，优先使用缩进代码块或简短行内代码，防止 Markdown 围栏不闭合。
 
-输出格式必须是：
+交接稿必须被两个精确 HTML 注释 marker 包裹：
+- begin marker 由这几段字符直接拼成，不要添加空格或反引号：${THREAD_BEGIN_MARKER_INSTRUCTION}
+- end marker 由这几段字符直接拼成，不要添加空格或反引号：${THREAD_END_MARKER_INSTRUCTION}
 
-<!-- NOOS:THREAD:BEGIN -->
-...
-<!-- NOOS:THREAD:END -->
-
-交接稿必须被以下精确标记包裹：
-
-<!-- NOOS:THREAD:BEGIN -->
-...
-<!-- NOOS:THREAD:END -->
+重要：你的最终回答里只能出现一组 begin/end marker。不要输出格式示例，不要输出占位 marker 块。
 
 使用 YAML frontmatter，字段保持英文键名：
 - type: noos_thread
@@ -68,17 +67,11 @@ The purpose is to hand off this discussion to a coding agent such as Codex, Clau
 Output the marker-wrapped Markdown directly. Do not use a fenced code block, and do not include any explanation outside the markers.
 Avoid triple backticks. If code is necessary, prefer indented code blocks or short inline code to avoid broken Markdown fences.
 
-The output format must be:
+The handoff must be wrapped by two exact HTML comment markers:
+- begin marker is made by directly joining these character chunks, with no extra spaces or backticks: ${THREAD_BEGIN_MARKER_INSTRUCTION}
+- end marker is made by directly joining these character chunks, with no extra spaces or backticks: ${THREAD_END_MARKER_INSTRUCTION}
 
-<!-- NOOS:THREAD:BEGIN -->
-...
-<!-- NOOS:THREAD:END -->
-
-The handoff must be wrapped by these exact markers:
-
-<!-- NOOS:THREAD:BEGIN -->
-...
-<!-- NOOS:THREAD:END -->
+Important: your final answer must contain exactly one begin/end marker pair. Do not output format examples or placeholder marker blocks.
 
 Use YAML frontmatter with:
 - type: noos_thread
@@ -131,17 +124,11 @@ export function createGenerateCrystalPrompt(
 直接输出 marker 包裹的 Markdown 正文，不要使用 fenced code block，不要在 marker 外写解释、寒暄或补充说明。
 避免使用三反引号；如必须引用代码，优先使用缩进代码块或简短行内代码，防止 Markdown 围栏不闭合。
 
-输出格式必须是：
+结晶必须被两个精确 HTML 注释 marker 包裹：
+- begin marker 由这几段字符直接拼成，不要添加空格或反引号：${CRYSTAL_BEGIN_MARKER_INSTRUCTION}
+- end marker 由这几段字符直接拼成，不要添加空格或反引号：${CRYSTAL_END_MARKER_INSTRUCTION}
 
-<!-- NOOS:CRYSTAL:BEGIN -->
-...
-<!-- NOOS:CRYSTAL:END -->
-
-结晶必须被以下精确标记包裹：
-
-<!-- NOOS:CRYSTAL:BEGIN -->
-...
-<!-- NOOS:CRYSTAL:END -->
+重要：你的最终回答里只能出现一组 begin/end marker。不要输出格式示例，不要输出占位 marker 块。
 
 使用 YAML frontmatter，字段保持英文键名：
 - type: noos_crystal
@@ -181,17 +168,11 @@ Do not recap the whole process. Keep only information that is useful later.
 Output the marker-wrapped Markdown directly. Do not use a fenced code block, and do not include any explanation outside the markers.
 Avoid triple backticks. If code is necessary, prefer indented code blocks or short inline code to avoid broken Markdown fences.
 
-The output format must be:
+The crystal must be wrapped by two exact HTML comment markers:
+- begin marker is made by directly joining these character chunks, with no extra spaces or backticks: ${CRYSTAL_BEGIN_MARKER_INSTRUCTION}
+- end marker is made by directly joining these character chunks, with no extra spaces or backticks: ${CRYSTAL_END_MARKER_INSTRUCTION}
 
-<!-- NOOS:CRYSTAL:BEGIN -->
-...
-<!-- NOOS:CRYSTAL:END -->
-
-The crystal must be wrapped by these exact markers:
-
-<!-- NOOS:CRYSTAL:BEGIN -->
-...
-<!-- NOOS:CRYSTAL:END -->
+Important: your final answer must contain exactly one begin/end marker pair. Do not output format examples or placeholder marker blocks.
 
 Use YAML frontmatter with:
 - type: noos_crystal

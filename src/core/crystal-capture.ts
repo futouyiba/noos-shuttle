@@ -33,7 +33,11 @@ export function captureNoosCrystals(source: string, detectedAt = new Date().toIS
     }
 
     const end = endMarkerStart + NOOS_CRYSTAL_END_MARKER.length;
-    const rawMarkdown = source.slice(begin, end).trim();
+    const rawMarkdown = normalizeCapturedCrystal(source.slice(begin, end).trim());
+    if (isPlaceholderCrystal(rawMarkdown)) {
+      searchFrom = end;
+      continue;
+    }
     const markdownForParsing = rawMarkdown
       .replace(NOOS_CRYSTAL_BEGIN_MARKER, "")
       .replace(NOOS_CRYSTAL_END_MARKER, "")
@@ -62,6 +66,40 @@ export function captureNoosCrystals(source: string, detectedAt = new Date().toIS
   }
 
   return { crystals, errors };
+}
+
+function normalizeCapturedCrystal(rawMarkdown: string): string {
+  const pattern = new RegExp(
+    `^\\s*${escapeRegExp(NOOS_CRYSTAL_BEGIN_MARKER)}\\s*` +
+      "```(?:markdown|md)?\\s*\\n" +
+      "([\\s\\S]*?)\\n```\\s*" +
+      `${escapeRegExp(NOOS_CRYSTAL_END_MARKER)}\\s*$`,
+    "i"
+  );
+  const match = rawMarkdown.match(pattern);
+  return match?.[1] ? `${NOOS_CRYSTAL_BEGIN_MARKER}\n${match[1].trim()}\n${NOOS_CRYSTAL_END_MARKER}` : rawMarkdown;
+}
+
+function isPlaceholderCrystal(rawMarkdown: string): boolean {
+  const withoutMarkers = rawMarkdown
+    .replace(/^\s*<!-- NOOS:CRYSTAL:BEGIN -->\s*/, "")
+    .replace(/\s*<!-- NOOS:CRYSTAL:END -->\s*$/, "")
+    .trim();
+  const withoutCodeTicks = withoutMarkers
+    .replace(/^```(?:markdown|md)?\s*/i, "")
+    .replace(/\s*```$/, "")
+    .replace(/^`+\s*/, "")
+    .replace(/\s*`+$/, "")
+    .trim();
+
+  return (
+    withoutCodeTicks === "..." ||
+    withoutCodeTicks === "…" ||
+    withoutCodeTicks === "<crystal markdown>" ||
+    withoutCodeTicks === "<结晶 markdown>" ||
+    withoutCodeTicks === "<结晶正文>" ||
+    (!withoutCodeTicks.includes("---") && /^(\.{3}|…|<[^>]+>)$/u.test(withoutCodeTicks))
+  );
 }
 
 function deriveTitle(frontmatterTitle: string | undefined, bodyMarkdown: string): string {

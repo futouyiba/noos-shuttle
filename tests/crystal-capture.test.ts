@@ -53,6 +53,62 @@ describe("captureNoosCrystals", () => {
     expect(result.crystals).toHaveLength(2);
   });
 
+  it("ignores placeholder crystal marker examples", () => {
+    const result = captureNoosCrystals(`<!-- NOOS:CRYSTAL:BEGIN -->
+\`\`\`markdown
+...
+\`\`\`
+<!-- NOOS:CRYSTAL:END -->
+
+<!-- NOOS:CRYSTAL:BEGIN -->
+<结晶正文>
+<!-- NOOS:CRYSTAL:END -->
+
+${VALID_CRYSTAL}`);
+
+    expect(result.crystals).toHaveLength(1);
+    expect(result.crystals[0].key).toBe("20260514-noos-vault-route");
+  });
+
+  it("repairs ChatGPT answers that wrap the real crystal in a markdown code fence", () => {
+    const result = captureNoosCrystals(`<!-- NOOS:CRYSTAL:BEGIN -->
+\`\`\`markdown
+---
+type: noos_crystal
+version: 0.1
+source_app: chatgpt
+status: active
+created_at: 2026-05-14
+crystal_key: 20260514-fenced-crystal
+title: Fenced Crystal
+summary: Fenced generated crystals should parse.
+tags: [noos, crystal]
+---
+
+# 结晶：Fenced Crystal
+
+## 已确认结论
+ChatGPT sometimes wraps generated Markdown in a code fence.
+
+## 合理推断
+The capture layer should repair this common output shape.
+
+## 未决问题
+None.
+
+## 下一轮最值得继续讨论的 3 个入口
+1. Capture
+2. Validation
+3. Save
+\`\`\`
+<!-- NOOS:CRYSTAL:END -->`);
+
+    expect(result.crystals).toHaveLength(1);
+    expect(result.crystals[0].frontmatter?.type).toBe("noos_crystal");
+    expect(result.crystals[0].key).toBe("20260514-fenced-crystal");
+    expect(result.crystals[0].warnings).toEqual([]);
+  });
+
   it("warns when required sections are missing", () => {
     const result = captureNoosCrystals(`<!-- NOOS:CRYSTAL:BEGIN -->
 ---

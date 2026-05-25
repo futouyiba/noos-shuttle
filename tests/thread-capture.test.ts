@@ -88,6 +88,69 @@ ${VALID_THREAD}`);
     expect(result.threads[0].title).toBe("build-noos-shuttle");
   });
 
+  it("ignores placeholder marker examples when rendered inside a code fence", () => {
+    const result = captureNoosThreads(`<!-- NOOS:THREAD:BEGIN -->
+\`\`\`markdown
+...
+\`\`\`
+<!-- NOOS:THREAD:END -->
+
+<!-- NOOS:THREAD:BEGIN -->
+<交接稿正文>
+<!-- NOOS:THREAD:END -->
+
+${VALID_THREAD}`);
+
+    expect(result.threads).toHaveLength(1);
+    expect(result.threads[0].title).toBe("build-noos-shuttle");
+  });
+
+  it("repairs ChatGPT answers that wrap the real handoff in a markdown code fence", () => {
+    const result = captureNoosThreads(`<!-- NOOS:THREAD:BEGIN -->
+\`\`\`markdown
+---
+type: noos_thread
+version: 0.1
+source_app: chatgpt
+target_agent: codex
+status: active
+created_at: 2026-05-02
+title: fenced-handoff
+tags: [noos, shuttle]
+---
+
+# Thread: Fenced Handoff
+
+## Intent
+Recover a fenced answer.
+
+## Context Summary
+ChatGPT sometimes wraps generated Markdown in a code fence.
+
+## Task
+Strip the wrapper before parsing.
+
+## Constraints
+Keep the marker block intact.
+
+## Acceptance Criteria
+- [ ] Parses frontmatter.
+
+## Suggested Next-Agent Instructions
+Continue from the repaired handoff.
+
+## Open Questions
+None.
+\`\`\`
+<!-- NOOS:THREAD:END -->`);
+
+    expect(result.threads).toHaveLength(1);
+    expect(result.threads[0].frontmatter?.type).toBe("noos_thread");
+    expect(result.threads[0].frontmatter?.version).toBe("0.1");
+    expect(result.threads[0].title).toBe("fenced-handoff");
+    expect(result.threads[0].warnings).toEqual([]);
+  });
+
   it("repairs common ChatGPT line wrapping inside frontmatter", () => {
     const result = captureNoosThreads(`<!-- NOOS:THREAD:BEGIN -->
 ---
