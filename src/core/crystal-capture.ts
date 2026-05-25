@@ -77,7 +77,43 @@ function normalizeCapturedCrystal(rawMarkdown: string): string {
     "i"
   );
   const match = rawMarkdown.match(pattern);
-  return match?.[1] ? `${NOOS_CRYSTAL_BEGIN_MARKER}\n${match[1].trim()}\n${NOOS_CRYSTAL_END_MARKER}` : rawMarkdown;
+  const unfenced = match?.[1] ? `${NOOS_CRYSTAL_BEGIN_MARKER}\n${match[1].trim()}\n${NOOS_CRYSTAL_END_MARKER}` : rawMarkdown;
+  return repairHeadingFrontmatterWithoutClosingFence(unfenced);
+}
+
+function repairHeadingFrontmatterWithoutClosingFence(rawMarkdown: string): string {
+  const openingFence = rawMarkdown.indexOf("---");
+  if (openingFence === -1 || rawMarkdown.indexOf("\n---", openingFence + 3) !== -1) {
+    return rawMarkdown;
+  }
+
+  const afterFence = rawMarkdown.slice(openingFence + 3);
+  const headingFrontmatter = afterFence.match(/^\s*#{1,6}\s+(type:\s+noos_crystal\b[\s\S]*?)(?=\n#\s+)/);
+  if (!headingFrontmatter?.[1]) {
+    return rawMarkdown;
+  }
+
+  const bodyStart = openingFence + 3 + headingFrontmatter[0].length;
+  return `${rawMarkdown.slice(0, openingFence + 3)}\n${repairFrontmatterLineBreaks(headingFrontmatter[1])}\n---${rawMarkdown.slice(bodyStart)}`;
+}
+
+function repairFrontmatterLineBreaks(frontmatter: string): string {
+  const frontmatterKeys = [
+    "type",
+    "version",
+    "crystal_key",
+    "source_app",
+    "source_url",
+    "status",
+    "created_at",
+    "title",
+    "summary",
+    "tags",
+    "preferred_path"
+  ];
+  const keyPattern = frontmatterKeys.join("|");
+
+  return frontmatter.replace(new RegExp(`([^\\n])\\s+((?:${keyPattern}):\\s+)`, "g"), "$1\n$2");
 }
 
 function isPlaceholderCrystal(rawMarkdown: string): boolean {

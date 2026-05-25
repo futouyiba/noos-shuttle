@@ -70,6 +70,11 @@ export function captureNoosThreads(source: string, detectedAt = new Date().toISO
 
 function normalizeCapturedThread(rawMarkdown: string): string {
   const unfenced = stripMarkerWrappedCodeFence(rawMarkdown);
+  const repairedMissingFence = repairHeadingFrontmatterWithoutClosingFence(unfenced);
+  if (repairedMissingFence !== unfenced) {
+    return repairedMissingFence;
+  }
+
   const firstFence = unfenced.indexOf("---");
   if (firstFence === -1) {
     return unfenced;
@@ -86,6 +91,23 @@ function normalizeCapturedThread(rawMarkdown: string): string {
   const repairedFrontmatter = repairFrontmatterLineBreaks(frontmatter);
 
   return `${beforeFrontmatter}${repairedFrontmatter}${afterFrontmatter}`;
+}
+
+function repairHeadingFrontmatterWithoutClosingFence(rawMarkdown: string): string {
+  const openingFence = rawMarkdown.indexOf("---");
+  if (openingFence === -1 || rawMarkdown.indexOf("\n---", openingFence + 3) !== -1) {
+    return rawMarkdown;
+  }
+
+  const afterFence = rawMarkdown.slice(openingFence + 3);
+  const headingFrontmatter = afterFence.match(/^\s*#{1,6}\s+(type:\s+noos_thread\b[\s\S]*?)(?=\n#\s+)/);
+  if (!headingFrontmatter?.[1]) {
+    return rawMarkdown;
+  }
+
+  const frontmatter = repairFrontmatterLineBreaks(headingFrontmatter[1]);
+  const bodyStart = openingFence + 3 + headingFrontmatter[0].length;
+  return `${rawMarkdown.slice(0, openingFence + 3)}\n${frontmatter}\n---${rawMarkdown.slice(bodyStart)}`;
 }
 
 function stripMarkerWrappedCodeFence(rawMarkdown: string): string {

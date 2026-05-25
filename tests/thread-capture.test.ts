@@ -240,6 +240,42 @@ None.
     expect(result.threads[0].warnings).toEqual([]);
   });
 
+  it("repairs ChatGPT-rendered frontmatter that becomes a heading without a closing YAML fence", () => {
+    const result = captureNoosThreads(`<!-- NOOS:THREAD:BEGIN -->
+---
+## type: noos_thread version: 0.1 handoff_revision: v1 source_app: chatgpt source_url: https://chatgpt.com/c/example target_agent: codex status: active created_at: 2026-05-25 title: rendered-heading-frontmatter tags: [noos, shuttle] preferred_path: .noos/handoffs/active/2026-05-25-rendered-heading-frontmatter.md
+# 交接：Rendered Heading Frontmatter
+
+## Intent
+Repair ChatGPT-rendered frontmatter.
+
+## Context Summary
+ChatGPT can render an opening YAML fence plus following key-value line as a Markdown heading.
+
+## Task
+Recover the frontmatter and parse the body.
+
+## Constraints
+Only repair known marker-wrapped NOOS blocks.
+
+## Acceptance Criteria
+- [ ] No frontmatter warnings remain.
+
+## Suggested Next-Agent Instructions
+Continue from the repaired handoff.
+
+## Open Questions
+None.
+
+<!-- NOOS:THREAD:END -->`);
+
+    expect(result.threads).toHaveLength(1);
+    expect(result.threads[0].frontmatter?.type).toBe("noos_thread");
+    expect(result.threads[0].frontmatter?.version).toBe("0.1");
+    expect(result.threads[0].title).toBe("rendered-heading-frontmatter");
+    expect(result.threads[0].warnings).toEqual([]);
+  });
+
   it("warns when required sections are missing but keeps the raw handoff", () => {
     const result = captureNoosThreads(`<!-- NOOS:THREAD:BEGIN -->
 ---

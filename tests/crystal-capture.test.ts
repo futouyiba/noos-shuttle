@@ -109,6 +109,33 @@ None.
     expect(result.crystals[0].warnings).toEqual([]);
   });
 
+  it("repairs ChatGPT-rendered crystal frontmatter that becomes a heading without a closing YAML fence", () => {
+    const result = captureNoosCrystals(`<!-- NOOS:CRYSTAL:BEGIN -->
+---
+## type: noos_crystal version: 0.1 source_app: chatgpt status: active created_at: 2026-05-14 crystal_key: 20260514-rendered-crystal title: Rendered Crystal summary: Heading-rendered frontmatter should parse. tags: [noos, crystal]
+# 结晶：Rendered Crystal
+
+## 已确认结论
+ChatGPT can render frontmatter as a heading.
+
+## 合理推断
+The capture layer should repair it before validation.
+
+## 未决问题
+None.
+
+## 下一轮最值得继续讨论的 3 个入口
+1. Capture
+2. Validation
+3. Save
+<!-- NOOS:CRYSTAL:END -->`);
+
+    expect(result.crystals).toHaveLength(1);
+    expect(result.crystals[0].frontmatter?.type).toBe("noos_crystal");
+    expect(result.crystals[0].key).toBe("20260514-rendered-crystal");
+    expect(result.crystals[0].warnings).toEqual([]);
+  });
+
   it("warns when required sections are missing", () => {
     const result = captureNoosCrystals(`<!-- NOOS:CRYSTAL:BEGIN -->
 ---

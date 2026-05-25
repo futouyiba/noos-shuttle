@@ -318,27 +318,20 @@ async function saveMarkdownToVault(
     kind === "context_pack_file"
       ? `NOOS/vault/context-packs/${sanitizeRelativePath(filename)}`
       : `NOOS/vault/${kind === "crystal" ? "crystals" : "handoffs"}/active/${safeFilename}`;
-  const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
-  const objectUrl = URL.createObjectURL(blob);
+  await chrome.downloads.download({
+    url: `data:text/markdown;charset=utf-8,${encodeURIComponent(content)}`,
+    filename: relativePath,
+    conflictAction: "uniquify",
+    saveAs: false
+  });
 
-  try {
-    await chrome.downloads.download({
-      url: objectUrl,
-      filename: relativePath,
-      conflictAction: "uniquify",
-      saveAs: false
-    });
-
-    return {
-      ok: true,
-      backend: "downloads_mirror",
-      location: `Downloads/${relativePath}`,
-      importHint: `Open NOOS Hub and run Import Browser Mirror to move this ${artifactLabel} into the local NOOS Vault.`,
-      message: `Saved to Downloads/${relativePath}. Import it in NOOS Hub.`
-    };
-  } finally {
-    URL.revokeObjectURL(objectUrl);
-  }
+  return {
+    ok: true,
+    backend: "downloads_mirror",
+    location: `Downloads/${relativePath}`,
+    importHint: `Open NOOS Hub and run Import Browser Mirror to move this ${artifactLabel} into the local NOOS Vault.`,
+    message: `Saved to Downloads/${relativePath}. Import it in NOOS Hub.`
+  };
 }
 
 async function saveMarkdownToHub(
