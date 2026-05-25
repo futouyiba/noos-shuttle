@@ -350,17 +350,45 @@ fn write_artifact_to_local_vault(request: HandoffWriteRequest) -> HandoffWriteRe
         };
     }
 
-    let filename = sanitize_filename(&request.filename);
-    let target = unique_target_path(&vault, &filename);
+    let target = if artifact_kind == "context_pack_file" {
+        match sanitize_relative_path(&request.filename) {
+            Some(relative_path) => vault.join(relative_path),
+            None => {
+                return HandoffWriteResponse {
+                    ok: false,
+                    backend: "hub_local".to_string(),
+                    location: None,
+                    error_code: Some("invalid_path".to_string()),
+                    message: "Context pack file path is invalid.".to_string(),
+                };
+            }
+        }
+    } else {
+        let filename = sanitize_filename(&request.filename);
+        unique_target_path(&vault, &filename)
+    };
+    if let Some(parent) = target.parent() {
+        if let Err(error) = fs::create_dir_all(parent) {
+            return HandoffWriteResponse {
+                ok: false,
+                backend: "hub_local".to_string(),
+                location: None,
+                error_code: Some("vault_unavailable".to_string()),
+                message: error.to_string(),
+            };
+        }
+    }
     let temp = target.with_extension("tmp");
     let mut content = request.content;
-    if let Some(source) = request.source {
-        let app = source.app.unwrap_or_default();
-        let url = source.url.unwrap_or_default();
-        if !app.is_empty() || !url.is_empty() {
-            content.push_str("\n\n<!-- NOOS:HUB:SOURCE ");
-            content.push_str(&format!("app={} url={}", app, url));
-            content.push_str(" -->\n");
+    if artifact_kind != "context_pack_file" {
+        if let Some(source) = request.source {
+            let app = source.app.unwrap_or_default();
+            let url = source.url.unwrap_or_default();
+            if !app.is_empty() || !url.is_empty() {
+                content.push_str("\n\n<!-- NOOS:HUB:SOURCE ");
+                content.push_str(&format!("app={} url={}", app, url));
+                content.push_str(" -->\n");
+            }
         }
     }
 
@@ -426,6 +454,7 @@ fn vault_adapter(noos_home: &Path) -> AdapterHealth {
         dir_check("Wiki vault", noos_home.join("vault/wiki")),
         dir_check("Handoff vault", noos_home.join("vault/handoffs/active")),
         dir_check("Crystal vault", noos_home.join("vault/crystals/active")),
+        dir_check("Context Pack vault", noos_home.join("vault/context-packs")),
         dir_check(
             "Browser vault mirror",
             home_dir().join("Downloads/NOOS/vault/handoffs/active"),
@@ -802,12 +831,14 @@ fn is_allowed_pairing_origin(origin: &str) -> bool {
 fn artifact_kind(value: Option<&str>) -> &str {
     match value {
         Some("crystal") => "crystal",
+        Some("context_pack_file") => "context_pack_file",
         _ => "handoff",
     }
 }
 
 fn artifact_vault_path(kind: &str) -> &'static str {
     match kind {
+        "context_pack_file" => "vault/context-packs",
         "crystal" => "vault/crystals/active",
         _ => "vault/handoffs/active",
     }
@@ -815,6 +846,7 @@ fn artifact_vault_path(kind: &str) -> &'static str {
 
 fn is_valid_noos_artifact(content: &str, kind: &str) -> bool {
     match kind {
+        "context_pack_file" => !content.trim().is_empty(),
         "crystal" => {
             content.contains("<!-- NOOS:CRYSTAL:BEGIN -->")
                 && content.contains("<!-- NOOS:CRYSTAL:END -->")
@@ -838,6 +870,34 @@ fn sanitize_filename(filename: &str) -> String {
     }
 
     base
+}
+
+fn sanitize_relative_path(path: &str) -> Option<PathBuf> {
+    let parts: Vec<String> = path
+        .split(['/', '\\'])
+        .filter_map(|part| {
+            let clean = part
+                .replace(':', "-")
+                .trim_start_matches('.')
+                .trim()
+                .to_string();
+            if clean.is_empty() || clean == "." || clean == ".." {
+                None
+            } else {
+                Some(clean)
+            }
+        })
+        .collect();
+
+    if parts.is_empty() {
+        return None;
+    }
+
+    let mut relative = PathBuf::new();
+    for part in parts {
+        relative.push(part);
+    }
+    Some(relative)
 }
 
 fn unique_target_path(directory: &Path, filename: &str) -> PathBuf {

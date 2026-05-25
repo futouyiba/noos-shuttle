@@ -36,6 +36,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  if (isContextPackSaveMessage(message)) {
+    saveContextPackToVault(message.directory, message.files, message.sourceUrl)
+      .then(sendResponse)
+      .catch((error) => {
+        sendResponse({
+          ok: false,
+          errorCode: "context_pack_save_failed",
+          message: error instanceof Error ? error.message : "Context Pack save failed."
+        });
+      });
+
+    return true;
+  }
+
   if (isVaultStatusMessage(message)) {
     getVaultStatus().then(sendResponse);
     return true;
@@ -54,6 +68,13 @@ interface CrystalSaveMessage {
   type: "NOOS_SAVE_CRYSTAL_TO_VAULT";
   filename: string;
   content: string;
+}
+
+interface ContextPackSaveMessage {
+  type: "NOOS_SAVE_CONTEXT_PACK_TO_VAULT";
+  directory: string;
+  files: Array<{ path: string; content: string }>;
+  sourceUrl?: string;
 }
 
 interface VaultStatusMessage {
@@ -84,6 +105,20 @@ function isCrystalSaveMessage(value: unknown): value is CrystalSaveMessage {
 
   const message = value as Partial<CrystalSaveMessage>;
   return message.type === "NOOS_SAVE_CRYSTAL_TO_VAULT" && typeof message.filename === "string" && typeof message.content === "string";
+}
+
+function isContextPackSaveMessage(value: unknown): value is ContextPackSaveMessage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const message = value as Partial<ContextPackSaveMessage>;
+  return (
+    message.type === "NOOS_SAVE_CONTEXT_PACK_TO_VAULT" &&
+    typeof message.directory === "string" &&
+    Array.isArray(message.files) &&
+    message.files.every((file) => typeof file?.path === "string" && typeof file?.content === "string")
+  );
 }
 
 function isVaultStatusMessage(value: unknown): value is VaultStatusMessage {
@@ -125,7 +160,7 @@ async function getVaultStatus(): Promise<VaultStatusResponse> {
 async function saveMarkdownToVault(
   filename: string,
   content: string,
-  kind: "handoff" | "crystal"
+  kind: "handoff" | "crystal" | "context_pack_file"
 ): Promise<{ ok: boolean; backend: string; location: string; importHint: string; message: string }> {
   const hubResult = await saveMarkdownToHub(filename, content, kind);
   if (hubResult.ok) {
@@ -139,8 +174,11 @@ async function saveMarkdownToVault(
   }
 
   const safeFilename = sanitizeFilename(filename);
-  const artifactLabel = kind === "crystal" ? "crystal" : "handoff";
-  const relativePath = `NOOS/vault/${kind === "crystal" ? "crystals" : "handoffs"}/active/${safeFilename}`;
+  const artifactLabel = kind === "crystal" ? "crystal" : kind === "context_pack_file" ? "context pack file" : "handoff";
+  const relativePath =
+    kind === "context_pack_file"
+      ? `NOOS/vault/context-packs/${sanitizeRelativePath(filename)}`
+      : `NOOS/vault/${kind === "crystal" ? "crystals" : "handoffs"}/active/${safeFilename}`;
   const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
   const objectUrl = URL.createObjectURL(blob);
 
@@ -167,7 +205,7 @@ async function saveMarkdownToVault(
 async function saveMarkdownToHub(
   filename: string,
   content: string,
-  kind: "handoff" | "crystal"
+  kind: "handoff" | "crystal" | "context_pack_file"
 ): Promise<{ ok: boolean; location?: string; message?: string; errorCode?: string }> {
   const firstAttempt = await postMarkdownToHub(filename, content, kind, await getHubToken());
   if (firstAttempt.ok) {
@@ -188,7 +226,7 @@ async function saveMarkdownToHub(
 async function postMarkdownToHub(
   filename: string,
   content: string,
-  kind: "handoff" | "crystal",
+  kind: "handoff" | "crystal" | "context_pack_file",
   token: string | null
 ): Promise<{ ok: boolean; location?: string; message?: string; errorCode?: string }> {
   try {
@@ -228,6 +266,37 @@ async function postMarkdownToHub(
   }
 }
 
+async function saveContextPackToVault(
+  directory: string,
+  files: Array<{ path: string; content: string }>,
+  sourceUrl?: string
+): Promise<{ ok: boolean; backend: string; location: string; message: string; errorCode?: string }> {
+  const safeDirectory = sanitizePathSegment(directory) || "context-pack";
+  const results = [];
+
+  for (const file of files) {
+    const relativeFilePath = `${safeDirectory}/${sanitizeRelativePath(file.path)}`;
+    results.push(await saveMarkdownToVault(relativeFilePath, file.content, "context_pack_file"));
+  }
+
+  const ok = results.every((result) => result.ok);
+  const backend = results.find((result) => result.backend === "hub_local") ? "hub_local" : "downloads_mirror";
+  const location =
+    backend === "hub_local"
+      ? results.find((result) => result.backend === "hub_local")?.location ?? ""
+      : `Downloads/NOOS/vault/context-packs/${safeDirectory}`;
+
+  return {
+    ok,
+    backend,
+    location,
+    errorCode: ok ? undefined : "context_pack_partial_save",
+    message: ok
+      ? `Context Pack saved to ${backend === "hub_local" ? "local NOOS Vault" : "Downloads Browser Vault Mirror"}: ${location}`
+      : `Context Pack save finished with issues. Check ${location}. Source: ${sourceUrl ?? "current page"}`
+  };
+}
+
 async function pairWithHub(): Promise<string | null> {
   try {
     const response = await fetch(HUB_PAIR_URL);
@@ -262,4 +331,16 @@ function sanitizeFilename(filename: string): string {
     .trim();
 
   return base.endsWith(".md") && base.length > 3 ? base : "noos-thread.md";
+}
+
+function sanitizeRelativePath(path: string): string {
+  const parts = path.split(/[\\/]/).map(sanitizePathSegment).filter(Boolean);
+  return parts.length > 0 ? parts.join("/") : "file.md";
+}
+
+function sanitizePathSegment(value: string): string {
+  return value
+    .replace(/[\\/:]/g, "-")
+    .replace(/^\.+/, "")
+    .trim();
 }

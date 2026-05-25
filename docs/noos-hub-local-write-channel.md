@@ -103,13 +103,35 @@ The endpoint also accepts NOOS Crystal writes through the same local channel:
 
 When `kind` is omitted, Hub treats the artifact as a handoff for backward compatibility. `kind: "crystal"` writes to `~/.noos/vault/crystals/active/` and validates `NOOS:CRYSTAL` markers.
 
+Context Pack file requests use `kind: "context_pack_file"` and a safe relative `filename` such as:
+
+```json
+{
+  "kind": "context_pack_file",
+  "filename": "2026-05-25-chatgpt-context/manifest.yaml",
+  "content": "type: noos_context_pack\n..."
+}
+```
+
+Hub writes those files under:
+
+```text
+~/.noos/vault/context-packs/
+```
+
+Browser fallback writes the same relative structure under:
+
+```text
+~/Downloads/NOOS/vault/context-packs/
+```
+
 Hub validates:
 
 - token matches
 - request origin is allowed when available
 - content contains NOOS begin/end markers
 - filename is sanitized
-- write path stays inside the matching artifact vault, such as `~/.noos/vault/handoffs/active/` or `~/.noos/vault/crystals/active/`
+- write path stays inside the matching artifact vault, such as `~/.noos/vault/handoffs/active/`, `~/.noos/vault/crystals/active/`, or `~/.noos/vault/context-packs/`
 
 ## Risks and Product Traps
 

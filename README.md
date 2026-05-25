@@ -131,8 +131,11 @@ This is Chrome's security requirement for unpacked extensions in a regular profi
 4. After a handoff is collected, review the preview and validation warnings.
 5. Use the manual buttons near the preview to copy, download, or save the handoff.
 6. Use the `Auto after collect` toggles if you want future successful captures to copy, download, or save automatically.
+7. Enable `Capture full conversation transcript` when you want `Save 2 Vault` to write a NOOS Context Pack with `handoff.md`, `transcript.full.md`, `transcript.index.json`, `key-excerpts.md`, `decision-capsule.md`, and `execution-digest.md`.
 
 `Save 2 Vault` is local-first. When NOOS Hub is running, the extension writes through Hub to `~/.noos/vault/handoffs/active/`. If Hub is unavailable, the extension falls back to the browser vault mirror under `~/Downloads/NOOS/vault/handoffs/active/`, which Hub can import later. Git sync remains a separate Hub action when you want handoffs committed and pushed for remote agents.
+
+When full transcript capture is enabled, Context Packs are written under `~/.noos/vault/context-packs/` through Hub, or under `~/Downloads/NOOS/vault/context-packs/` as the browser mirror fallback. Long ChatGPT conversations may be marked partial when the page does not expose a reliable scroll path to prove all turns were loaded.
 
 For first-time direct Hub writes, open NOOS Hub and click `Connect Browser Shuttle`, then use `Save 2 Vault` within the pairing window.
 
@@ -202,6 +205,7 @@ User-level:
       active/
     crystals/
       active/
+    context-packs/
 ```
 
 Project-level:
@@ -274,6 +278,7 @@ git push origin v0.1.2
 
 - `docs/noos-install-architecture.md`: install architecture
 - `docs/noos-downstream-integration.md`: downstream agent integration design
+- `docs/noos-context-pack-background-layer.md`: Context Pack / transcript background layer design review
 - `docs/noos-handoff-vault-strategy.md`: handoff vault storage strategy
 - `docs/noos-hub-local-write-channel.md`: Hub-owned local write channel design and risks
 - `docs/noos-shuttle-page-context-events.md`: browser page context event and state handling

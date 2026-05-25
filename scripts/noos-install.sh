@@ -35,8 +35,10 @@ ensure_noos_home() {
     "$NOOS_HOME/vault/handoffs/archived" \
     "$NOOS_HOME/vault/crystals/active" \
     "$NOOS_HOME/vault/crystals/archived" \
+    "$NOOS_HOME/vault/context-packs" \
     "$HOME/Downloads/NOOS/vault/handoffs/active" \
-    "$HOME/Downloads/NOOS/vault/crystals/active"
+    "$HOME/Downloads/NOOS/vault/crystals/active" \
+    "$HOME/Downloads/NOOS/vault/context-packs"
   if [[ ! -f "$NOOS_HOME/config.json" ]]; then
     cp "$ROOT_DIR/.noos/config.example.json" "$NOOS_HOME/config.json"
     echo "Created $NOOS_HOME/config.json"
@@ -51,7 +53,8 @@ install_workspace() {
     "$ROOT_DIR/.noos/handoffs/done" \
     "$ROOT_DIR/.noos/crystals/active" \
     "$ROOT_DIR/.noos/crystals/done" \
-    "$ROOT_DIR/.noos/context/briefs"
+    "$ROOT_DIR/.noos/context/briefs" \
+    "$ROOT_DIR/.noos/context-packs"
 
   echo "Workspace kit ready in $ROOT_DIR/.noos"
 }

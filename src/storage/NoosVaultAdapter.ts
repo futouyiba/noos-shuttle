@@ -1,4 +1,5 @@
 import { createThreadFilename } from "../core/filename";
+import type { ContextPack } from "../core/context-pack";
 import type { NoosThread } from "../core/noos-thread";
 import type { SaveOptions, SaveResult, StorageAdapter } from "./StorageAdapter";
 
@@ -43,6 +44,38 @@ export class NoosVaultAdapter implements StorageAdapter {
         adapterId: this.id,
         errorCode: "vault_failed",
         message: error instanceof Error ? error.message : "NOOS Vault save failed."
+      };
+    }
+  }
+
+  async saveContextPack(pack: ContextPack, sourceUrl?: string): Promise<SaveResult> {
+    try {
+      const response = await chrome.runtime.sendMessage<{
+        type: "NOOS_SAVE_CONTEXT_PACK_TO_VAULT";
+        directory: string;
+        files: ContextPack["files"];
+        sourceUrl?: string;
+      }, VaultSaveResponse>({
+        type: "NOOS_SAVE_CONTEXT_PACK_TO_VAULT",
+        directory: pack.directory,
+        files: pack.files,
+        sourceUrl
+      });
+
+      return {
+        ok: response?.ok ?? false,
+        adapterId: this.id,
+        backend: response?.backend,
+        location: response?.location,
+        errorCode: response?.errorCode,
+        message: response?.message ?? "NOOS Context Pack save failed."
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        adapterId: this.id,
+        errorCode: "context_pack_failed",
+        message: error instanceof Error ? error.message : "NOOS Context Pack save failed."
       };
     }
   }

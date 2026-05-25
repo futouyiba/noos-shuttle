@@ -1,4 +1,5 @@
 import { createCrystalFilename, createThreadFilename } from "../core/filename";
+import { createContextPack, type ContextPack } from "../core/context-pack";
 import { createGenerateCrystalPrompt, createGenerateThreadPrompt } from "../core/prompt-templates";
 import { captureNoosThreads } from "../core/thread-capture";
 import { captureNoosCrystals } from "../core/crystal-capture";
@@ -9,6 +10,7 @@ import { ClipboardAdapter } from "../storage/ClipboardAdapter";
 import { DownloadAdapter } from "../storage/DownloadAdapter";
 import { NoosVaultAdapter } from "../storage/NoosVaultAdapter";
 import { getPageText, insertIntoChatInput, isChatbotGenerating, submitChatInput } from "./chatgpt-dom";
+import { captureChatGptTranscriptWithScroll, captureRenderedChatGptTranscript } from "./chatgpt-transcript";
 import styles from "./styles.css?inline";
 
 type ShuttleState = "idle" | "prompt-ready" | "waiting" | "captured" | "needs-choice" | "warning" | "saved" | "error";
@@ -32,6 +34,8 @@ interface ViewState {
   selectedCrystalIndex: number;
   locale: ShuttleLocale;
   deliveryModes: DeliveryMode[];
+  captureFullTranscript: boolean;
+  contextPack: ContextPack | null;
   vaultRoute: VaultRoute;
   modal: ModalState;
 }
@@ -92,6 +96,8 @@ const viewState: ViewState = {
   selectedCrystalIndex: 0,
   locale: getStoredLocale(),
   deliveryModes: getStoredDeliveryModes(),
+  captureFullTranscript: getStoredCaptureFullTranscript(),
+  contextPack: null,
   vaultRoute: "checking",
   modal: null
 };
@@ -161,6 +167,10 @@ function render(app: HTMLElement): void {
                   ${renderDeliveryOption("download", copy.autoDownload)}
                   ${renderDeliveryOption("vault", copy.autoSave)}
                 </div>
+                <label class="transcript-option">
+                  <input type="checkbox" data-action="toggle-transcript" ${viewState.captureFullTranscript ? "checked" : ""} />
+                  <span>${copy.captureFullTranscript}</span>
+                </label>
               </div>
             </div>
             <div class="actions">
@@ -216,6 +226,16 @@ function render(app: HTMLElement): void {
     handleAction("select-thread", app);
   });
 
+  app.querySelector<HTMLInputElement>("input[data-action='toggle-transcript']")?.addEventListener("change", (event) => {
+    viewState.captureFullTranscript = (event.currentTarget as HTMLInputElement).checked;
+    storeCaptureFullTranscript(viewState.captureFullTranscript);
+    if (!viewState.captureFullTranscript) {
+      viewState.contextPack = null;
+    } else {
+      captureContextPackForSelectedThread();
+    }
+    render(app);
+  });
 }
 
 function renderDeliveryOption(mode: DeliveryMode, label: string): string {
@@ -410,6 +430,7 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
     viewState.selectedIndex = Number(action.replace("choose-thread-", ""));
     viewState.modal = null;
     updateStateForSelection();
+    captureContextPackForSelectedThread();
     const selectedThread = viewState.threads[viewState.selectedIndex];
     viewState.message = selectedThread?.warnings.length ? copy.capturedWithWarnings : copy.captured;
     viewState.open = true;
@@ -607,6 +628,7 @@ function applyManualCapture(): void {
   const result = captureNoosThreads(getPageText());
   viewState.threads = result.threads;
   viewState.selectedIndex = 0;
+  viewState.contextPack = null;
 
   if (result.threads.length === 0) {
     viewState.state = "error";
@@ -617,6 +639,7 @@ function applyManualCapture(): void {
     viewState.modal = { kind: "choose-thread" };
   } else {
     updateStateForSelection();
+    captureContextPackForSelectedThread();
     viewState.message = result.threads[0].warnings.length > 0 ? copy.capturedWithWarnings : copy.captured;
     if (result.threads[0].warnings.length > 0) {
       showValidationModal(result.threads[0]);
@@ -638,6 +661,7 @@ function waitForGeneratedHandoff(app: HTMLElement, baselineBegin: number): void 
     viewState.threads = result.threads;
     viewState.selectedIndex = selectedIndex;
     updateStateForSelection();
+    captureContextPackForSelectedThread();
     const deliveryModes = activeDeliveryModes();
     viewState.message =
       candidate.warnings.length > 0 && deliveryModes.length > 0 ? copy.autoDeliverySkipped : candidate.warnings.length > 0 ? copy.capturedWithWarnings : copy.captured;
@@ -924,6 +948,7 @@ function resetForConversationChange(app: HTMLElement): void {
   viewState.message = COPY[viewState.locale].conversationChanged;
   viewState.threads = [];
   viewState.crystals = [];
+  viewState.contextPack = null;
   viewState.selectedIndex = 0;
   viewState.selectedCrystalIndex = 0;
   viewState.modal = null;
@@ -1064,6 +1089,19 @@ async function saveThreadWithMode(mode: DeliveryMode, selectedThread: NoosThread
     return { ok: result.ok, message: result.ok ? copy.downloadFinished : result.message ?? copy.downloadFinished };
   }
 
+  if (viewState.captureFullTranscript) {
+    const pack = await captureContextPackForSelectedThreadWithScroll();
+    if (pack) {
+      const result = await noosVaultAdapter.saveContextPack(pack, window.location.href);
+      if (result.backend === "hub_local") {
+        viewState.vaultRoute = "hub";
+      } else if (result.backend === "downloads_mirror") {
+        viewState.vaultRoute = "mirror";
+      }
+      return { ok: result.ok, message: result.ok ? result.message ?? copy.contextPackSaved : result.message ?? copy.vaultUnavailable };
+    }
+  }
+
   const filename = createThreadFilename(selectedThread.title);
   const result = await noosVaultAdapter.saveThread(selectedThread, { filename });
   if (result.backend === "hub_local") {
@@ -1160,6 +1198,42 @@ function updateStateForSelection(): void {
 function applySaveResult(message: string, ok: boolean): void {
   viewState.state = ok ? "saved" : "error";
   viewState.message = message;
+}
+
+function captureContextPackForSelectedThread(): ContextPack | null {
+  if (!viewState.captureFullTranscript) {
+    return null;
+  }
+  const selectedThread = viewState.threads[viewState.selectedIndex];
+  if (!selectedThread) {
+    return null;
+  }
+  const transcript = captureRenderedChatGptTranscript();
+  viewState.contextPack = createContextPack({
+    title: selectedThread.title,
+    sourceUrl: window.location.href,
+    thread: selectedThread,
+    transcript
+  });
+  return viewState.contextPack;
+}
+
+async function captureContextPackForSelectedThreadWithScroll(): Promise<ContextPack | null> {
+  if (!viewState.captureFullTranscript) {
+    return null;
+  }
+  const selectedThread = viewState.threads[viewState.selectedIndex];
+  if (!selectedThread) {
+    return null;
+  }
+  const transcript = await captureChatGptTranscriptWithScroll();
+  viewState.contextPack = createContextPack({
+    title: selectedThread.title,
+    sourceUrl: window.location.href,
+    thread: selectedThread,
+    transcript
+  });
+  return viewState.contextPack;
 }
 
 function installDragHandlers(app: HTMLElement): void {
@@ -1307,6 +1381,14 @@ function getStoredDeliveryModes(): DeliveryMode[] {
 
 function storeDeliveryModes(modes: DeliveryMode[]): void {
   window.localStorage.setItem("noos-shuttle-delivery-modes", JSON.stringify(uniqueDeliveryModes(modes)));
+}
+
+function getStoredCaptureFullTranscript(): boolean {
+  return window.localStorage.getItem("noos-shuttle-capture-full-transcript") === "true";
+}
+
+function storeCaptureFullTranscript(value: boolean): void {
+  window.localStorage.setItem("noos-shuttle-capture-full-transcript", value ? "true" : "false");
 }
 
 function getExtensionAssetUrl(path: string): string {

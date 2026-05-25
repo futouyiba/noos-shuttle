@@ -14,6 +14,7 @@ export interface ShuttleCopy {
   autoCopy: string;
   autoDownload: string;
   autoSave: string;
+  captureFullTranscript: string;
   copyText: string;
   downloadFile: string;
   saveToVault: string;
@@ -66,6 +67,7 @@ export interface ShuttleCopy {
   copyFinished: string;
   downloadFinished: string;
   vaultFinished: string;
+  contextPackSaved: string;
   vaultUnavailable: string;
 }
 
@@ -86,6 +88,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     autoCopy: "Auto Copy",
     autoDownload: "Auto Download",
     autoSave: "Auto Save",
+    captureFullTranscript: "Capture full conversation transcript",
     copyText: "Copy Text",
     downloadFile: "Download",
     saveToVault: "Save 2 Vault",
@@ -138,6 +141,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     copyFinished: "Copy finished.",
     downloadFinished: "Download finished.",
     vaultFinished: "Saved to NOOS Vault.",
+    contextPackSaved: "Context Pack saved to NOOS Vault.",
     vaultUnavailable: "NOOS Vault save unavailable."
   },
   zh: {
@@ -154,6 +158,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     autoCopy: "自动复制",
     autoDownload: "自动下载",
     autoSave: "自动入库",
+    captureFullTranscript: "同时抓取完整对话 transcript",
     copyText: "复制文本",
     downloadFile: "下载文件",
     saveToVault: "存入库",
@@ -206,6 +211,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     copyFinished: "复制完成。",
     downloadFinished: "下载完成。",
     vaultFinished: "已存入 NOOS 文件库。",
+    contextPackSaved: "Context Pack 已存入 NOOS 文件库。",
     vaultUnavailable: "NOOS 文件库保存暂不可用。"
   }
 };
