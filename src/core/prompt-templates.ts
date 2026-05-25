@@ -37,11 +37,14 @@ export function createGenerateThreadPrompt(
 - target_agent: codex
 - status: active
 - created_at: ${today}
-- title
+- title: 简短中文标题，必须具体，不要写“NOOS Thread”“交接稿”这类泛化标题
+- handoff_key: 一个稳定、短小、表意的英文/拼音 key，例如 noos-hub-auto-connect
+- filename_slug: 一个 3 到 8 个英文单词组成的短 slug，只能使用小写英文字母、数字和连字符，例如 noos-hub-auto-connect
 - tags
 - preferred_path，路径格式参考：${examplePath}
 
-frontmatter 必须让用户可以区分多份交接稿：title、created_at、handoff_revision、status、target_agent、preferred_path 都要填写清楚。
+frontmatter 必须让用户可以区分多份交接稿：title、handoff_key、filename_slug、created_at、handoff_revision、status、target_agent、preferred_path 都要填写清楚。
+filename_slug 和 handoff_key 只能依据当前交接稿内容命名，不要使用 example-thread-title、noos-thread、handoff、thread、untitled 这类占位词或泛化词。
 
 正文请使用中文，并严格包含以下章节标题。不要改写、合并或删除这些标题；如果某一节没有内容，也保留标题并写“无”：
 # 交接：<标题>
@@ -86,11 +89,14 @@ Use YAML frontmatter with:
 - target_agent: codex
 - status: active
 - created_at: ${today}
-- title
+- title: a short, specific title; do not use generic titles like "NOOS Thread" or "Handoff"
+- handoff_key: a stable, short, semantic English key, for example noos-hub-auto-connect
+- filename_slug: a short slug with 3 to 8 English words; use lowercase letters, numbers, and hyphens only, for example noos-hub-auto-connect
 - tags
 - preferred_path, using this pattern: ${examplePath}
 
-The frontmatter must let the user distinguish multiple handoffs: title, created_at, handoff_revision, status, target_agent, and preferred_path must be explicit.
+The frontmatter must let the user distinguish multiple handoffs: title, handoff_key, filename_slug, created_at, handoff_revision, status, target_agent, and preferred_path must be explicit.
+filename_slug and handoff_key must be based only on this handoff's content. Do not use placeholder or generic terms such as example-thread-title, noos-thread, handoff, thread, or untitled.
 
 The body must include these exact section headings. Do not rewrite, merge, or remove them; if a section has no content, keep the heading and write "None":
 # Thread: <title>

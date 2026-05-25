@@ -13,6 +13,8 @@ export interface NoosThreadFrontmatter {
   created_at?: string;
   handoff_revision?: string;
   title?: string;
+  handoff_key?: string;
+  filename_slug?: string;
   tags?: string[];
   preferred_path?: string;
 }

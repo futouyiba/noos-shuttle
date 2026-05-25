@@ -163,8 +163,43 @@ nav button:hover {
 
 .topbar-actions {
   display: flex;
+  align-items: center;
   gap: 8px;
   flex: 0 0 auto;
+}
+
+.recovery-pill {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  border: 1px solid rgba(23, 32, 26, 0.12);
+  border-radius: 7px;
+  background: #ffffff;
+  color: #254738;
+  font: 750 12px/1.2 system-ui, sans-serif;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.recovery-pill[data-recovery-state="recovering"],
+.recovery-pill[data-recovery-state="resumed"] {
+  border-color: rgba(35, 103, 173, 0.28);
+  background: #eef6ff;
+  color: #174a7a;
+}
+
+.recovery-pill[data-recovery-state="degraded"],
+.recovery-pill[data-recovery-state="relaunching"] {
+  border-color: rgba(161, 58, 58, 0.28);
+  background: #fff2f0;
+  color: #8d2b25;
+}
+
+.section-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .eyebrow {
@@ -556,6 +591,38 @@ h3 {
   border-left: 4px solid #8b5a11;
 }
 
+.vault-command {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border: 1px solid rgba(23, 32, 26, 0.1);
+  border-left: 4px solid #1d6b4f;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 16px;
+}
+
+.vault-command h3 {
+  font-size: 20px;
+}
+
+.vault-command p:not(.eyebrow) {
+  max-width: 720px;
+  margin-top: 6px;
+  color: #56625a;
+  font: 600 13px/1.45 system-ui, sans-serif;
+}
+
+.connection-pill {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #dff2e7;
+  color: #14573d;
+  padding: 7px 10px;
+  font: 850 12px/1 system-ui, sans-serif;
+}
+
 .next-action--ready {
   border-left-color: #1d6b4f;
 }
@@ -744,15 +811,156 @@ li small {
   padding-top: 14px;
 }
 
-.handoff-layout {
+.vault-metrics {
   display: grid;
-  grid-template-columns: 1.2fr 1fr 1fr;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
+}
+
+.vault-layout {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.vault-inline-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: #607067;
+  font: 700 12px/1.3 system-ui, sans-serif;
+}
+
+.vault-inline-stats span {
+  border: 1px solid rgba(23, 32, 26, 0.1);
+  border-radius: 999px;
+  background: #ffffff;
+  padding: 6px 10px;
+}
+
+.vault-inline-stats strong {
+  color: #17201a;
+}
+
+.vault-recent {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.recent-panel {
+  display: grid;
+  gap: 12px;
+  border: 1px solid rgba(23, 32, 26, 0.1);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 14px;
+}
+
+.recent-panel header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.recent-panel p {
+  margin-top: 5px;
+  color: #657169;
+  font: 600 12px/1.35 system-ui, sans-serif;
+}
+
+.recent-list {
+  display: grid;
+  gap: 8px;
+}
+
+.recent-file {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  border: 1px solid rgba(23, 32, 26, 0.08);
+  border-radius: 7px;
+  background: #f9fbf9;
+  padding: 10px;
+}
+
+.recent-file strong,
+.recent-file span,
+.recent-file code,
+.recent-file small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-file strong {
+  font: 850 13px/1.25 system-ui, sans-serif;
+}
+
+.recent-file span {
+  color: #1d6b4f;
+  font: 750 12px/1.25 system-ui, sans-serif;
+}
+
+.recent-file small {
+  color: #657169;
+  font: 500 11px/1.25 system-ui, sans-serif;
+}
+
+.recent-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 4px;
+}
+
+.recent-actions button {
+  min-height: 28px;
+  padding: 0 9px;
+  font-size: 11px;
+}
+
+.recent-actions button:last-child {
+  border-color: rgba(36, 90, 120, 0.3);
+  background: #edf7fb;
+  color: #1d4b66;
+}
+
+.recent-empty {
+  border-radius: 7px;
+  background: #f6f8f6;
+  padding: 12px;
+  color: #607067;
+  font: 600 12px/1.45 system-ui, sans-serif;
+}
+
+.diagnostics {
+  border: 1px solid rgba(23, 32, 26, 0.1);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 12px 14px;
+}
+
+.diagnostics summary {
+  cursor: pointer;
+  font: 850 13px/1.2 system-ui, sans-serif;
+}
+
+.diagnostics-grid {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
 }
 
 .panel {
   min-height: 170px;
   padding: 14px;
+}
+
+.panel--primary {
+  border-left: 4px solid #1d6b4f;
 }
 
 .panel p {
@@ -836,7 +1044,9 @@ li small {
 
   .card-grid,
   .pipeline,
-  .handoff-layout {
+  .vault-layout,
+  .vault-recent,
+  .vault-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

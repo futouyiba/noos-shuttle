@@ -36,8 +36,12 @@ tar \
   -czf "$HUB_PATH" \
   apps/noos-hub \
   scripts/noos-hub-launch.sh \
+  scripts/noos-open.sh \
+  scripts/noos-project-runtime.sh \
+  scripts/noos-find-artifact.sh \
   scripts/noos-find-crystal.sh \
   scripts/noos-import-browser-vault.sh \
+  scripts/noos-sync-llm-wiki.sh \
   scripts/noos-sync-handoffs-git.sh \
   scripts/noos-install.sh \
   scripts/noos-doctor.sh

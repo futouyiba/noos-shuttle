@@ -125,6 +125,13 @@ This is Chrome's security requirement for unpacked extensions in a regular profi
 
 ## ChatGPT Workflow
 
+NOOS uses four primary object meanings:
+
+- Handoff: what to do next.
+- Crystal: what has already been distilled.
+- Result: what this run produced.
+- Artifact: what concrete file, image, table, or payload was generated or carried.
+
 1. Open the NOOS Shuttle floating button in ChatGPT.
 2. For the combined workflow, click `Generate & Collect`.
 3. For split operations, click `Generate Only` or `Collect Only`.
@@ -134,11 +141,12 @@ This is Chrome's security requirement for unpacked extensions in a regular profi
 
 `Save 2 Vault` is local-first. When NOOS Hub is running, the extension writes through Hub to `~/.noos/vault/handoffs/active/`. If Hub is unavailable, the extension falls back to the browser vault mirror under `~/Downloads/NOOS/vault/handoffs/active/`, which Hub can import later. Git sync remains a separate Hub action when you want handoffs committed and pushed for remote agents.
 
-For first-time direct Hub writes, open NOOS Hub and click `Connect Browser Shuttle`, then use `Save 2 Vault` within the pairing window.
+For first-time direct Hub writes, keep NOOS Hub running and use `Save 2 Vault`. Browser Shuttle connects automatically and stores a local token in the browser profile. If Hub is unavailable, saves fall back to the Browser Vault Mirror.
 
 Use `Extract Crystal` when the current conversation contains reusable conclusions rather than a downstream coding task. It asks ChatGPT to produce a `NOOS Crystal`, saves it to `~/.noos/vault/crystals/active/` when Hub is available, and copies the `crystal_key` to the clipboard. Coding agents can locate it with:
 
 ```sh
+scripts/noos-find-artifact.sh --kind crystal <crystal-key>
 scripts/noos-find-crystal.sh <crystal-key>
 ```
 
@@ -170,6 +178,39 @@ The resolver supports:
 - Local inbox directories such as `~/NOOS/inbox` and `~/Downloads`
 - A configured GitHub repository and handoff path
 
+For local Vault lookup by semantic key, title, filename, `source_url`, or body text:
+
+```sh
+scripts/noos-find-artifact.sh --kind handoff <query>
+scripts/noos-find-artifact.sh --kind crystal <query>
+scripts/noos-find-artifact.sh --kind result <query>
+scripts/noos-find-artifact.sh <query>
+scripts/noos-open.sh <key-or-text>
+scripts/noos-project-runtime.sh <key-or-path>
+```
+
+To bridge durable NOOS knowledge into an LLM Wiki project, project NOOS objects into the LLM Wiki source folder and let LLM Wiki ingest them:
+
+```sh
+scripts/noos-sync-llm-wiki.sh --wiki-project /path/to/my-wiki
+scripts/noos-sync-llm-wiki.sh --wiki-project /path/to/my-wiki --dry-run
+```
+
+The bridge writes to `/path/to/my-wiki/raw/sources/noos/...`, not directly to `/path/to/my-wiki/wiki/`. Crystals are treated as durable by default. Handoffs and Results must be explicitly marked with fields such as `noos_wiki: true` or `permanence: permanent`, unless you pass `--include-temporary`.
+
+`noos-project-runtime.sh` creates `.noos/runtime/tasks/<task-key>/` with `READ_ME_FIRST.md`, `TASK.md`, `CONTEXT_PACK.md`, `FILE_MAP.md`, `GRAPH.md`, `GRAPH.json`, `SOURCES.md`, `READ_LOG.md`, `RESULT_SUMMARY.md`, copied sources, artifacts, and output directories. It also writes `.noos/runtime/current.json` and refreshes `.noos/runtime/current/` as a compatibility mirror.
+
+In NOOS Hub, the Vault page also exposes this path visually: each recent Handoff / Crystal row can open the source file or generate an Agent Projection for Codex, Claude Code, and OpenCode.
+
+To verify the reverse path with the real built extension and local Hub:
+
+```sh
+npm run build
+npm run verify:extension-project
+```
+
+The verifier launches Chromium with `dist/` loaded as an extension, opens a ChatGPT Project-like fixture, reads a recent Vault object through Hub, and checks that Shuttle attaches it as a Markdown file to the Project source file input.
+
 Agent transfer capability:
 
 ```sh
@@ -197,11 +238,14 @@ User-level:
   cache/
   chrome-profile/
   vault/
-    wiki/
-    handoffs/
-      active/
-    crystals/
-      active/
+    index/{keys.json,objects.json,graph.json,backlinks.json}
+    handoffs/{active,done,archived}/
+    crystals/{active,curated,archived}/
+    results/{inbox,accepted,archived}/
+    artifacts/{files,sidecars,thumbs}/
+    packs/context/{active,archived}/
+    packs/prompt/{active,sent,archived}/
+    runtime/projections/{current,history}/
 ```
 
 Project-level:
@@ -214,6 +258,13 @@ Project-level:
   handoffs/
     active/
     done/
+  crystals/
+    active/
+    done/
+  runtime/
+    current/
+    current.json
+    tasks/
   context/
     briefs/
   skills/
@@ -275,6 +326,8 @@ git push origin v0.1.2
 - `docs/noos-install-architecture.md`: install architecture
 - `docs/noos-downstream-integration.md`: downstream agent integration design
 - `docs/noos-handoff-vault-strategy.md`: handoff vault storage strategy
+- `docs/noos-llm-wiki-bridge.md`: NOOS to LLM Wiki source bridge design
+- `docs/noos-vault-object-model.md`: Vault object model, key/index, ingest protocol, prompt feeding, and runtime projection
 - `docs/noos-hub-local-write-channel.md`: Hub-owned local write channel design and risks
 - `docs/noos-shuttle-page-context-events.md`: browser page context event and state handling
 - `docs/noos-thread-format.md`: NOOS Thread v0.1 format

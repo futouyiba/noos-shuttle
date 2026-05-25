@@ -41,7 +41,12 @@ export function captureNoosThreads(source: string, detectedAt = new Date().toISO
     }
 
     const end = endMarkerStart + NOOS_END_MARKER.length;
-    const rawMarkdown = source.slice(begin, end).trim();
+    const rawMarkdown = normalizeCapturedThread(source.slice(begin, end)).trim();
+    if (isPlaceholderThread(rawMarkdown)) {
+      searchFrom = end;
+      continue;
+    }
+
     const parsed = parseMarkdownFrontmatter(rawMarkdown);
     const title = deriveTitle(parsed.frontmatter?.title, parsed.bodyMarkdown);
     const warnings = validateThread(parsed.frontmatter, parsed.bodyMarkdown, parsed.warnings);
@@ -61,6 +66,75 @@ export function captureNoosThreads(source: string, detectedAt = new Date().toISO
   }
 
   return { threads, errors };
+}
+
+function normalizeCapturedThread(rawMarkdown: string): string {
+  const firstFence = rawMarkdown.indexOf("---");
+  if (firstFence === -1) {
+    return rawMarkdown;
+  }
+
+  const secondFence = rawMarkdown.indexOf("\n---", firstFence + 3);
+  if (secondFence === -1) {
+    return rawMarkdown;
+  }
+
+  const beforeFrontmatter = rawMarkdown.slice(0, firstFence + 3);
+  const frontmatter = rawMarkdown.slice(firstFence + 3, secondFence);
+  const afterFrontmatter = rawMarkdown.slice(secondFence);
+  const repairedFrontmatter = repairFrontmatterLineBreaks(frontmatter);
+
+  return `${beforeFrontmatter}${repairedFrontmatter}${afterFrontmatter}`;
+}
+
+function repairFrontmatterLineBreaks(frontmatter: string): string {
+  const frontmatterKeys = [
+    "type",
+    "version",
+    "handoff_revision",
+    "source_app",
+    "source_url",
+    "target_agent",
+    "status",
+    "created_at",
+    "title",
+    "handoff_key",
+    "filename_slug",
+    "tags",
+    "preferred_path"
+  ];
+  const keyPattern = frontmatterKeys.join("|");
+  const lines = frontmatter.split(/\r?\n/);
+  const repaired: string[] = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    const nextLine = lines[index + 1] ?? "";
+    const emptyValue = line.match(new RegExp(`^(${keyPattern}):\\s*$`));
+
+    if (emptyValue && nextLine.trim() && !new RegExp(`^\\s*(?:-|${keyPattern}:)`).test(nextLine.trim())) {
+      repaired.push(`${emptyValue[1]}: ${nextLine.trim()}`);
+      index += 1;
+      continue;
+    }
+
+    repaired.push(line);
+  }
+
+  return repaired
+    .join("\n")
+    .replace(new RegExp(`([^\\n])\\s+((?:${keyPattern}):\\s+)`, "g"), "$1\n$2")
+    .replace(new RegExp(`(\\n\\s*-\\s+[^\\n]*?)\\s+((?:${keyPattern}):\\s+)`, "g"), "$1\n$2");
+}
+
+function isPlaceholderThread(rawMarkdown: string): boolean {
+  const withoutMarkers = rawMarkdown
+    .replace(/^\s*<!-- NOOS:THREAD:BEGIN -->\s*/, "")
+    .replace(/\s*<!-- NOOS:THREAD:END -->\s*$/, "")
+    .trim();
+  const withoutCodeTicks = withoutMarkers.replace(/^`+\s*/, "").replace(/\s*`+$/, "").trim();
+
+  return withoutCodeTicks === "..." || withoutCodeTicks === "…";
 }
 
 function deriveTitle(frontmatterTitle: string | undefined, bodyMarkdown: string): string {

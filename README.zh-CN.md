@@ -125,6 +125,13 @@ scripts/noos-install.sh browser --mode manual-unpacked
 
 ## ChatGPT 工作流
 
+NOOS 里的四个核心对象先按这个心智模型理解：
+
+- Handoff：接下来要做什么。
+- Crystal：已经沉淀了什么。
+- Result：这次输出了什么。
+- Artifact：具体生成或携带了什么文件、图片、表格或载荷。
+
 1. 在 ChatGPT 打开 NOOS Shuttle 浮动按钮。
 2. 如需合并操作，点击 `生成并收取`。
 3. 如需拆开操作，点击 `单独生成` 或 `单独收取`。
@@ -134,11 +141,12 @@ scripts/noos-install.sh browser --mode manual-unpacked
 
 `存入库` 是 local-first。NOOS Hub 运行时，插件会通过 Hub 写入 `~/.noos/vault/handoffs/active/`。如果 Hub 不可用，插件会回退到 `~/Downloads/NOOS/vault/handoffs/active/` 这个 NOOS 浏览器 vault mirror，之后可由 Hub 导入；如果要把 handoff 提交并推送到 Git，则继续使用 Hub 里的单独 Git 同步按钮。
 
-首次通过 Hub 直写时，请先打开 NOOS Hub，点击 `连接 Browser Shuttle`，然后在配对窗口内使用插件的 `存入库`。
+首次通过 Hub 直写时，只需要保持 NOOS Hub 运行，然后在插件里使用 `存入库`。Browser Shuttle 会自动连接并把本机 token 存在浏览器 profile 里；如果 Hub 不可用，则回退到 Browser Vault Mirror。
 
 当当前对话里形成的是可复用结论，而不是要交给下游 coding agent 的任务时，使用 `提取结晶`。它会让 ChatGPT 输出 `NOOS Crystal`，Hub 可用时保存到 `~/.noos/vault/crystals/active/`，并把 `crystal_key` 复制到剪贴板。Coding agent 可以用下面的命令按 key 查找：
 
 ```sh
+scripts/noos-find-artifact.sh --kind crystal <crystal-key>
 scripts/noos-find-crystal.sh <crystal-key>
 ```
 
@@ -170,6 +178,39 @@ Resolver 支持：
 - `~/NOOS/inbox`、`~/Downloads` 等本地 inbox
 - 配置好的 GitHub repo/path
 
+如果要按语义 key、标题、文件名、`source_url` 或正文在本机 Vault 中查找 handoff / crystal：
+
+```sh
+scripts/noos-find-artifact.sh --kind handoff <query>
+scripts/noos-find-artifact.sh --kind crystal <query>
+scripts/noos-find-artifact.sh --kind result <query>
+scripts/noos-find-artifact.sh <query>
+scripts/noos-open.sh <key-or-text>
+scripts/noos-project-runtime.sh <key-or-path>
+```
+
+如果要把 NOOS 中偏长期沉淀的知识接入 LLM Wiki，可以把 NOOS 对象投影到 LLM Wiki 的 source 目录，再让 LLM Wiki 自己 ingest：
+
+```sh
+scripts/noos-sync-llm-wiki.sh --wiki-project /path/to/my-wiki
+scripts/noos-sync-llm-wiki.sh --wiki-project /path/to/my-wiki --dry-run
+```
+
+这个桥接写入 `/path/to/my-wiki/raw/sources/noos/...`，不会直接写入 `/path/to/my-wiki/wiki/`。Crystal 默认视为可长期沉淀；Handoff 和 Result 默认是临时/任务型，只有显式标记 `noos_wiki: true`、`permanence: permanent` 等字段时才会进入 LLM Wiki，除非使用 `--include-temporary`。
+
+`noos-project-runtime.sh` 会生成 `.noos/runtime/tasks/<task-key>/`，其中包含 `READ_ME_FIRST.md`、`TASK.md`、`CONTEXT_PACK.md`、`FILE_MAP.md`、`GRAPH.md`、`GRAPH.json`、`SOURCES.md`、`READ_LOG.md`、`RESULT_SUMMARY.md`、复制后的 sources、artifacts 和 output 目录。它也会写入 `.noos/runtime/current.json`，并刷新 `.noos/runtime/current/` 作为兼容镜像。
+
+在 NOOS Hub 里，Vault 页面也提供了图形化入口：最近 Handoff / Crystal 的每一行都可以打开源文件，或直接生成给 Codex、Claude Code、OpenCode 使用的 Agent Projection。
+
+如果要用真实构建好的浏览器插件和本机 Hub 验证反向投喂链路：
+
+```sh
+npm run build
+npm run verify:extension-project
+```
+
+这个验证会启动带 `dist/` 扩展的 Chromium，打开一个 ChatGPT Project-like 验证页，通过 Hub 读取最近 Vault 对象，并检查 Shuttle 是否能把它作为 Markdown 文件附加到 Project source 的文件输入框。
+
 Agent 转移能力：
 
 ```sh
@@ -197,11 +238,14 @@ python3 .noos/skills/noos-transfer-handoff/scripts/plan_transfer.py --repo-root 
   cache/
   chrome-profile/
   vault/
-    wiki/
-    handoffs/
-      active/
-    crystals/
-      active/
+    index/{keys.json,objects.json,graph.json,backlinks.json}
+    handoffs/{active,done,archived}/
+    crystals/{active,curated,archived}/
+    results/{inbox,accepted,archived}/
+    artifacts/{files,sidecars,thumbs}/
+    packs/context/{active,archived}/
+    packs/prompt/{active,sent,archived}/
+    runtime/projections/{current,history}/
 ```
 
 项目级：
@@ -214,6 +258,13 @@ python3 .noos/skills/noos-transfer-handoff/scripts/plan_transfer.py --repo-root 
   handoffs/
     active/
     done/
+  crystals/
+    active/
+    done/
+  runtime/
+    current/
+    current.json
+    tasks/
   context/
     briefs/
   skills/
@@ -275,6 +326,8 @@ git push origin v0.1.2
 - `docs/noos-install-architecture.md`：整体安装架构
 - `docs/noos-downstream-integration.md`：下游 agent 集成设计
 - `docs/noos-handoff-vault-strategy.md`：handoff 入库策略
+- `docs/noos-llm-wiki-bridge.md`：NOOS 到 LLM Wiki source 层桥接设计
+- `docs/noos-vault-object-model.md`：Vault 对象模型、key/index、入库协议、上下文投喂和 runtime projection
 - `docs/noos-hub-local-write-channel.md`：Hub 本机写入通道设计和风险
 - `docs/noos-shuttle-page-context-events.zh-CN.md`：浏览器页面上下文事件与状态处理
 - `docs/noos-thread-format.md`：NOOS Thread v0.1 格式
