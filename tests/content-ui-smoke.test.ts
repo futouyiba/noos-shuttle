@@ -114,6 +114,52 @@ describe("content script smoke flow", () => {
     await page.close();
   });
 
+  it("downloads generated ChatGPT images only from the selected reply scope", async () => {
+    const page = await newMockChatPage({ startWithHandoffs: false });
+    await page.evaluate(() => {
+      const firstArticle = document.createElement("article");
+      firstArticle.innerHTML = `
+        <p id="target-reply-text">selected reply</p>
+        <img
+          alt="Blue character concept"
+          width="512"
+          height="512"
+          src="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='512'%20height='512'%3E%3Crect%20width='512'%20height='512'%20fill='blue'/%3E%3C/svg%3E"
+        />
+        <img alt="tiny icon" width="32" height="32" src="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='32'%20height='32'%3E%3C/svg%3E" />
+      `;
+      const secondArticle = document.createElement("article");
+      secondArticle.innerHTML = `
+        <p>another reply</p>
+        <img
+          alt="Red environment concept"
+          width="512"
+          height="512"
+          src="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='512'%20height='512'%3E%3Crect%20width='512'%20height='512'%20fill='red'/%3E%3C/svg%3E"
+        />
+      `;
+      document.querySelector("main")?.append(firstArticle, secondArticle);
+      const range = document.createRange();
+      range.selectNodeContents(document.querySelector("#target-reply-text")!);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    });
+
+    await clickShuttle(page, ".fab");
+    await clickShuttle(page, "[data-action='download-images']");
+    await waitForShuttleText(page, "已下载 1 张图片到 Downloads/NOOS/vault/artifacts/files/chatgpt-images/");
+
+    const request = await page.evaluate(() => (globalThis as unknown as { lastArtifactDownload?: unknown }).lastArtifactDownload);
+    expect(request).toMatchObject({
+      type: "NOOS_DOWNLOAD_ARTIFACTS",
+      directory: expect.stringContaining("chatgpt-images/"),
+      files: [{ filename: "01-blue-character-concept.svg" }]
+    });
+    expect(JSON.stringify(request)).not.toContain("red-environment-concept");
+    await page.close();
+  });
+
   it("lists recent Vault objects and attaches a selected object to the current chat", async () => {
     const page = await newMockChatPage({ startWithHandoffs: false, withFileInput: true });
 
@@ -223,13 +269,35 @@ describe("content script smoke flow", () => {
     await page.close();
   });
 
+  it("exports visible ChatGPT Project sources into a NOOS package", async () => {
+    const page = await newMockProjectPage();
+
+    await page.locator(".noos-project-export-sources-button").click();
+    await waitForShuttleText(page, "已导出 2 个 Project 源条目到 NOOS");
+
+    const saveRequest = await page.evaluate(() => (globalThis as unknown as { lastContextPackSave?: unknown }).lastContextPackSave);
+    expect(saveRequest).toMatchObject({
+      type: "NOOS_SAVE_CONTEXT_PACK_TO_VAULT",
+      directory: expect.stringContaining("chatgpt-project-sources/")
+    });
+    expect((saveRequest as { files: Array<{ path: string; content: string }> }).files.map((file) => file.path)).toEqual([
+      "README.md",
+      "manifest.md",
+      "sources/001-combat-rules-md.md",
+      "sources/002-economy-sheet-xlsx.md"
+    ]);
+    expect(JSON.stringify(saveRequest)).toContain("Combat Rules.md");
+    expect(JSON.stringify(saveRequest)).toContain("Economy Sheet.xlsx");
+    await page.close();
+  });
+
   it("adds the Project import entry after ChatGPT SPA navigation", async () => {
     const page = await newMockChatPage({ startWithHandoffs: false });
 
     await page.evaluate(() => {
       window.history.pushState({}, "", "/g/g-test/project");
       const section = document.createElement("section");
-      section.innerHTML = `<h2>Project sources</h2><input type="file" />`;
+      section.innerHTML = `<h2>Project sources</h2><input type="file" /><ul><li>Design Brief.md</li></ul>`;
       document.querySelector("main")?.append(section);
     });
 
@@ -318,6 +386,17 @@ async function newMockChatPage(
                   ? `<!-- NOOS:CRYSTAL:BEGIN -->\n---\ntype: noos_crystal\nlookup_key: ${lookupKey}\ntitle: Latest Crystal From Vault\n---\n\n# Latest Crystal From Vault\n\nKnowledge that should be fed back to ChatGPT.\n\n<!-- NOOS:CRYSTAL:END -->`
                   : `<!-- NOOS:THREAD:BEGIN -->\n---\ntype: noos_thread\nlookup_key: ${lookupKey}\ntitle: Latest Handoff From Vault\n---\n\n# Latest Handoff From Vault\n\nTask context that should be fed back to ChatGPT.\n\n<!-- NOOS:THREAD:END -->`
               }
+            };
+          }
+
+          if (message.type === "NOOS_DOWNLOAD_ARTIFACTS") {
+            (globalThis as unknown as { lastArtifactDownload?: unknown }).lastArtifactDownload = message;
+            return {
+              ok: true,
+              backend: "downloads_mirror",
+              count: (message as { files?: unknown[] }).files?.length ?? 0,
+              location: `Downloads/NOOS/vault/artifacts/files/${(message as { directory?: string }).directory ?? "chatgpt-images"}`,
+              message: "Downloaded artifacts"
             };
           }
 
@@ -412,6 +491,15 @@ async function newMockProjectPage(options: { withFileInput?: boolean } = {}): Pr
               }
             };
           }
+          if (message.type === "NOOS_SAVE_CONTEXT_PACK_TO_VAULT") {
+            (globalThis as unknown as { lastContextPackSave?: unknown }).lastContextPackSave = message;
+            return {
+              ok: true,
+              backend: "hub_local",
+              location: "/tmp/noos/vault/context-packs/chatgpt-project-sources/mock",
+              message: "Context Pack saved to local NOOS Vault"
+            };
+          }
           return { ok: true };
         },
         lastError: undefined,
@@ -436,6 +524,10 @@ async function newMockProjectPage(options: { withFileInput?: boolean } = {}): Pr
       <section>
         <h2>Project sources</h2>
         ${options.withFileInput === false ? "" : `<input type="file" />`}
+        <ul>
+          <li><a href="/project/source/combat-rules">Combat Rules.md</a></li>
+          <li><button type="button">Economy Sheet.xlsx</button></li>
+        </ul>
       </section>
     </main>
   </body>

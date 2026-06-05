@@ -53,6 +53,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (isArtifactDownloadMessage(message)) {
+    downloadArtifactsToMirror(message.directory, message.files)
+      .then(sendResponse)
+      .catch((error) => {
+        sendResponse({
+          ok: false,
+          errorCode: "artifact_download_failed",
+          message: error instanceof Error ? error.message : "Artifact download failed."
+        });
+      });
+
+    return true;
+  }
+
   if (isVaultStatusMessage(message)) {
     getVaultStatus().then(sendResponse);
     return true;
@@ -119,6 +133,12 @@ interface ContextPackSaveMessage {
   sourceUrl?: string;
 }
 
+interface ArtifactDownloadMessage {
+  type: "NOOS_DOWNLOAD_ARTIFACTS";
+  directory: string;
+  files: Array<{ filename: string; url: string }>;
+}
+
 interface VaultStatusMessage {
   type: "NOOS_GET_VAULT_STATUS";
 }
@@ -175,6 +195,20 @@ function isContextPackSaveMessage(value: unknown): value is ContextPackSaveMessa
     typeof message.directory === "string" &&
     Array.isArray(message.files) &&
     message.files.every((file) => typeof file?.path === "string" && typeof file?.content === "string")
+  );
+}
+
+function isArtifactDownloadMessage(value: unknown): value is ArtifactDownloadMessage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const message = value as Partial<ArtifactDownloadMessage>;
+  return (
+    message.type === "NOOS_DOWNLOAD_ARTIFACTS" &&
+    typeof message.directory === "string" &&
+    Array.isArray(message.files) &&
+    message.files.every((file) => typeof file?.filename === "string" && typeof file?.url === "string")
   );
 }
 
@@ -455,6 +489,34 @@ async function saveContextPackToVault(
     message: ok
       ? `Context Pack saved to ${backend === "hub_local" ? "local NOOS Vault" : "Downloads Browser Vault Mirror"}: ${location}`
       : `Context Pack save finished with issues. Check ${location}. Source: ${sourceUrl ?? "current page"}`
+  };
+}
+
+async function downloadArtifactsToMirror(
+  directory: string,
+  files: Array<{ filename: string; url: string }>
+): Promise<{ ok: boolean; backend: string; location: string; message: string; count: number }> {
+  const safeDirectory = sanitizeRelativePath(directory) || "chatgpt-images";
+  const basePath = `NOOS/vault/artifacts/files/${safeDirectory}`;
+  let count = 0;
+
+  for (const file of files) {
+    const filename = sanitizeFilename(file.filename);
+    await chrome.downloads.download({
+      url: file.url,
+      filename: `${basePath}/${filename}`,
+      conflictAction: "uniquify",
+      saveAs: false
+    });
+    count += 1;
+  }
+
+  return {
+    ok: true,
+    backend: "downloads_mirror",
+    location: `Downloads/${basePath}`,
+    message: `Downloaded ${count} artifact(s) to Downloads/${basePath}.`,
+    count
   };
 }
 

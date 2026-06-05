@@ -75,6 +75,20 @@ interface VaultObjectContent {
   content: string;
 }
 
+interface ProjectSourceSnapshot {
+  title: string;
+  detail?: string;
+  href?: string;
+}
+
+interface GeneratedImageArtifact {
+  filename: string;
+  url: string;
+  sourceUrl: string;
+  width: number;
+  height: number;
+}
+
 interface ActiveWait {
   observer: MutationObserver;
   timeoutId: number;
@@ -226,6 +240,7 @@ function render(app: HTMLElement): void {
               <button type="button" data-action="generate">${copy.draftHandoff}</button>
               <button type="button" data-action="capture">${copy.collectHandoff}</button>
               <button type="button" data-action="capture-crystal">${copy.scanCrystal}</button>
+              <button type="button" data-action="download-images">${copy.downloadImages}</button>
             </div>
             ${renderVaultRoute(copy)}
             ${renderVaultImport()}
@@ -784,6 +799,11 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
     return;
   }
 
+  if (action === "download-images") {
+    await downloadGeneratedImages(app);
+    return;
+  }
+
   const selectedThread = viewState.threads[viewState.selectedIndex];
   if (!selectedThread) {
     viewState.state = "error";
@@ -908,6 +928,237 @@ function applyManualCrystalCapture(): void {
   viewState.state = selected.warnings.length ? "warning" : "captured";
   viewState.message = selected.warnings.length ? copy.crystalCapturedWithWarnings : copy.crystalCaptured;
   viewState.modal = { kind: "choose-crystal" };
+}
+
+async function downloadGeneratedImages(app: HTMLElement): Promise<void> {
+  const copy = COPY[viewState.locale];
+  const images = await collectGeneratedImages();
+  if (images.length === 0) {
+    viewState.state = "warning";
+    viewState.open = true;
+    viewState.message = copy.noGeneratedImagesDetected;
+    viewState.modal = {
+      kind: "warnings",
+      title: copy.deliveryIssueTitle,
+      message: copy.noGeneratedImagesDetected,
+      warnings: [copy.noGeneratedImagesDetected]
+    };
+    render(app);
+    return;
+  }
+
+  const directory = `chatgpt-images/${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${slugifyProjectSourceText(document.title || "chatgpt-images")}`;
+  let response: { ok?: boolean; location?: string; message?: string; count?: number };
+  try {
+    response = await sendExtensionMessage<
+      { type: "NOOS_DOWNLOAD_ARTIFACTS"; directory: string; files: Array<{ filename: string; url: string }> },
+      { ok?: boolean; location?: string; message?: string; count?: number }
+    >({
+      type: "NOOS_DOWNLOAD_ARTIFACTS",
+      directory,
+      files: images.map((image) => ({ filename: image.filename, url: image.url }))
+    });
+  } catch (error) {
+    response = {
+      ok: false,
+      message: error instanceof Error ? error.message : copy.vaultUnavailable
+    };
+  }
+
+  if (!response.ok) {
+    viewState.state = "error";
+    viewState.open = true;
+    viewState.message = response.message ?? copy.vaultUnavailable;
+    render(app);
+    return;
+  }
+
+  const location = response.location || `Downloads/NOOS/vault/artifacts/files/${directory}`;
+  viewState.state = "saved";
+  viewState.open = true;
+  viewState.message = copy.imagesDownloaded(response.count ?? images.length, location);
+  viewState.modal = {
+    kind: "success",
+    title: copy.deliverySuccessTitle,
+    message: viewState.message
+  };
+  render(app);
+}
+
+async function collectGeneratedImages(): Promise<GeneratedImageArtifact[]> {
+  const scope = findGeneratedImageScope();
+  if (!scope) {
+    return [];
+  }
+
+  const candidates = Array.from(scope.querySelectorAll<HTMLImageElement>("img"));
+  const images: GeneratedImageArtifact[] = [];
+  const seen = new Set<string>();
+
+  for (const image of candidates) {
+    const src = image.currentSrc || image.src;
+    if (!src || src.startsWith("chrome-extension://")) {
+      continue;
+    }
+    const width = image.naturalWidth || Math.round(image.getBoundingClientRect().width);
+    const height = image.naturalHeight || Math.round(image.getBoundingClientRect().height);
+    if (!isLikelyGeneratedImage(image, width, height)) {
+      continue;
+    }
+
+    const downloadableUrl = await imageDownloadUrl(src);
+    if (!downloadableUrl || seen.has(downloadableUrl)) {
+      continue;
+    }
+    seen.add(downloadableUrl);
+
+    images.push({
+      filename: createGeneratedImageFilename(image, images.length + 1, downloadableUrl),
+      url: downloadableUrl,
+      sourceUrl: src,
+      width,
+      height
+    });
+  }
+
+  return images.slice(0, 20);
+}
+
+function findGeneratedImageScope(): ParentNode | null {
+  const dialog = Array.from(document.querySelectorAll<HTMLElement>("[role='dialog']"))
+    .filter((candidate) => candidate.querySelector("img") && isDocumentElementVisible(candidate))
+    .sort((a, b) => scoreImageScope(b) - scoreImageScope(a))[0];
+  if (dialog) {
+    return dialog;
+  }
+
+  const selectionScope = selectedReplyScope();
+  if (selectionScope?.querySelector("img")) {
+    return selectionScope;
+  }
+
+  const replyScopes = Array.from(
+    document.querySelectorAll<HTMLElement>(
+      [
+        "article",
+        "[data-message-author-role]",
+        "[data-testid*='conversation-turn']",
+        "[role='article']",
+        "main section"
+      ].join(",")
+    )
+  )
+    .filter((candidate) => !candidate.closest("#noos-shuttle-root") && candidate.querySelector("img"))
+    .filter((candidate, index, all) => !all.some((other, otherIndex) => otherIndex !== index && other !== candidate && other.contains(candidate)))
+    .sort((a, b) => scoreImageScope(b) - scoreImageScope(a));
+
+  return replyScopes[0] ?? null;
+}
+
+function selectedReplyScope(): HTMLElement | null {
+  const selection = window.getSelection();
+  const node = selection?.anchorNode;
+  const element = node instanceof Element ? node : node?.parentElement;
+  if (!element || element.closest("#noos-shuttle-root")) {
+    return null;
+  }
+  return element.closest<HTMLElement>(
+    [
+      "article",
+      "[data-message-author-role]",
+      "[data-testid*='conversation-turn']",
+      "[role='article']",
+      "main section"
+    ].join(",")
+  );
+}
+
+function scoreImageScope(element: HTMLElement): number {
+  const rect = element.getBoundingClientRect();
+  const viewportHeight = Math.max(document.documentElement.clientHeight, window.innerHeight || 0);
+  const viewportCenter = viewportHeight / 2;
+  const elementCenter = rect.top + rect.height / 2;
+  const visibleHeight = Math.max(0, Math.min(rect.bottom, viewportHeight) - Math.max(rect.top, 0));
+  const visibleRatio = rect.height > 0 ? visibleHeight / Math.min(rect.height, viewportHeight) : 0;
+  const distanceScore = Math.max(0, viewportHeight - Math.abs(elementCenter - viewportCenter));
+  const imageCount = element.querySelectorAll("img").length;
+  return visibleRatio * 10_000 + distanceScore + imageCount * 10;
+}
+
+function isLikelyGeneratedImage(image: HTMLImageElement, width: number, height: number): boolean {
+  if (width < 256 || height < 256) {
+    return false;
+  }
+  const rect = image.getBoundingClientRect();
+  const hasLargeNaturalSize = (image.naturalWidth || 0) >= 256 && (image.naturalHeight || 0) >= 256;
+  if (!hasLargeNaturalSize && (rect.width < 120 || rect.height < 120)) {
+    return false;
+  }
+  const alt = `${image.alt ?? ""} ${image.getAttribute("aria-label") ?? ""}`.toLowerCase();
+  if (/avatar|profile|icon|logo|用户头像|头像/.test(alt)) {
+    return false;
+  }
+  return true;
+}
+
+async function imageDownloadUrl(src: string): Promise<string | null> {
+  if (src.startsWith("data:")) {
+    return src;
+  }
+  if (src.startsWith("blob:")) {
+    return blobUrlToDataUrl(src);
+  }
+  if (/^https?:\/\//i.test(src)) {
+    return src;
+  }
+  try {
+    return new URL(src, location.href).href;
+  } catch {
+    return null;
+  }
+}
+
+async function blobUrlToDataUrl(src: string): Promise<string | null> {
+  try {
+    const response = await fetch(src);
+    const blob = await response.blob();
+    return await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : null);
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(blob);
+    });
+  } catch {
+    return null;
+  }
+}
+
+function createGeneratedImageFilename(image: HTMLImageElement, index: number, url: string): string {
+  const alt = image.alt || image.getAttribute("aria-label") || document.title || "chatgpt-image";
+  const extension = imageExtensionFromUrl(url) || "png";
+  return `${String(index).padStart(2, "0")}-${slugifyProjectSourceText(alt)}.${extension}`;
+}
+
+function imageExtensionFromUrl(url: string): string | null {
+  if (url.startsWith("data:image/")) {
+    const match = url.match(/^data:image\/([a-zA-Z0-9.+-]+)[;,]/);
+    return normalizeImageExtension(match?.[1]);
+  }
+  try {
+    const path = new URL(url).pathname;
+    const match = path.match(/\.([a-zA-Z0-9]+)$/);
+    return normalizeImageExtension(match?.[1]);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeImageExtension(value: string | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+  const normalized = value.toLowerCase().replace("jpeg", "jpg").replace("svg+xml", "svg");
+  return /^(png|jpg|webp|gif|svg|avif)$/.test(normalized) ? normalized : null;
 }
 
 function waitForGeneratedHandoff(app: HTMLElement, baselineBegin: number): void {
@@ -1236,14 +1487,17 @@ function installProjectImportBridge(app: HTMLElement): void {
 
 function upsertProjectImportButton(app: HTMLElement): void {
   const existing = document.querySelector<HTMLButtonElement>(".noos-project-import-button");
+  const existingExport = document.querySelector<HTMLButtonElement>(".noos-project-export-sources-button");
   if (!isChatGptProjectLikePage()) {
     existing?.remove();
+    existingExport?.remove();
     return;
   }
 
   const anchor = findProjectSourceAnchor();
   if (!anchor) {
     existing?.remove();
+    existingExport?.remove();
     return;
   }
 
@@ -1277,6 +1531,32 @@ function upsertProjectImportButton(app: HTMLElement): void {
 
   if (!existing || button.previousElementSibling !== anchor) {
     anchor.insertAdjacentElement("afterend", button);
+  }
+
+  const exportButton = existingExport ?? document.createElement("button");
+  exportButton.type = "button";
+  exportButton.className = "noos-project-export-sources-button";
+  exportButton.textContent = COPY[viewState.locale].exportProjectSources;
+  exportButton.setAttribute("aria-label", COPY[viewState.locale].exportProjectSources);
+  Object.assign(exportButton.style, {
+    marginLeft: "8px",
+    minHeight: "30px",
+    padding: "0 10px",
+    border: "1px solid rgba(132, 75, 30, 0.4)",
+    borderRadius: "6px",
+    background: "#8a4b1f",
+    color: "#ffffff",
+    cursor: "pointer",
+    font: "700 12px/1.2 system-ui, sans-serif",
+    verticalAlign: "middle",
+    zIndex: "2147483646"
+  });
+  exportButton.onclick = () => {
+    void exportProjectSourcesToNoos(app, findProjectSourceRoot(anchor));
+  };
+
+  if (!existingExport || exportButton.previousElementSibling !== button) {
+    button.insertAdjacentElement("afterend", exportButton);
   }
 }
 
@@ -1321,7 +1601,7 @@ function isDocumentElementVisible(element: HTMLElement): boolean {
 }
 
 function isProjectSourceAnchorCandidate(element: HTMLElement): boolean {
-  if (element.closest("#noos-shuttle-root") || element.closest(".noos-project-import-button")) {
+  if (element.closest("#noos-shuttle-root") || element.closest(".noos-project-import-button,.noos-project-export-sources-button")) {
     return false;
   }
 
@@ -1342,7 +1622,7 @@ function isProjectSourceAnchorCandidate(element: HTMLElement): boolean {
 }
 
 function isProjectSourceContainerCandidate(element: HTMLElement): boolean {
-  if (element.closest("#noos-shuttle-root") || element.closest(".noos-project-import-button")) {
+  if (element.closest("#noos-shuttle-root") || element.closest(".noos-project-import-button,.noos-project-export-sources-button")) {
     return false;
   }
 
@@ -1384,6 +1664,227 @@ function scoreProjectSourceContainer(element: HTMLElement): number {
   if (/添加来源|add source/i.test(text)) score += 3;
   if (/提供更多背景信息|project sources|sources/i.test(text)) score += 2;
   return score;
+}
+
+async function exportProjectSourcesToNoos(app: HTMLElement, root: HTMLElement): Promise<void> {
+  const copy = COPY[viewState.locale];
+  const sources = collectProjectSourceSnapshots(root);
+  if (sources.length === 0) {
+    viewState.state = "warning";
+    viewState.open = true;
+    viewState.message = copy.noProjectSourcesDetected;
+    viewState.modal = {
+      kind: "warnings",
+      title: copy.projectSourcesExportNeedsAttention,
+      message: copy.noProjectSourcesDetected,
+      warnings: [copy.noProjectSourcesDetected]
+    };
+    render(app);
+    return;
+  }
+
+  const pack = createProjectSourcesPackage(sources);
+  let response: { ok?: boolean; location?: string; message?: string };
+  try {
+    response = await sendExtensionMessage<
+      { type: "NOOS_SAVE_CONTEXT_PACK_TO_VAULT"; directory: string; files: Array<{ path: string; content: string }>; sourceUrl?: string },
+      { ok?: boolean; location?: string; message?: string }
+    >({
+      type: "NOOS_SAVE_CONTEXT_PACK_TO_VAULT",
+      directory: pack.directory,
+      files: pack.files,
+      sourceUrl: window.location.href
+    });
+  } catch (error) {
+    response = {
+      ok: false,
+      message: error instanceof Error ? error.message : copy.vaultUnavailable
+    };
+  }
+
+  if (!response.ok) {
+    viewState.state = "error";
+    viewState.open = true;
+    viewState.message = response.message ?? copy.vaultUnavailable;
+    viewState.modal = {
+      kind: "success",
+      title: copy.projectSourcesExportNeedsAttention,
+      message: viewState.message
+    };
+    render(app);
+    return;
+  }
+
+  const location = response.location || pack.directory;
+  viewState.state = "saved";
+  viewState.open = true;
+  viewState.message = copy.projectSourcesExported(sources.length, location);
+  viewState.modal = {
+    kind: "success",
+    title: copy.deliverySuccessTitle,
+    message: response.message ?? viewState.message
+  };
+  render(app);
+}
+
+function collectProjectSourceSnapshots(root: HTMLElement): ProjectSourceSnapshot[] {
+  const candidates = Array.from(root.querySelectorAll<HTMLElement>("a,button,[role='button'],li,[data-testid],div,span,p"));
+  const sources: ProjectSourceSnapshot[] = [];
+  const seen = new Set<string>();
+
+  for (const candidate of candidates) {
+    if (!isDocumentElementVisible(candidate) || candidate.closest("#noos-shuttle-root") || candidate.closest(".noos-project-import-button,.noos-project-export-sources-button")) {
+      continue;
+    }
+
+    const text = normalizeVisibleText(candidate);
+    if (!isLikelyProjectSourceText(text)) {
+      continue;
+    }
+
+    const title = shortenProjectSourceTitle(text);
+    const key = title.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+
+    sources.push({
+      title,
+      detail: text === title ? undefined : text,
+      href: candidate instanceof HTMLAnchorElement ? candidate.href : candidate.querySelector<HTMLAnchorElement>("a[href]")?.href
+    });
+  }
+
+  if (sources.length > 0) {
+    return sources.slice(0, 100);
+  }
+
+  return fallbackProjectSourceLines(root).map((line) => ({ title: line })).slice(0, 100);
+}
+
+function isLikelyProjectSourceText(text: string): boolean {
+  if (text.length < 2 || text.length > 240) {
+    return false;
+  }
+  if (/^(project sources|sources|source|add source|添加来源|来源|从 NOOS 导入|导出项目源到 NOOS)$/i.test(text)) {
+    return false;
+  }
+  if (/\b(pdf|docx?|xlsx?|csv|pptx?|txt|md|markdown|json|yaml|yml|png|jpe?g|webp|gif|zip)\b/i.test(text)) {
+    return true;
+  }
+  return /[\w\u4e00-\u9fff][\w\s\u4e00-\u9fff.-]{2,}\.(?:pdf|docx?|xlsx?|csv|pptx?|txt|md|markdown|json|yaml|yml|png|jpe?g|webp|gif|zip)\b/i.test(text);
+}
+
+function shortenProjectSourceTitle(text: string): string {
+  const fileMatch = text.match(/[\w\u4e00-\u9fff][\w\s\u4e00-\u9fff()[\]{}.,+_-]{0,120}\.(?:pdf|docx?|xlsx?|csv|pptx?|txt|md|markdown|json|yaml|yml|png|jpe?g|webp|gif|zip)\b/i);
+  return (fileMatch?.[0] ?? text).replace(/\s+/g, " ").trim();
+}
+
+function fallbackProjectSourceLines(root: HTMLElement): string[] {
+  const ignored = /^(project sources|sources|source|add source|添加来源|来源|从 NOOS 导入|导出项目源到 NOOS|browse vault|refresh)$/i;
+  const lines = normalizeVisibleText(root)
+    .split(/(?<=[。.!?])\s+|\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line.length >= 2 && line.length <= 160 && !ignored.test(line));
+  return Array.from(new Set(lines));
+}
+
+function createProjectSourcesPackage(sources: ProjectSourceSnapshot[]): { directory: string; files: Array<{ path: string; content: string }> } {
+  const capturedAt = new Date().toISOString();
+  const dateSlug = capturedAt.slice(0, 10).replace(/-/g, "");
+  const projectSlug = slugifyProjectSourceText(document.title || location.pathname || "chatgpt-project");
+  const directory = `chatgpt-project-sources/${dateSlug}-${projectSlug}`;
+  const sourceRows = sources
+    .map((source, index) => `| ${index + 1} | ${escapeMarkdownTable(source.title)} | ${escapeMarkdownTable(source.href ?? "")} |`)
+    .join("\n");
+
+  return {
+    directory,
+    files: [
+      {
+        path: "README.md",
+        content: `---
+type: noos_project_sources_snapshot
+version: 0.1
+source_app: chatgpt
+source_url: ${yamlScalar(location.href)}
+created_at: ${yamlScalar(capturedAt)}
+title: ${yamlScalar("ChatGPT Project Sources Snapshot")}
+---
+
+# ChatGPT Project Sources Snapshot
+
+This package records the visible source items from a ChatGPT Project page.
+
+Current limitation: ChatGPT does not expose original uploaded source file bytes through the page DOM. This snapshot preserves the visible source list, source titles, links when present, and provenance so NOOS / agents can locate or reason about the Project source set.
+
+## Files
+
+- \`manifest.md\`: source table and provenance.
+- \`sources/*.md\`: one stub Markdown file per visible source item.
+`
+      },
+      {
+        path: "manifest.md",
+        content: `---
+type: noos_project_sources_manifest
+version: 0.1
+source_app: chatgpt
+source_url: ${yamlScalar(location.href)}
+created_at: ${yamlScalar(capturedAt)}
+source_count: ${sources.length}
+---
+
+# Project Sources Manifest
+
+| # | Title | URL |
+|---:|---|---|
+${sourceRows}
+`
+      },
+      ...sources.map((source, index) => ({
+        path: `sources/${String(index + 1).padStart(3, "0")}-${slugifyProjectSourceText(source.title)}.md`,
+        content: `---
+type: noos_project_source_stub
+version: 0.1
+source_app: chatgpt
+source_url: ${yamlScalar(source.href || location.href)}
+created_at: ${yamlScalar(capturedAt)}
+title: ${yamlScalar(source.title)}
+---
+
+# ${source.title}
+
+## Visible Metadata
+
+- Source title: ${source.title}
+${source.href ? `- Source URL: ${source.href}\n` : ""}${source.detail ? `- Visible detail: ${source.detail}\n` : ""}
+## Capture Note
+
+This is a NOOS stub for a ChatGPT Project source item. The browser page exposed the source entry metadata, not the original uploaded file bytes.
+`
+      }))
+    ]
+  };
+}
+
+function slugifyProjectSourceText(text: string): string {
+  const slug = text
+    .toLowerCase()
+    .replace(/[`"'’“”]/g, "")
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+  return slug || "project-sources";
+}
+
+function escapeMarkdownTable(value: string): string {
+  return value.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+}
+
+function yamlScalar(value: string): string {
+  return JSON.stringify(value);
 }
 
 function normalizeVisibleText(element: HTMLElement): string {

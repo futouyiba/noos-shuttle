@@ -10,6 +10,7 @@ export interface ShuttleCopy {
   collectHandoff: string;
   extractCrystal: string;
   scanCrystal: string;
+  downloadImages: string;
   cancel: string;
   autoAfterCollect: string;
   autoCopy: string;
@@ -17,6 +18,12 @@ export interface ShuttleCopy {
   autoSave: string;
   importFromNoos: string;
   importFromNoosHint: string;
+  exportProjectSources: string;
+  projectSourcesExported: (count: number, location: string) => string;
+  projectSourcesExportNeedsAttention: string;
+  noProjectSourcesDetected: string;
+  imagesDownloaded: (count: number, location: string) => string;
+  noGeneratedImagesDetected: string;
   latestHandoffs: string;
   latestCrystals: string;
   latestResults: string;
@@ -117,6 +124,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     collectHandoff: "Scan Handoff",
     extractCrystal: "Extract Crystal",
     scanCrystal: "Scan Crystal",
+    downloadImages: "Download Reply Images",
     cancel: "Cancel",
     autoAfterCollect: "Auto after collect",
     autoCopy: "Auto Copy",
@@ -124,6 +132,12 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     autoSave: "Auto Save",
     importFromNoos: "Import from NOOS",
     importFromNoosHint: "Pick a recent Vault object and attach it to this chat.",
+    exportProjectSources: "Export sources to NOOS",
+    projectSourcesExported: (count, location) => `Exported ${count} Project source item(s) to NOOS: ${location}`,
+    projectSourcesExportNeedsAttention: "Project sources export needs attention.",
+    noProjectSourcesDetected: "No visible Project source items were found. Open the Project sources list and try again.",
+    imagesDownloaded: (count, location) => `Downloaded ${count} image(s) to ${location}`,
+    noGeneratedImagesDetected: "No generated images were found in the selected or current reply. Select text in the target reply, or open the image set and try again.",
     latestHandoffs: "Latest Handoffs",
     latestCrystals: "Latest Crystals",
     latestResults: "Latest Results",
@@ -214,6 +228,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     collectHandoff: "扫描 Handoff",
     extractCrystal: "沉淀结晶",
     scanCrystal: "扫描结晶",
+    downloadImages: "下载本条回复图",
     cancel: "取消",
     autoAfterCollect: "拉取后自动",
     autoCopy: "自动复制",
@@ -221,6 +236,12 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     autoSave: "自动入库",
     importFromNoos: "从 NOOS 导入",
     importFromNoosHint: "选择最近入库对象，优先作为 Markdown 附件投喂当前对话。",
+    exportProjectSources: "导出项目源到 NOOS",
+    projectSourcesExported: (count, location) => `已导出 ${count} 个 Project 源条目到 NOOS：${location}`,
+    projectSourcesExportNeedsAttention: "项目源导出需要处理。",
+    noProjectSourcesDetected: "没有找到可见的 Project 源条目。请先展开 Project sources 列表后再试。",
+    imagesDownloaded: (count, location) => `已下载 ${count} 张图片到 ${location}`,
+    noGeneratedImagesDetected: "没有在选中或当前回复里找到可下载的生成图。请先选中目标回复里的文字，或打开图片区域后再试。",
     latestHandoffs: "最近 Handoff",
     latestCrystals: "最近 Crystal",
     latestResults: "最近 Result",
