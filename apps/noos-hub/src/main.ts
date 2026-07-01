@@ -6,10 +6,7 @@ import noosLogoUrl from "./assets/noos-logo.png";
 import { mockHealth, mockSleepRecoveryStatus } from "./mock";
 import { renderAdapters } from "./pages/adapters";
 import { renderConfig } from "./pages/config";
-import { renderGuide } from "./pages/guide";
-import { renderLogs } from "./pages/logs";
-import { renderNoosIntro } from "./pages/noos-intro";
-import { renderOverview } from "./pages/overview";
+import { renderDashboard } from "./pages/dashboard";
 import { renderVault } from "./pages/vault";
 import { sleepRecoveryDisplay } from "./status";
 import "./styles.css";
@@ -18,7 +15,7 @@ import { renderUpdateBannerHtml, renderUpdateDialogHtml } from "./update/render"
 import { escapeHtml } from "./ui/html";
 import { setVaultFileActionDataRuns } from "./vault-file-actions";
 
-type SectionId = "noos" | "overview" | "guide" | "adapters" | "vault" | "config" | "logs";
+type SectionId = "home" | "vault" | "adapters" | "config";
 
 const silentUpdateCheckDelayMs = 2500;
 const navItems: Array<{
@@ -29,32 +26,11 @@ const navItems: Array<{
   summary: string;
 }> = [
   {
-    id: "noos",
-    label: "工作台",
-    eyebrow: "NOOS Hub Desktop",
+    id: "home",
+    label: "首页",
+    eyebrow: "NOOS Hub",
     title: "本机上下文中枢",
-    summary: "把浏览器、Vault、Agent 和项目之间的上下文收进来、放稳、交出去。"
-  },
-  {
-    id: "overview",
-    label: "状态",
-    eyebrow: "System Health",
-    title: "当前是否可用",
-    summary: "先看阻塞点，再判断捕获、存储、解析和消费链路是否完整。"
-  },
-  {
-    id: "guide",
-    label: "修复",
-    eyebrow: "Guided Setup",
-    title: "下一步怎么处理",
-    summary: "把 Doctor 和连接器状态压缩成少量可确认动作。"
-  },
-  {
-    id: "adapters",
-    label: "连接器",
-    eyebrow: "Adapters",
-    title: "连接器安装状态",
-    summary: "检查浏览器、Git、工作区和下游 agent 的可用性。"
+    summary: "连接器状态、建议操作和最近文件一览。"
   },
   {
     id: "vault",
@@ -64,25 +40,25 @@ const navItems: Array<{
     summary: "管理 Handoff、Crystal、Browser Mirror 和 Agent Projection。"
   },
   {
+    id: "adapters",
+    label: "连接器",
+    eyebrow: "Adapters",
+    title: "连接器安装状态",
+    summary: "检查浏览器、Git、工作区和下游 agent 的可用性。"
+  },
+  {
     id: "config",
-    label: "配置",
+    label: "设置",
     eyebrow: "Settings",
     title: "本机配置与更新",
     summary: "查看路径、更新入口和内置 Shuttle 扩展。"
-  },
-  {
-    id: "logs",
-    label: "输出",
-    eyebrow: "Run Output",
-    title: "最近一次动作输出",
-    summary: "Doctor、安装和修复动作的 stdout 会保留在这里。"
   }
 ];
 
 let currentHealth: HubHealth | null = null;
 let currentRecoveryStatus: SleepRecoveryStatus | null = null;
 let currentLog = "";
-let activeSection: SectionId = parseSectionId(window.location.hash.slice(1), "noos");
+let activeSection: SectionId = parseSectionId(window.location.hash.slice(1), "home");
 let healthLoadInFlight = false;
 let updateStatus: UpdateStatus = "idle";
 let updateDialogVisible = false;
@@ -176,7 +152,7 @@ function navButton(section: SectionId, label: string): string {
   return `<button type="button" data-section="${section}" class="${active ? "active" : ""}" ${active ? 'aria-current="page"' : ""}>${label}</button>`;
 }
 
-function parseSectionId(value: string | undefined, fallback: SectionId = "overview"): SectionId {
+function parseSectionId(value: string | undefined, fallback: SectionId = "home"): SectionId {
   return navItems.some((item) => item.id === value) ? (value as SectionId) : fallback;
 }
 
@@ -193,7 +169,7 @@ function setActiveSection(section: SectionId, options: { updateHistory?: boolean
 }
 
 function restoreSectionFromLocation(): void {
-  const nextSection = parseSectionId(window.location.hash.slice(1), "noos");
+  const nextSection = parseSectionId(window.location.hash.slice(1), "home");
   if (nextSection !== activeSection) {
     setActiveSection(nextSection, { updateHistory: false });
   }
@@ -344,27 +320,18 @@ function renderCurrentSection(): void {
   });
 
   switch (activeSection) {
-    case "noos":
-      content.innerHTML = renderNoosIntro(currentHealth);
-      break;
-    case "guide":
-      content.innerHTML = renderGuide(currentHealth);
+    case "vault":
+      content.innerHTML = renderVault(currentHealth);
       break;
     case "adapters":
       content.innerHTML = renderAdapters(currentHealth);
       break;
-    case "vault":
-      content.innerHTML = renderVault(currentHealth);
-      break;
     case "config":
       content.innerHTML = renderConfig(currentHealth);
       break;
-    case "logs":
-      content.innerHTML = renderLogs(currentLog);
-      break;
-    case "overview":
+    case "home":
     default:
-      content.innerHTML = renderOverview(currentHealth);
+      content.innerHTML = renderDashboard(currentHealth);
       break;
   }
 
@@ -595,19 +562,6 @@ function setLog(value: string): void {
   if (!panel || !pre) return;
   pre.textContent = value;
   panel.hidden = value.length === 0;
-  syncLogPage();
-}
-
-function syncLogPage(): void {
-  const output = appElement.querySelector<HTMLElement>(".log-page-output");
-  if (!output) return;
-
-  const hasOutput = currentLog.trim().length > 0;
-  const title = appElement.querySelector<HTMLElement>("[data-log-title]");
-  output.textContent = hasOutput ? currentLog : "运行 Doctor 或其他动作后，这里会显示输出。";
-  if (title) {
-    title.textContent = hasOutput ? "最近输出" : "还没有输出";
-  }
 }
 
 function isTauriRuntime(): boolean {
