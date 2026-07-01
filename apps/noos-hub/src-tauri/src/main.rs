@@ -2852,8 +2852,8 @@ fn browser_adapter(repo_root: &Path, noos_home: &Path) -> AdapterHealth {
         "ChatGPT 网页端生成、捕获和交付 handoff，并提取可复用 Crystal 的扩展。",
         checks,
         vec![
-            action("browser-dev-profile", "启动 NOOS 浏览器", false),
             action("browser-manual-unpacked", "日常 Chrome 安装向导", true),
+            action("browser-dev-profile", "启动 NOOS 浏览器", false),
         ],
     )
 }
@@ -3787,6 +3787,19 @@ mod tests {
         assert!(!status.local_write_healthy);
         assert!(status.relaunch_recommended);
         assert_eq!(restarts.get(), u32::from(SLEEP_RECOVERY_MAX_ATTEMPTS));
+    }
+
+    #[test]
+    fn browser_adapter_prioritizes_manual_chrome_install_guide() {
+        let adapter = browser_adapter(Path::new("/tmp/noos-repo"), Path::new("/tmp/noos-home"));
+        let action_ids = adapter
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(action_ids, vec!["browser-manual-unpacked", "browser-dev-profile"]);
+        assert!(adapter.actions[0].requires_user_action);
     }
 
     #[test]

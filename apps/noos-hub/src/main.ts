@@ -82,6 +82,7 @@ const navItems: Array<{
 let currentHealth: HubHealth | null = null;
 let currentRecoveryStatus: SleepRecoveryStatus | null = null;
 let currentLog = "";
+let activeHubAction: string | null = null;
 let activeSection: SectionId = parseSectionId(window.location.hash.slice(1), "noos");
 let healthLoadInFlight = false;
 let updateStatus: UpdateStatus = "idle";
@@ -378,6 +379,7 @@ function renderCurrentSection(): void {
       void runAction(button.dataset.run ?? "");
     });
   });
+  syncRunActionButtons();
   content.querySelector('[data-action="check-update"]')?.addEventListener("click", () => {
     void checkForHubUpdate({ mode: "manual" });
   });
@@ -402,7 +404,11 @@ function renderShellContext(): void {
 
 async function runAction(action: string): Promise<void> {
   if (!action) return;
-  setLog(`运行：${action}\n`);
+  if (activeHubAction) return;
+
+  activeHubAction = action;
+  syncRunActionButtons();
+  setLog(actionStartMessage(action));
   try {
     const output = await invoke<string>("run_hub_action", { action });
     setLog(output || "完成。");
@@ -413,7 +419,38 @@ async function runAction(action: string): Promise<void> {
       return;
     }
     setLog(`失败：${String(error)}`);
+  } finally {
+    activeHubAction = null;
+    syncRunActionButtons();
   }
+}
+
+function actionStartMessage(action: string): string {
+  if (action === "browser-manual-unpacked") {
+    return "正在打开日常 Chrome 安装向导…\n如果 Chrome 要求确认，请按向导加载 dist 目录。";
+  }
+  if (action === "browser-dev-profile") {
+    return "正在启动带 NOOS Shuttle 的专用 Chrome profile…";
+  }
+  return `运行：${action}\n`;
+}
+
+function syncRunActionButtons(): void {
+  const running = activeHubAction !== null;
+  appElement.querySelectorAll<HTMLButtonElement>("[data-run]").forEach((button) => {
+    const isCurrentAction = button.dataset.run === activeHubAction;
+    button.disabled = running;
+    button.toggleAttribute("aria-busy", running && isCurrentAction);
+    if (running && isCurrentAction) {
+      if (!button.dataset.idleLabel) {
+        button.dataset.idleLabel = button.textContent ?? "";
+      }
+      button.textContent = "正在运行…";
+    } else if (button.dataset.idleLabel) {
+      button.textContent = button.dataset.idleLabel;
+      delete button.dataset.idleLabel;
+    }
+  });
 }
 
 async function checkForHubUpdate({ mode }: { mode: UpdateCheckMode }): Promise<void> {

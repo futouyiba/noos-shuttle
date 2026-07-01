@@ -208,7 +208,7 @@ write_manual_install_guide() {
   <body>
     <main>
       <h1>安装 NOOS Shuttle 到日常 Chrome</h1>
-      <p>脚本已经构建扩展，并会打开 Chrome 的扩展管理页和 dist 文件夹。Chrome 安全策略要求你手动完成最后两步。</p>
+      <p>Hub 会准备扩展，并打开 Chrome 的扩展管理页和 dist 文件夹。Chrome 安全策略要求你手动完成最后两步。</p>
       <h2>步骤</h2>
       <ol>
         <li>在 Chrome 地址栏确认当前页面是 <strong>chrome://extensions/</strong>。</li>
@@ -217,6 +217,7 @@ write_manual_install_guide() {
         <li>选择这个文件夹：</li>
       </ol>
       <code>$ROOT_DIR/dist</code>
+      <div class="note">如果 dist 文件夹还没出现，请等待 Hub 动作完成后再点击 <strong>Load unpacked / 加载已解压的扩展程序</strong>。</div>
       <div class="note">如果页面没有自动跳转，请手动在 Chrome 地址栏输入 <strong>chrome://extensions/</strong>。</div>
     </main>
   </body>
@@ -246,7 +247,6 @@ install_browser_dev_profile() {
 }
 
 install_browser_manual_unpacked() {
-  build_extension
   local guide
   guide="$(write_manual_install_guide)"
 
@@ -258,6 +258,7 @@ install_browser_manual_unpacked() {
     open "$guide"
   fi
 
+  build_extension
   open "$ROOT_DIR/dist"
   cat <<EOF
 
