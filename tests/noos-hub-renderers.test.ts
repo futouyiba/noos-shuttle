@@ -12,8 +12,8 @@ describe("NOOS Hub page renderers", () => {
       })
     );
 
-    expect(html).toContain("需处理");
-    expect(html).toContain("核心连接器已就绪");
+    expect(html).toContain("待处理");
+    expect(html).toContain("核心链路可以使用");
     expect(html).not.toContain('class="card');
     expect(html).not.toContain("安装状态");
   });
