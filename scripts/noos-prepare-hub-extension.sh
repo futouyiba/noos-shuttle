@@ -3,7 +3,11 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RESOURCE_DIR="$ROOT_DIR/apps/noos-hub/src-tauri/resources/noos-shuttle-extension"
-VERSION="$(node -p "require('$ROOT_DIR/package.json').version")"
+NODE_ROOT_DIR="$ROOT_DIR"
+if command -v cygpath >/dev/null 2>&1; then
+  NODE_ROOT_DIR="$(cygpath -w "$ROOT_DIR")"
+fi
+VERSION="$(node -p "require(process.argv[1]).version" "$NODE_ROOT_DIR/package.json")"
 
 cd "$ROOT_DIR"
 npm run build
