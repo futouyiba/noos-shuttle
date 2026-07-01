@@ -27,7 +27,7 @@
     "verify:extension-project": "node scripts/verify-extension-project-import.mjs",
     "hub:dev": "npm --prefix apps/noos-hub run tauri:dev",
     "hub:build": "npm run hub:web:build && cargo build --manifest-path apps/noos-hub/src-tauri/Cargo.toml",
-    "hub:bundle": "npm --prefix apps/noos-hub run tauri:build",
+    "hub:bundle": "scripts/noos-hub-bundle.sh",
     "hub:launch": "scripts/noos-hub-launch.sh start",
     "hub:logs": "scripts/noos-hub-launch.sh logs",
     "hub:post-wake-check": "scripts/noos-post-wake-check.sh",

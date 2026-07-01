@@ -32,7 +32,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVEQTdGQzk0MjI2MkRCMDQKUldRRTIySWlsUHluN2FXUXJVRUh1VEwwOUorc1dNK2JURDAwQmcyWEtHNXNHZC9jOGRJZlNtQmEK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc0QjFDQzA1MEM0RTIyQzMKUldURElrNE1CY3l4ZE5ZZ3FzdlhZbnNSTnZVQUt0V1FGMnhCeTRiaGxnYlZWdjAvZHIzUm1LbVAK",
       "endpoints": [
         "https://github.com/futouyiba/noos-shuttle/releases/latest/download/noos-hub-latest.json"
       ]
