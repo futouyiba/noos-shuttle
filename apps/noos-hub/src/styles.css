@@ -1236,14 +1236,8 @@ ul {
     justify-content: flex-start;
   }
 
-  .card-grid,
-  .pipeline,
-  .summary-grid,
-  .overview-context,
-  .vault-layout,
   .vault-recent,
-  .vault-flow,
-  .vault-metrics {
+  .vault-flow {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -1287,7 +1281,6 @@ ul {
 
   .topbar,
   .section-head,
-  .overview-hero,
   .vault-command,
   .db-hero {
     flex-direction: column;
@@ -1314,36 +1307,9 @@ ul {
     font-size: 25px;
   }
 
-  .intro-hero,
-  .guide-layout,
-  .model-roadmap,
-  .snapshot-grid,
-  .card-grid,
-  .pipeline,
-  .summary-grid,
-  .overview-context,
-  .vault-layout,
   .vault-recent,
   .vault-flow,
-  .vault-metrics,
   .config-row {
     grid-template-columns: 1fr;
-  }
-
-  .intro-copy h2 {
-    font-size: 28px;
-  }
-
-  .system-visual {
-    min-height: 220px;
-  }
-
-  .guide-step {
-    grid-template-columns: 42px minmax(0, 1fr);
-  }
-
-  .guide-step button {
-    grid-column: 1 / -1;
-    width: max-content;
   }
 }

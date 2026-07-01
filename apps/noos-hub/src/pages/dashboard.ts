@@ -9,13 +9,13 @@ export function renderDashboard(health: HubHealth): string {
   const nextAction = chooseNextAction(health.adapters);
   const mirrorCount = health.vault_stats.browser_handoffs + health.vault_stats.browser_crystals;
   const vaultCount = health.vault_stats.handoffs_active + health.vault_stats.crystals_active;
-  const blockers = summary.error + summary.needsAction;
+  const blockers = summary.error + summary.needsAction + summary.partial;
 
   return `
     <section class="db-hero">
       <div class="db-hero-left">
         <p class="eyebrow">本机上下文中枢</p>
-        <h2>${blockers > 0 ? `${blockers} 项待处理` : "一切就绪"}</h2>
+        <h2>${nextAction ? `${blockers} 项待处理` : "一切就绪"}</h2>
         <p>${escapeHtml(dashboardSummary({ summary, vaultCount, mirrorCount }))}</p>
         <div class="db-hero-actions">
           <button type="button" data-run="doctor">运行 Doctor</button>

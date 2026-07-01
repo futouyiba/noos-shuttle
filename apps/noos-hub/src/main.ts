@@ -133,11 +133,7 @@ function renderShell(): void {
     </main>
   `;
 
-  appElement.querySelectorAll<HTMLButtonElement>("[data-section]").forEach((button) => {
-    button.addEventListener("click", () => {
-      setActiveSection(parseSectionId(button.dataset.section, activeSection));
-    });
-  });
+  bindSectionButtons(appElement);
   appElement.querySelector('[data-action="refresh"]')?.addEventListener("click", () => {
     void loadHealth({ force: true });
   });
@@ -150,6 +146,14 @@ function renderShell(): void {
 function navButton(section: SectionId, label: string): string {
   const active = activeSection === section;
   return `<button type="button" data-section="${section}" class="${active ? "active" : ""}" ${active ? 'aria-current="page"' : ""}>${label}</button>`;
+}
+
+function bindSectionButtons(root: ParentNode): void {
+  root.querySelectorAll<HTMLButtonElement>("[data-section]").forEach((button) => {
+    button.addEventListener("click", () => {
+      setActiveSection(parseSectionId(button.dataset.section, activeSection));
+    });
+  });
 }
 
 function parseSectionId(value: string | undefined, fallback: SectionId = "home"): SectionId {
@@ -339,6 +343,7 @@ function renderCurrentSection(): void {
     { id: "handoffs", files: currentHealth.recent_files.handoffs },
     { id: "crystals", files: currentHealth.recent_files.crystals }
   ]);
+  bindSectionButtons(content);
 
   content.querySelectorAll<HTMLButtonElement>("[data-run]").forEach((button) => {
     button.addEventListener("click", () => {

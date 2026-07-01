@@ -22,6 +22,18 @@ describe("NOOS Hub page renderers", () => {
     expect(html).not.toContain("card-grid");
   });
 
+  it("does not call partial adapters fully ready on the dashboard", () => {
+    const html = renderDashboard(
+      healthFixture({
+        adapters: [{ ...readyAdapter("Codex"), status: "partial", summary: "Skill installed, manual setup remains" }]
+      })
+    );
+
+    expect(html).toContain("1 项待处理");
+    expect(html).toContain("Codex");
+    expect(html).not.toContain("一切就绪");
+  });
+
   it("shows a first-use Vault state when all Vault and Mirror counts are zero", () => {
     const html = renderVault(
       healthFixture({
