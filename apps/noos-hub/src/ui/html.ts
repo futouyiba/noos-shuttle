@@ -27,6 +27,19 @@ export function formatDisplayPath(value: string, noosHome?: string): string {
   return value;
 }
 
+export function formatModifiedAt(epochSeconds: number): string {
+  if (!Number.isFinite(epochSeconds) || epochSeconds <= 0) {
+    return "修改时间未知";
+  }
+
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(new Date(epochSeconds * 1000));
+}
+
 function inferHomePath(path: string): string | undefined {
   if (path.endsWith("/.noos")) {
     return path.slice(0, -"/.noos".length);

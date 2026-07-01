@@ -21,20 +21,68 @@ import { setVaultFileActionDataRuns } from "./vault-file-actions";
 type SectionId = "noos" | "overview" | "guide" | "adapters" | "vault" | "config" | "logs";
 
 const silentUpdateCheckDelayMs = 2500;
-const navItems: Array<{ id: SectionId; label: string }> = [
-  { id: "noos", label: "首页" },
-  { id: "overview", label: "总览" },
-  { id: "guide", label: "引导" },
-  { id: "adapters", label: "连接器" },
-  { id: "vault", label: "仓库" },
-  { id: "config", label: "配置" },
-  { id: "logs", label: "输出" }
+const navItems: Array<{
+  id: SectionId;
+  label: string;
+  eyebrow: string;
+  title: string;
+  summary: string;
+}> = [
+  {
+    id: "noos",
+    label: "工作台",
+    eyebrow: "NOOS Hub Desktop",
+    title: "本机上下文中枢",
+    summary: "把浏览器、Vault、Agent 和项目之间的上下文收进来、放稳、交出去。"
+  },
+  {
+    id: "overview",
+    label: "状态",
+    eyebrow: "System Health",
+    title: "当前是否可用",
+    summary: "先看阻塞点，再判断捕获、存储、解析和消费链路是否完整。"
+  },
+  {
+    id: "guide",
+    label: "修复",
+    eyebrow: "Guided Setup",
+    title: "下一步怎么处理",
+    summary: "把 Doctor 和连接器状态压缩成少量可确认动作。"
+  },
+  {
+    id: "adapters",
+    label: "连接器",
+    eyebrow: "Adapters",
+    title: "连接器安装状态",
+    summary: "检查浏览器、Git、工作区和下游 agent 的可用性。"
+  },
+  {
+    id: "vault",
+    label: "Vault",
+    eyebrow: "NOOS Vault",
+    title: "本机产物与交接",
+    summary: "管理 Handoff、Crystal、Browser Mirror 和 Agent Projection。"
+  },
+  {
+    id: "config",
+    label: "配置",
+    eyebrow: "Settings",
+    title: "本机配置与更新",
+    summary: "查看路径、更新入口和内置 Shuttle 扩展。"
+  },
+  {
+    id: "logs",
+    label: "输出",
+    eyebrow: "Run Output",
+    title: "最近一次动作输出",
+    summary: "Doctor、安装和修复动作的 stdout 会保留在这里。"
+  }
 ];
 
 let currentHealth: HubHealth | null = null;
 let currentRecoveryStatus: SleepRecoveryStatus | null = null;
 let currentLog = "";
-let activeSection: SectionId = "noos";
+let activeSection: SectionId = parseSectionId(window.location.hash.slice(1), "noos");
 let healthLoadInFlight = false;
 let updateStatus: UpdateStatus = "idle";
 let updateDialogVisible = false;
@@ -53,6 +101,8 @@ if (!app) {
 const appElement = app;
 
 renderShell();
+window.addEventListener("popstate", restoreSectionFromLocation);
+window.addEventListener("hashchange", restoreSectionFromLocation);
 void installSleepRecoveryListeners();
 void installUpdateMenuListeners();
 void loadHealth();
@@ -60,6 +110,8 @@ void loadSleepRecoveryStatus();
 scheduleSilentUpdateCheck();
 
 function renderShell(): void {
+  const shellItem = navItems.find((item) => item.id === activeSection) ?? navItems[0];
+
   appElement.innerHTML = `
     <aside class="sidebar">
       <div class="brand">
@@ -80,8 +132,9 @@ function renderShell(): void {
     <main class="workspace">
       <header class="topbar">
         <div>
-          <p class="eyebrow">NOOS Hub Desktop</p>
-          <h1>NOOS Operating System</h1>
+          <p class="eyebrow" id="section-eyebrow">${shellItem.eyebrow}</p>
+          <h1 id="section-title">${shellItem.title}</h1>
+          <p class="topbar-summary" id="section-summary">${shellItem.summary}</p>
         </div>
         <div class="topbar-actions">
           <span class="recovery-pill" data-recovery-state="running">睡眠恢复：检查中</span>
@@ -91,7 +144,7 @@ function renderShell(): void {
       </header>
       <section class="update-banner" id="update-banner" hidden></section>
       <section id="content" class="content">
-        <div class="loading">读取本机 NOOS 状态...</div>
+        <div class="loading">读取本机 NOOS 状态…</div>
       </section>
       <section id="update-dialog-root"></section>
       <section class="log" id="log" hidden>
@@ -106,8 +159,7 @@ function renderShell(): void {
 
   appElement.querySelectorAll<HTMLButtonElement>("[data-section]").forEach((button) => {
     button.addEventListener("click", () => {
-      activeSection = parseSectionId(button.dataset.section);
-      renderCurrentSection();
+      setActiveSection(parseSectionId(button.dataset.section, activeSection));
     });
   });
   appElement.querySelector('[data-action="refresh"]')?.addEventListener("click", () => {
@@ -120,11 +172,31 @@ function renderShell(): void {
 }
 
 function navButton(section: SectionId, label: string): string {
-  return `<button type="button" data-section="${section}" class="${activeSection === section ? "active" : ""}">${label}</button>`;
+  const active = activeSection === section;
+  return `<button type="button" data-section="${section}" class="${active ? "active" : ""}" ${active ? 'aria-current="page"' : ""}>${label}</button>`;
 }
 
-function parseSectionId(value: string | undefined): SectionId {
-  return navItems.some((item) => item.id === value) ? (value as SectionId) : "overview";
+function parseSectionId(value: string | undefined, fallback: SectionId = "overview"): SectionId {
+  return navItems.some((item) => item.id === value) ? (value as SectionId) : fallback;
+}
+
+function setActiveSection(section: SectionId, options: { updateHistory?: boolean } = {}): void {
+  if (activeSection === section) {
+    return;
+  }
+
+  activeSection = section;
+  if (options.updateHistory !== false) {
+    window.history.pushState(null, "", `#${section}`);
+  }
+  renderCurrentSection();
+}
+
+function restoreSectionFromLocation(): void {
+  const nextSection = parseSectionId(window.location.hash.slice(1), "noos");
+  if (nextSection !== activeSection) {
+    setActiveSection(nextSection, { updateHistory: false });
+  }
 }
 
 async function loadHealth(options: { force?: boolean } = {}): Promise<void> {
@@ -138,7 +210,7 @@ async function loadHealth(options: { force?: boolean } = {}): Promise<void> {
     healthLoadInFlight = false;
     return;
   }
-  content.innerHTML = `<div class="loading">读取本机 NOOS 状态...</div>`;
+  content.innerHTML = `<div class="loading">读取本机 NOOS 状态…</div>`;
 
   try {
     currentHealth = await getHubHealth();
@@ -261,8 +333,14 @@ function renderCurrentSection(): void {
   const content = appElement.querySelector<HTMLDivElement>("#content");
   if (!content || !currentHealth) return;
 
+  renderShellContext();
   appElement.querySelectorAll<HTMLButtonElement>("[data-section]").forEach((button) => {
     button.classList.toggle("active", button.dataset.section === activeSection);
+    if (button.dataset.section === activeSection) {
+      button.setAttribute("aria-current", "page");
+    } else {
+      button.removeAttribute("aria-current");
+    }
   });
 
   switch (activeSection) {
@@ -303,6 +381,23 @@ function renderCurrentSection(): void {
   content.querySelector('[data-action="check-update"]')?.addEventListener("click", () => {
     void checkForHubUpdate({ mode: "manual" });
   });
+}
+
+function renderShellContext(): void {
+  const item = navItems.find((entry) => entry.id === activeSection) ?? navItems[0];
+  const eyebrow = appElement.querySelector<HTMLElement>("#section-eyebrow");
+  const title = appElement.querySelector<HTMLElement>("#section-title");
+  const summary = appElement.querySelector<HTMLElement>("#section-summary");
+
+  if (eyebrow) {
+    eyebrow.textContent = item.eyebrow;
+  }
+  if (title) {
+    title.textContent = item.title;
+  }
+  if (summary) {
+    summary.textContent = item.summary;
+  }
 }
 
 async function runAction(action: string): Promise<void> {

@@ -1,5 +1,5 @@
 import type { HubHealth, VaultFileSummary } from "../types";
-import { escapeHtml, formatDisplayPath } from "../ui/html";
+import { escapeHtml, formatDisplayPath, formatModifiedAt } from "../ui/html";
 import { configRow } from "./components";
 
 export function renderVault(health: HubHealth): string {
@@ -37,37 +37,33 @@ export function renderVault(health: HubHealth): string {
       <span class="pill pill--${health.local_write.paired ? "ready" : "needs_action"} connection-pill">${escapeHtml(connectionState)}</span>
     </section>
     ${isFirstUse ? renderVaultEmptyState() : ""}
-    <div class="vault-layout">
-      <article class="panel panel--primary">
-        <h3>NOOS Vault</h3>
-        <p>本机存储中心：<code>${escapeHtml(formatDisplayPath(`${health.noos_home}/vault`, health.noos_home))}</code></p>
-        <p>Wiki、Handoff 和 Crystal 都先落到本机 NOOS 文件系统。Git 同步是单独动作，避免把临时文件无意推到远端。</p>
-        <button type="button" data-run="open-vault">打开 Vault</button>
-      </article>
-      <article class="panel">
-        <h3>Runtime Projection</h3>
-        <p>把选中的 Handoff / Crystal 复制成 Codex、Claude Code、OpenCode 能自然读取的任务文件夹。</p>
-        <p>Agent 进入任务后先读 <code>.noos/runtime/current/READ_ME_FIRST.md</code>。</p>
-        <button type="button" data-run="open-runtime-current">打开当前 Projection</button>
-      </article>
-      <article class="panel">
-        <h3>Browser Mirror</h3>
-        <p>待导入文件：<strong>${mirrorCount}</strong></p>
-        <p>Hub 未运行时，插件会先把 Handoff / Crystal 保存到 Browser Mirror。</p>
-        <button type="button" data-run="import-browser-vault">导入 Mirror</button>
-        <button type="button" data-run="open-browser-mirror">打开 Mirror</button>
-      </article>
-      <article class="panel">
-        <h3>Git Sync</h3>
-        <p>Handoff 需要跨机器或给远端 agent 消费时，再同步到 Git。</p>
-        <p>Crystal 默认保留在本机 Vault，可按 key 检索。</p>
-        <button type="button" data-run="sync-handoffs-git">同步 Handoff 到 Git</button>
-      </article>
-    </div>
-    <section class="vault-inline-stats" aria-label="Vault counts">
-      <span>Handoff: <strong>${health.vault_stats.handoffs_active}</strong></span>
-      <span>Crystal: <strong>${health.vault_stats.crystals_active}</strong></span>
-      <span>Mirror: <strong>${mirrorCount}</strong></span>
+    <section class="vault-flow" aria-label="Vault workflow">
+      ${vaultFlowCard({
+        index: "01",
+        title: "收进来",
+        status: mirrorCount > 0 ? `${mirrorCount} 个待导入` : health.local_write.paired ? "浏览器可直写" : "等待首次连接",
+        detail:
+          mirrorCount > 0
+            ? "先把 Browser Mirror 的回退文件导入本机 Vault，避免同一份上下文散在两个地方。"
+            : "浏览器保存的新 Handoff / Crystal 会优先写入本机 Vault；Hub 不在时才回退到 Mirror。",
+        primaryAction: { id: mirrorCount > 0 ? "import-browser-vault" : "open-browser-mirror", label: mirrorCount > 0 ? "导入 Mirror" : "查看 Mirror" },
+        secondaryAction: { id: "open-browser-mirror", label: "打开目录" }
+      })}
+      ${vaultFlowCard({
+        index: "02",
+        title: "放稳",
+        status: `${health.vault_stats.handoffs_active} Handoff · ${health.vault_stats.crystals_active} Crystal`,
+        detail: `本机 Vault 位于 ${formatDisplayPath(`${health.noos_home}/vault`, health.noos_home)}。默认先本地保存，Git 同步由你主动触发。`,
+        primaryAction: { id: "open-vault", label: "打开 Vault" }
+      })}
+      ${vaultFlowCard({
+        index: "03",
+        title: "交出去",
+        status: vaultCount > 0 ? "可生成 Projection" : "等待本机对象",
+        detail: "把选中的 Handoff / Crystal 复制成 agent 能直接读取的 runtime/current 任务文件夹。",
+        primaryAction: { id: "open-runtime-current", label: "打开 Projection" },
+        secondaryAction: { id: "sync-handoffs-git", label: "同步 Handoff" }
+      })}
     </section>
     <section class="vault-recent">
       ${recentVaultPanel("handoffs", "最近 Handoff", "交给下游 Agent 继续执行", health.recent_files.handoffs, health.noos_home)}
@@ -84,6 +80,37 @@ export function renderVault(health: HubHealth): string {
       </div>
       <button type="button" data-run="reset-browser-connection">重置浏览器连接</button>
     </details>
+  `;
+}
+
+function vaultFlowCard({
+  index,
+  title,
+  status,
+  detail,
+  primaryAction,
+  secondaryAction
+}: {
+  index: string;
+  title: string;
+  status: string;
+  detail: string;
+  primaryAction: { id: string; label: string };
+  secondaryAction?: { id: string; label: string };
+}): string {
+  return `
+    <article class="vault-flow-card">
+      <span>${escapeHtml(index)}</span>
+      <div>
+        <h3>${escapeHtml(title)}</h3>
+        <strong>${escapeHtml(status)}</strong>
+        <p>${escapeHtml(detail)}</p>
+      </div>
+      <div class="vault-flow-actions">
+        <button type="button" data-run="${escapeHtml(primaryAction.id)}">${escapeHtml(primaryAction.label)}</button>
+        ${secondaryAction ? `<button type="button" data-run="${escapeHtml(secondaryAction.id)}">${escapeHtml(secondaryAction.label)}</button>` : ""}
+      </div>
+    </article>
   `;
 }
 
@@ -151,13 +178,16 @@ function renderRecentFile(groupId: string, file: VaultFileSummary, index: number
   const key = file.key || file.name.replace(/\.md$/i, "");
   return `
     <article class="recent-file">
-      <strong>${escapeHtml(title)}</strong>
+      <div class="recent-file-title">
+        <strong>${escapeHtml(title)}</strong>
+        <span>${escapeHtml(formatModifiedAt(file.modified_epoch))}</span>
+      </div>
       <span>${escapeHtml(key)}</span>
       <code>${escapeHtml(formatDisplayPath(file.path, noosHome))}</code>
       ${file.source_url ? `<small>${escapeHtml(file.source_url)}</small>` : ""}
       <div class="recent-actions">
-        <button type="button" data-vault-group="${escapeHtml(groupId)}" data-vault-index="${index}" data-vault-file-action="open-vault-file">打开文件</button>
-        <button type="button" data-vault-group="${escapeHtml(groupId)}" data-vault-index="${index}" data-vault-file-action="project-runtime">生成 Agent Projection</button>
+        <button type="button" data-vault-group="${escapeHtml(groupId)}" data-vault-index="${index}" data-vault-file-action="open-vault-file">打开</button>
+        <button type="button" data-vault-group="${escapeHtml(groupId)}" data-vault-index="${index}" data-vault-file-action="project-runtime">交给 Agent</button>
       </div>
     </article>
   `;

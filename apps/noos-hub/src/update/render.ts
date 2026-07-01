@@ -17,7 +17,7 @@ export function renderUpdateBannerHtml(update: Update): string {
       <span>${escapeHtml(updateSummary(update))}</span>
     </div>
     <button type="button" data-update-action="show">查看更新</button>
-    <button type="button" data-update-action="dismiss" aria-label="关闭更新提醒">x</button>
+    <button type="button" data-update-action="dismiss" aria-label="关闭更新提醒">×</button>
   `;
 }
 
@@ -30,7 +30,7 @@ export function renderUpdateDialogHtml(state: UpdateViewState): string {
             <p class="eyebrow">软件更新</p>
             <h2 id="update-dialog-title">${escapeHtml(updateDialogTitle(state))}</h2>
           </div>
-          <button type="button" data-update-action="close" aria-label="关闭更新对话框">x</button>
+          <button type="button" data-update-action="close" aria-label="关闭更新对话框">×</button>
         </header>
         <div class="update-dialog-body">${updateDialogBody(state)}</div>
         <footer>${updateDialogActions(state.status)}</footer>
@@ -103,14 +103,14 @@ function updateDialogActions(status: UpdateStatus): string {
     `;
   }
   if (status === "checking" || status === "downloading" || status === "restarting") {
-    return `<button type="button" disabled>${escapeHtml(status === "checking" ? "检查中..." : "处理中...")}</button>`;
+    return `<button type="button" disabled>${escapeHtml(status === "checking" ? "检查中…" : "处理中…")}</button>`;
   }
   return `<button type="button" data-update-action="later">关闭</button>`;
 }
 
 function trimReleaseNotes(value: string): string {
   const trimmed = value.trim();
-  return trimmed.length > 900 ? `${trimmed.slice(0, 900).trim()}...` : trimmed;
+  return trimmed.length > 900 ? `${trimmed.slice(0, 900).trim()}…` : trimmed;
 }
 
 function updateProgressPercent(downloadedBytes: number, totalBytes?: number): number {
