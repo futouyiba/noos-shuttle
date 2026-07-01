@@ -14,3 +14,4 @@ __pycache__/
 *.pyc
 target/
 apps/noos-hub/src-tauri/gen/
+apps/noos-hub/src-tauri/resources/noos-shuttle-extension/

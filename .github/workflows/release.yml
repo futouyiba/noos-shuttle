@@ -44,19 +44,53 @@ jobs:
         run: npm run package:release
 
       - name: Package NOOS Hub for macOS
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.NOOS_HUB_TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.NOOS_HUB_TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "NOOS_HUB_TAURI_SIGNING_PRIVATE_KEY is required to build updater artifacts." >&2
+            exit 1
+          fi
           npm run hub:bundle
           mkdir -p release
           VERSION="$(node -p "require('./package.json').version")"
           find apps/noos-hub/src-tauri/target/release/bundle -type f \
-            \( -name "*.dmg" -o -name "*.app.tar.gz" \) \
+            \( -name "*.dmg" -o -name "*.app.tar.gz" -o -name "*.sig" -o -name "latest.json" \) \
             -print0 | while IFS= read -r -d '' artifact; do
               ext="${artifact##*.}"
               case "$artifact" in
                 *.app.tar.gz) ext="app.tar.gz" ;;
+                *.app.tar.gz.sig) ext="app.tar.gz.sig" ;;
               esac
               cp "$artifact" "release/noos-hub-macos-$VERSION-$RUNNER_ARCH.$ext"
             done
+          case "$RUNNER_ARCH" in
+            ARM64) UPDATER_TARGET="darwin-aarch64" ;;
+            X64) UPDATER_TARGET="darwin-x86_64" ;;
+            *) echo "Unsupported updater arch: $RUNNER_ARCH" >&2; exit 1 ;;
+          esac
+          UPDATER_ASSET="noos-hub-macos-$VERSION-$RUNNER_ARCH.app.tar.gz"
+          SIGNATURE_FILE="release/$UPDATER_ASSET.sig"
+          if [ ! -f "$SIGNATURE_FILE" ]; then
+            echo "Missing updater signature: $SIGNATURE_FILE" >&2
+            exit 1
+          fi
+          SIGNATURE="$(cat "$SIGNATURE_FILE")"
+          PUB_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          UPDATER_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${UPDATER_ASSET}"
+          node -e '
+            const fs = require("fs");
+            const [version, target, url, signature, pubDate] = process.argv.slice(1);
+            fs.writeFileSync("release/noos-hub-latest.json", JSON.stringify({
+              version,
+              notes: `NOOS Hub ${version}`,
+              pub_date: pubDate,
+              platforms: {
+                [target]: { url, signature }
+              }
+            }, null, 2) + "\n");
+          ' "$VERSION" "$UPDATER_TARGET" "$UPDATER_URL" "$SIGNATURE" "$PUB_DATE"
 
       - name: Publish GitHub Release
         env:

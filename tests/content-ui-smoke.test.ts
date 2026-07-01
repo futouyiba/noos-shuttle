@@ -20,7 +20,7 @@ describe("content script smoke flow", () => {
   it("scans handoffs, prefers the latest candidate, and saves through the vault action", async () => {
     const page = await newMockChatPage();
 
-    await clickShuttle(page, ".fab");
+    await clickShuttle(page, ".surface-fab");
     await clickShuttle(page, "[data-action='capture']");
     await waitForShuttleText(page, "选择交接稿");
 
@@ -67,7 +67,7 @@ describe("content script smoke flow", () => {
       });
     }, createThread("Generated Async Capture", "generated-async-capture"));
 
-    await clickShuttle(page, ".fab");
+    await clickShuttle(page, ".surface-fab");
     await clickShuttle(page, "[data-action='generate-capture']");
     await waitForShuttleText(page, "Saved to local NOOS Vault");
 
@@ -81,7 +81,7 @@ describe("content script smoke flow", () => {
   it("captures a crystal and saves its key-oriented artifact", async () => {
     const page = await newMockChatPage({ startWithHandoffs: false, startWithCrystals: true });
 
-    await clickShuttle(page, ".fab");
+    await clickShuttle(page, ".surface-fab");
     await clickShuttle(page, "[data-action='capture-crystal']");
     await waitForShuttleText(page, "选择结晶");
 
@@ -103,6 +103,8 @@ describe("content script smoke flow", () => {
 
     await clickShuttle(page, ".fab");
     await waitForShuttleText(page, "Browser Vault Mirror");
+    expect(await shuttleText(page)).toContain("Hub 未运行，将保存到 Browser Vault Mirror");
+    await clickShuttle(page, ".surface-fab");
     await clickShuttle(page, "[data-action='capture']");
     await waitForShuttleText(page, "选择交接稿");
     await clickShuttle(page, "[data-action='choose-thread-0']");
@@ -110,7 +112,6 @@ describe("content script smoke flow", () => {
     await clickShuttle(page, "[data-action='vault']");
     await waitForShuttleText(page, "Saved to Downloads/NOOS/vault/handoffs/active/latest-browser-capture.md");
 
-    expect(await shuttleText(page)).toContain("Hub 未运行，将保存到 Browser Vault Mirror");
     await page.close();
   });
 
@@ -146,7 +147,7 @@ describe("content script smoke flow", () => {
       selection?.addRange(range);
     });
 
-    await clickShuttle(page, ".fab");
+    await clickShuttle(page, ".surface-fab");
     await clickShuttle(page, "[data-action='download-images']");
     await waitForShuttleText(page, "已下载 1 张图片到 Downloads/NOOS/vault/artifacts/files/chatgpt-images/");
 
@@ -316,6 +317,28 @@ describe("content script smoke flow", () => {
 
     const textboxes = await page.locator("[role='textbox']").count();
     expect(textboxes).toBe(0);
+    await page.close();
+  });
+
+  it("shows a Feishu Surface and sends Markdown/Wiki actions to Hub", async () => {
+    const page = await newMockFeishuPage();
+
+    await clickShuttle(page, ".surface-fab");
+    await waitForShuttleText(page, "飞书文档");
+    await waitForShuttleText(page, "同步 Markdown 并整理 Wiki");
+    await waitForShuttleText(page, "/tmp/noos/wiki/work");
+
+    await clickShuttle(page, "[data-action='feishu-sync-organize']");
+    await waitForShuttleText(page, "queued");
+
+    const request = await page.evaluate(() => (globalThis as unknown as { lastFeishuAction?: unknown }).lastFeishuAction);
+    expect(request).toMatchObject({
+      type: "NOOS_FEISHU_WIKI_ACTION",
+      action: "sync_markdown_and_organize",
+      url: "https://team.feishu.cn/docx/ABC123"
+    });
+    expect(request).toHaveProperty("title", "Quarterly Plan");
+    expect(request).toHaveProperty("wikiProjectPath", "/tmp/noos/wiki/work");
     await page.close();
   });
 });
@@ -535,6 +558,56 @@ async function newMockProjectPage(options: { withFileInput?: boolean } = {}): Pr
     })
   );
   await page.goto("https://chatgpt.com/g/g-test/project");
+  await page.addScriptTag({ content: contentScript });
+  return page;
+}
+
+async function newMockFeishuPage(): Promise<Page> {
+  const page = await browser.newPage();
+  await page.addInitScript(() => {
+    window.localStorage.setItem("noos-shuttle-locale", "zh");
+    (globalThis as unknown as { chrome: unknown }).chrome = {
+      runtime: {
+        getURL: (path: string) => `chrome-extension://mock/${path}`,
+        sendMessage: async (message: { type?: string }) => {
+          if (message.type === "NOOS_GET_VAULT_STATUS") {
+            return { ok: true, hubAvailable: true, paired: true };
+          }
+          if (message.type === "NOOS_GET_WIKI_TARGET") {
+            return { ok: true, projectPath: "/tmp/noos/wiki/work", message: "Default Wiki project loaded." };
+          }
+          if (message.type === "NOOS_FEISHU_WIKI_ACTION") {
+            (globalThis as unknown as { lastFeishuAction?: unknown }).lastFeishuAction = message;
+            return {
+              ok: true,
+              status: "queued",
+              message: "Feishu Markdown synced and Wiki organization queued.",
+              sourcePath: "/tmp/noos/wiki/work/raw/sources/feishu/feishu-abc123.md",
+              wikiProjectPath: "/tmp/noos/wiki/work"
+            };
+          }
+          return { ok: true };
+        },
+        lastError: undefined,
+        onInstalled: { addListener: () => undefined },
+        onMessage: { addListener: () => undefined }
+      },
+      downloads: { download: async () => 1 },
+      storage: { local: { get: async () => ({}), set: async () => undefined, remove: async () => undefined } }
+    };
+  });
+
+  await page.route("https://team.feishu.cn/docx/ABC123", (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: `<!doctype html>
+<html>
+  <head><meta charset="utf-8"><title>Quarterly Plan - 飞书云文档</title></head>
+  <body><main><h1>Quarterly Plan</h1></main></body>
+</html>`
+    })
+  );
+  await page.goto("https://team.feishu.cn/docx/ABC123");
   await page.addScriptTag({ content: contentScript });
   return page;
 }

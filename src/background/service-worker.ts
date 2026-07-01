@@ -8,6 +8,8 @@ const HUB_PAIR_URL = "http://127.0.0.1:17642/pair";
 const HUB_VAULT_RECENT_URL = "http://127.0.0.1:17642/v1/vault/recent";
 const HUB_VAULT_BROWSE_URL = "http://127.0.0.1:17642/v1/vault/browse";
 const HUB_VAULT_OBJECT_URL = "http://127.0.0.1:17642/v1/vault/object";
+const HUB_WIKI_TARGET_URL = "http://127.0.0.1:17642/v1/wiki/default-target";
+const HUB_ACTION_URL = "http://127.0.0.1:17642/v1/actions";
 const HUB_TOKEN_STORAGE_KEY = "noosHubShuttleToken";
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -111,6 +113,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (isWikiTargetMessage(message)) {
+    getWikiTarget()
+      .then(sendResponse)
+      .catch((error) => {
+        sendResponse({
+          ok: false,
+          errorCode: "hub_unavailable",
+          message: error instanceof Error ? error.message : "Could not load default Wiki project."
+        });
+      });
+    return true;
+  }
+
+  if (isFeishuWikiActionMessage(message)) {
+    runFeishuWikiAction(message)
+      .then(sendResponse)
+      .catch((error) => {
+        sendResponse({
+          ok: false,
+          status: "hub_unavailable",
+          errorCode: "hub_unavailable",
+          message: error instanceof Error ? error.message : "NOOS Hub action failed."
+        });
+      });
+    return true;
+  }
+
   return false;
 });
 
@@ -156,6 +185,18 @@ interface VaultBrowseMessage {
 interface VaultObjectMessage {
   type: "NOOS_GET_VAULT_OBJECT";
   lookupKey: string;
+}
+
+interface WikiTargetMessage {
+  type: "NOOS_GET_WIKI_TARGET";
+}
+
+interface FeishuWikiActionMessage {
+  type: "NOOS_FEISHU_WIKI_ACTION";
+  action: "sync_markdown" | "organize_wiki" | "sync_markdown_and_organize";
+  url: string;
+  title?: string;
+  wikiProjectPath?: string;
 }
 
 interface VaultStatusResponse {
@@ -250,6 +291,29 @@ function isVaultObjectMessage(value: unknown): value is VaultObjectMessage {
   return message.type === "NOOS_GET_VAULT_OBJECT" && typeof message.lookupKey === "string";
 }
 
+function isWikiTargetMessage(value: unknown): value is WikiTargetMessage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  return (value as Partial<WikiTargetMessage>).type === "NOOS_GET_WIKI_TARGET";
+}
+
+function isFeishuWikiActionMessage(value: unknown): value is FeishuWikiActionMessage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const message = value as Partial<FeishuWikiActionMessage>;
+  return (
+    message.type === "NOOS_FEISHU_WIKI_ACTION" &&
+    (message.action === "sync_markdown" || message.action === "organize_wiki" || message.action === "sync_markdown_and_organize") &&
+    typeof message.url === "string" &&
+    (message.title === undefined || typeof message.title === "string") &&
+    (message.wikiProjectPath === undefined || typeof message.wikiProjectPath === "string")
+  );
+}
+
 async function getVaultRecentObjects(): Promise<unknown> {
   return getAuthorizedHubJson(HUB_VAULT_RECENT_URL);
 }
@@ -268,6 +332,26 @@ async function getVaultBrowseObjects(folder?: string, query?: string): Promise<u
 
 async function getVaultObject(lookupKey: string): Promise<unknown> {
   return getAuthorizedHubJson(`${HUB_VAULT_OBJECT_URL}?key=${encodeURIComponent(lookupKey)}`);
+}
+
+async function getWikiTarget(): Promise<unknown> {
+  return normalizeHubPayload(await getAuthorizedHubJson(HUB_WIKI_TARGET_URL));
+}
+
+async function runFeishuWikiAction(message: FeishuWikiActionMessage): Promise<unknown> {
+  const commandByAction: Record<FeishuWikiActionMessage["action"], string> = {
+    sync_markdown: "feishu.syncMarkdown",
+    organize_wiki: "wiki.organizeSource",
+    sync_markdown_and_organize: "feishu.syncMarkdownAndOrganize"
+  };
+  const payload = await postAuthorizedHubJson(HUB_ACTION_URL, {
+    command: commandByAction[message.action],
+    url: message.url,
+    title: message.title,
+    wiki_project_path: message.wikiProjectPath,
+    force: message.action === "organize_wiki"
+  });
+  return normalizeHubPayload(payload);
 }
 
 async function getAuthorizedHubJson(url: string): Promise<unknown> {
@@ -294,6 +378,51 @@ async function getAuthorizedHubJson(url: string): Promise<unknown> {
     };
   }
   return payload;
+}
+
+async function postAuthorizedHubJson(url: string, body: unknown): Promise<unknown> {
+  const token = await getOrPairHubToken();
+  if (!token) {
+    return {
+      ok: false,
+      status: "hub_unavailable",
+      errorCode: "hub_unavailable",
+      message: "NOOS Hub is not reachable."
+    };
+  }
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify(body)
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    return {
+      ok: false,
+      ...(typeof payload === "object" && payload ? payload : {}),
+      errorCode: (payload as { error_code?: string }).error_code ?? (response.status === 401 ? "unauthorized" : "hub_request_failed")
+    };
+  }
+  return payload;
+}
+
+function normalizeHubPayload(payload: unknown): unknown {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return payload;
+  }
+
+  const value = payload as Record<string, unknown>;
+  return {
+    ...value,
+    errorCode: value.errorCode ?? value.error_code,
+    projectPath: value.projectPath ?? value.project_path,
+    wikiProjectPath: value.wikiProjectPath ?? value.wiki_project_path,
+    sourcePath: value.sourcePath ?? value.source_path
+  };
 }
 
 async function getVaultStatus(): Promise<VaultStatusResponse> {

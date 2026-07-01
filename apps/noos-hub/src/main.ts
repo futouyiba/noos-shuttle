@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check } from "@tauri-apps/plugin-updater";
 import noosLogoUrl from "./assets/noos-logo.png";
 import "./styles.css";
 
@@ -152,7 +154,7 @@ function renderShell(): void {
         <img class="mark" src="${noosLogoUrl}" alt="" aria-hidden="true" />
         <div>
           <strong>NOOS Hub</strong>
-          <span>Context Control Plane</span>
+          <span>Context Control Plane · FuTou 2026</span>
         </div>
       </div>
       <nav>
@@ -166,7 +168,7 @@ function renderShell(): void {
       </nav>
       <div class="sidebar-note">
         <span></span>
-        本机中枢只写入 NOOS 配置和已确认的 adapter 文件。
+        本机中枢只写入 NOOS 配置和已确认的 adapter 文件。FuTou 2026。
       </div>
     </aside>
     <main class="workspace">
@@ -353,6 +355,12 @@ function renderCurrentSection(): void {
 
   content.querySelectorAll<HTMLButtonElement>("[data-run]").forEach((button) => {
     button.addEventListener("click", () => runAction(button.dataset.run ?? ""));
+  });
+  content.querySelector('[data-action="check-update"]')?.addEventListener("click", () => {
+    void checkForHubUpdate();
+  });
+  content.querySelector('[data-action="install-update"]')?.addEventListener("click", () => {
+    void installHubUpdate();
   });
 }
 
@@ -680,13 +688,25 @@ function renderConfig(health: HubHealth): string {
         <p class="eyebrow">Config</p>
         <h2>配置层</h2>
       </div>
+      <div class="section-actions">
+        <button type="button" data-action="check-update">检查更新</button>
+        <button type="button" data-action="install-update">安装更新</button>
+      </div>
     </section>
     <div class="config-list">
       ${configRow("User Hub", `${health.noos_home}/config.json`, "用户级 inbox、默认 agent、GitHub auth provider。")}
       ${configRow("Vault", `${health.noos_home}/vault`, "本机 Wiki、Handoff、Crystal 的 local-first 存储中心。")}
       ${configRow("Project", `${health.repo_root}/.noos/project.json`, "项目 handoff / crystal 路径和 GitHub repo handle。")}
       ${configRow("Local", `${health.repo_root}/.noos/local.json`, "本机私有配置，已被 git ignore。")}
+      ${configRow("Auto Update", "GitHub Releases / noos-hub-latest.json", "检查签名 manifest，安装 NOOS Hub 桌面更新。")}
+      ${configRow("Bundled Shuttle", "NOOS Hub.app resources/noos-shuttle-extension", "Hub 更新后随包携带的浏览器插件 build，可直接从浏览器扩展页加载。")}
+      ${configRow("Signature", "FuTou 2026", "NOOS Hub 与 NOOS Shuttle 的产品署名。")}
     </div>
+    <section class="panel">
+      <h3>NOOS Shuttle 浏览器插件</h3>
+      <p>Hub 更新包会自带当前版本的 Shuttle 扩展目录。安装或更新 Hub 后，打开这个目录，在浏览器扩展页启用开发者模式并加载该目录。</p>
+      <button type="button" data-run="open-bundled-shuttle-extension">打开内置插件目录</button>
+    </section>
   `;
 }
 
@@ -822,6 +842,64 @@ async function runAction(action: string): Promise<void> {
     }
     setLog(`失败：${String(error)}`);
   }
+}
+
+async function checkForHubUpdate(): Promise<void> {
+  if (!isTauriRuntime()) {
+    setLog("浏览器预览模式不会检查 GitHub Release 更新。");
+    return;
+  }
+
+  setLog("检查 NOOS Hub 更新...\n");
+  try {
+    const update = await check();
+    if (!update) {
+      setLog("NOOS Hub 已是最新版本。");
+      return;
+    }
+    setLog(`发现新版本：${update.version}\n${update.body ?? ""}`.trim());
+  } catch (error) {
+    setLog(`检查更新失败：${String(error)}`);
+  }
+}
+
+async function installHubUpdate(): Promise<void> {
+  if (!isTauriRuntime()) {
+    setLog("浏览器预览模式不会安装更新。");
+    return;
+  }
+
+  setLog("检查并准备安装 NOOS Hub 更新...\n");
+  try {
+    const update = await check();
+    if (!update) {
+      setLog("NOOS Hub 已是最新版本。");
+      return;
+    }
+
+    let downloaded = 0;
+    await update.downloadAndInstall((event) => {
+      if (event.event === "Started") {
+        downloaded = 0;
+        setLog(`开始下载 ${update.version}，大小 ${formatBytes(event.data.contentLength)}。`);
+      } else if (event.event === "Progress") {
+        downloaded += event.data.chunkLength;
+        setLog(`正在下载 ${update.version}：${formatBytes(downloaded)}`);
+      } else if (event.event === "Finished") {
+        setLog(`更新 ${update.version} 已安装，正在重启 NOOS Hub...`);
+      }
+    });
+    await relaunch();
+  } catch (error) {
+    setLog(`安装更新失败：${String(error)}`);
+  }
+}
+
+function formatBytes(value?: number): string {
+  if (!value) return "未知";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function setLog(value: string): void {

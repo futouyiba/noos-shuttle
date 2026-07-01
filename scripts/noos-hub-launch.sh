@@ -55,6 +55,20 @@ read_watchdog_pid() {
   fi
 }
 
+watchdog_is_running() {
+  local watchdog_pid
+  watchdog_pid="$(read_watchdog_pid)"
+  pid_is_running "$watchdog_pid"
+}
+
+clear_stale_watchdog_pid() {
+  local watchdog_pid
+  watchdog_pid="$(read_watchdog_pid)"
+  if [[ -n "$watchdog_pid" ]] && ! pid_is_running "$watchdog_pid"; then
+    rm -f "$WATCHDOG_PID_FILE"
+  fi
+}
+
 ensure_dirs() {
   mkdir -p "$RUN_DIR" "$LOG_DIR"
 }
@@ -71,6 +85,10 @@ hub_bundle_needs_rebuild() {
     "$HUB_DIR/src-tauri/Cargo.toml" \
     "$HUB_DIR/src-tauri/tauri.conf.json" \
     "$HUB_DIR/package.json" \
+    "$ROOT_DIR/src" \
+    "$ROOT_DIR/public" \
+    "$ROOT_DIR/package.json" \
+    "$ROOT_DIR/vite.config.ts" \
     -newer "$APP_BINARY" \
     -print \
     -quit)"
@@ -112,7 +130,7 @@ start_watchdog() {
     return 0
   fi
 
-  rm -f "$WATCHDOG_PID_FILE"
+  clear_stale_watchdog_pid
 
   if [[ "$(uname -s)" == "Darwin" ]] && command -v launchctl >/dev/null 2>&1; then
     local root_dir_q app_path_q health_url_q pid_file_q watchdog_pid_file_q log_file_q interval_q high_cpu_q failure_limit_q
@@ -140,6 +158,8 @@ LOG_FILE=$log_file_q
 WATCHDOG_INTERVAL_SECONDS=$interval_q
 WATCHDOG_HIGH_CPU_PERCENT=$high_cpu_q
 WATCHDOG_FAILURE_LIMIT=$failure_limit_q
+
+cd "\$ROOT_DIR" 2>/dev/null || cd /
 
 pid_is_running() {
   local pid="\${1:-}"
@@ -246,7 +266,7 @@ EOF
     <string>$WATCHDOG_RUNNER</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>$ROOT_DIR</string>
+  <string>/</string>
   <key>StandardOutPath</key>
   <string>$LOG_FILE</string>
   <key>StandardErrorPath</key>
@@ -300,6 +320,8 @@ status() {
     watchdog_pid="$(read_watchdog_pid)"
     if pid_is_running "$watchdog_pid"; then
       echo "Watchdog is running: pid=$watchdog_pid"
+    elif [[ -n "$watchdog_pid" ]]; then
+      echo "Watchdog is not running. Stale pid file: $watchdog_pid"
     else
       echo "Watchdog is not running."
     fi
@@ -374,6 +396,7 @@ stop() {
 watchdog() {
   set +e
   ensure_dirs
+  cd "$ROOT_DIR" 2>/dev/null || cd /
   echo "$$" > "$WATCHDOG_PID_FILE"
   echo "NOOS Hub watchdog started at $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 

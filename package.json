@@ -3,6 +3,7 @@
   "version": "0.1.3",
   "private": true,
   "description": "NOOS Shuttle packages AI conversations into agent-ready handoff threads.",
+  "author": "FuTou 2026",
   "type": "module",
   "scripts": {
     "build": "vite build",
@@ -31,6 +32,7 @@
     "hub:logs": "scripts/noos-hub-launch.sh logs",
     "hub:post-wake-check": "scripts/noos-post-wake-check.sh",
     "hub:post-wake-check:self-test": "scripts/noos-post-wake-check-self-test.sh",
+    "hub:prepare-extension": "scripts/noos-prepare-hub-extension.sh",
     "hub:sleep-recovery:test": "cargo test --manifest-path apps/noos-hub/src-tauri/Cargo.toml sleep_recovery",
     "hub:run": "npm run hub:web:build && cargo run --manifest-path apps/noos-hub/src-tauri/Cargo.toml",
     "hub:status": "scripts/noos-hub-launch.sh status",

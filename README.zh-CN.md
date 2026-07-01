@@ -316,6 +316,18 @@ npm run package:release
 
 正式发布使用 GitHub Releases：推送 `v*` tag 会触发 `.github/workflows/release.yml`，在 CI 中运行类型检查、测试、打包，构建 macOS Hub bundle，并把拆分产物上传到对应 GitHub Release。
 
+NOOS Hub 桌面端更新也通过 GitHub Releases 分发。Hub 会检查 latest release
+中的 `noos-hub-latest.json`，并且只安装能通过
+`apps/noos-hub/src-tauri/tauri.conf.json` 中 updater 公钥校验的 bundle。发布
+Hub 更新前，需要在 GitHub Actions 里配置：
+
+- `NOOS_HUB_TAURI_SIGNING_PRIVATE_KEY`
+- `NOOS_HUB_TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+
+Hub bundle 会把当前 NOOS Shuttle 浏览器插件 build 一起作为 Tauri resource
+打进去。更新 Hub 后，在 Config 页面点击“打开内置插件目录”，然后在
+`chrome://extensions` 或 `edge://extensions` 开启开发者模式并加载该目录。
+
 ```sh
 git tag v0.1.2
 git push origin v0.1.2

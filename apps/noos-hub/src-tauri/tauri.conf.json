@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://127.0.0.1:1430",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run build && npm --prefix ../.. run hub:prepare-extension",
     "frontendDist": "../dist"
   },
   "app": {
@@ -25,7 +25,17 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
-    "icon": ["icons/icon.png", "icons/icon.icns"]
+    "icon": ["icons/icon.png", "icons/icon.icns"],
+    "resources": ["resources/noos-shuttle-extension"]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVEQTdGQzk0MjI2MkRCMDQKUldRRTIySWlsUHluN2FXUXJVRUh1VEwwOUorc1dNK2JURDAwQmcyWEtHNXNHZC9jOGRJZlNtQmEK",
+      "endpoints": [
+        "https://github.com/futouyiba/noos-shuttle/releases/latest/download/noos-hub-latest.json"
+      ]
+    }
   }
 }

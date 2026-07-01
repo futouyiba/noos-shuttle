@@ -9,6 +9,7 @@ use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tauri::Manager;
 
 const LOCAL_WRITE_PORT: u16 = 17642;
 const HUB_PROTOCOL_VERSION: u8 = 1;
@@ -124,6 +125,26 @@ struct IngestSuggested {
 struct IngestContent {
     media_type: Option<String>,
     text: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct HubActionRequest {
+    command: String,
+    url: Option<String>,
+    title: Option<String>,
+    wiki_project_path: Option<String>,
+    force: Option<bool>,
+}
+
+#[derive(Serialize)]
+struct HubActionResponse {
+    ok: bool,
+    status: String,
+    message: String,
+    error_code: Option<String>,
+    source_path: Option<String>,
+    wiki_project_path: Option<String>,
+    changed: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -292,7 +313,7 @@ fn compute_hub_health() -> HubHealth {
 }
 
 #[tauri::command]
-fn run_hub_action(action: String) -> Result<String, String> {
+fn run_hub_action(app: tauri::AppHandle, action: String) -> Result<String, String> {
     invalidate_hub_health_cache();
     let repo_root = repo_root();
     let noos_home = noos_home();
@@ -310,6 +331,7 @@ fn run_hub_action(action: String) -> Result<String, String> {
         "open-crystal-vault" => open_path(&noos_home.join("vault/crystals/active")),
         "open-browser-mirror" => open_path(&home_dir().join("Downloads/NOOS/vault")),
         "open-runtime-current" => open_path(&repo_root.join(".noos/runtime/current")),
+        "open-bundled-shuttle-extension" => open_bundled_shuttle_extension(&app, &repo_root),
         "browser-dev-profile" => run_script(
             &repo_root,
             &[
@@ -346,6 +368,8 @@ fn main() {
     start_local_write_server();
     start_sleep_resume_guard();
     tauri::Builder::default()
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             get_hub_health,
             run_hub_action,
@@ -715,7 +739,10 @@ fn handle_local_write_request(mut stream: TcpStream) -> Result<(), String> {
     }
 
     if method == "GET"
-        && (path == "/v1/vault/recent" || path == "/v1/vault/object" || path == "/v1/vault/browse")
+        && (path == "/v1/vault/recent"
+            || path == "/v1/vault/object"
+            || path == "/v1/vault/browse"
+            || path == "/v1/wiki/default-target")
     {
         if !is_authorized_handoff_write(&headers) {
             return write_json_response(
@@ -730,6 +757,10 @@ fn handle_local_write_request(mut stream: TcpStream) -> Result<(), String> {
 
         if path == "/v1/vault/recent" {
             return write_json_response(&mut stream, 200, &vault_recent_payload(&noos_home()));
+        }
+
+        if path == "/v1/wiki/default-target" {
+            return write_json_response(&mut stream, 200, &wiki_target_payload());
         }
 
         if path == "/v1/vault/browse" {
@@ -752,6 +783,28 @@ fn handle_local_write_request(mut stream: TcpStream) -> Result<(), String> {
         } else {
             404
         };
+        return write_json_response(&mut stream, status, &response);
+    }
+
+    if method == "POST" && path == "/v1/actions" {
+        if !is_authorized_handoff_write(&headers) {
+            return write_json_response(
+                &mut stream,
+                401,
+                &write_error(
+                    "unauthorized",
+                    "Browser Shuttle is not connected to NOOS Hub.",
+                ),
+            );
+        }
+
+        let body_start = end + 4;
+        let body_end = body_start + content_length;
+        let body = &buffer[body_start..body_end.min(buffer.len())];
+        let request: HubActionRequest =
+            serde_json::from_slice(body).map_err(|error| error.to_string())?;
+        let response = run_browser_hub_action(request);
+        let status = if response.ok { 200 } else { 400 };
         return write_json_response(&mut stream, status, &response);
     }
 
@@ -797,6 +850,375 @@ fn handle_local_write_request(mut stream: TcpStream) -> Result<(), String> {
     };
     let status = if response.ok { 200 } else { 400 };
     write_json_response(&mut stream, status, &response)
+}
+
+fn wiki_target_payload() -> Value {
+    let project_path = configured_default_wiki_project_path();
+    json!({
+        "ok": true,
+        "project_path": project_path.as_ref().map(|path| path.display().to_string()),
+        "message": if project_path.is_some() { "Default Wiki project loaded." } else { "No default Wiki project configured." },
+    })
+}
+
+fn run_browser_hub_action(request: HubActionRequest) -> HubActionResponse {
+    match request.command.as_str() {
+        "feishu.syncMarkdown" => sync_feishu_markdown(request, false),
+        "feishu.syncMarkdownAndOrganize" => sync_feishu_markdown(request, true),
+        "wiki.organizeSource" => organize_wiki_source(request),
+        _ => hub_action_error(
+            "export_failed",
+            "Unknown Hub action command.",
+            None,
+            request.wiki_project_path,
+        ),
+    }
+}
+
+fn sync_feishu_markdown(request: HubActionRequest, organize: bool) -> HubActionResponse {
+    let Some(url) = request.url.as_deref() else {
+        return hub_action_error(
+            "export_failed",
+            "Missing Feishu document URL.",
+            None,
+            request.wiki_project_path,
+        );
+    };
+    let Some(wiki_project_path) = resolve_wiki_project_path(request.wiki_project_path.as_deref())
+    else {
+        return hub_action_error(
+            "export_failed",
+            "No default Wiki project configured in NOOS Hub.",
+            None,
+            request.wiki_project_path,
+        );
+    };
+
+    let source_path = feishu_source_path(&wiki_project_path, url);
+    let token = feishu_token_from_url(url).unwrap_or_else(|| stable_hash_hex(url));
+    let exported = match export_feishu_markdown(url) {
+        Ok(markdown) => markdown,
+        Err(error) => {
+            let code = if looks_like_feishu_auth_error(&error) {
+                "needs_auth"
+            } else {
+                "export_failed"
+            };
+            return hub_action_error(
+                code,
+                &error,
+                Some(source_path.display().to_string()),
+                Some(wiki_project_path.display().to_string()),
+            );
+        }
+    };
+
+    let previous = fs::read_to_string(&source_path).unwrap_or_default();
+    let changed = feishu_source_body(&previous) != exported.trim();
+    if !changed {
+        return HubActionResponse {
+            ok: true,
+            status: "unchanged".to_string(),
+            message: "Feishu Markdown source is unchanged.".to_string(),
+            error_code: None,
+            source_path: Some(source_path.display().to_string()),
+            wiki_project_path: Some(wiki_project_path.display().to_string()),
+            changed: Some(false),
+        };
+    }
+
+    let markdown = build_feishu_source_markdown(
+        &exported,
+        url,
+        &request
+            .title
+            .unwrap_or_else(|| "Untitled Feishu Document".to_string()),
+        &token,
+        &wiki_project_path,
+    );
+    if let Err(error) = write_feishu_source(&source_path, &markdown) {
+        return hub_action_error(
+            "export_failed",
+            &error,
+            Some(source_path.display().to_string()),
+            Some(wiki_project_path.display().to_string()),
+        );
+    }
+
+    if organize {
+        if let Err(error) = queue_wiki_organize_by_touch(&source_path) {
+            return hub_action_error(
+                "organize_failed",
+                &error,
+                Some(source_path.display().to_string()),
+                Some(wiki_project_path.display().to_string()),
+            );
+        }
+        return HubActionResponse {
+            ok: true,
+            status: "queued".to_string(),
+            message: "Feishu Markdown synced and Wiki organization queued.".to_string(),
+            error_code: None,
+            source_path: Some(source_path.display().to_string()),
+            wiki_project_path: Some(wiki_project_path.display().to_string()),
+            changed: Some(true),
+        };
+    }
+
+    HubActionResponse {
+        ok: true,
+        status: "synced".to_string(),
+        message: "Feishu Markdown synced to the Wiki source library.".to_string(),
+        error_code: None,
+        source_path: Some(source_path.display().to_string()),
+        wiki_project_path: Some(wiki_project_path.display().to_string()),
+        changed: Some(true),
+    }
+}
+
+fn organize_wiki_source(request: HubActionRequest) -> HubActionResponse {
+    let Some(url) = request.url.as_deref() else {
+        return hub_action_error(
+            "organize_failed",
+            "Missing Feishu document URL.",
+            None,
+            request.wiki_project_path,
+        );
+    };
+    let Some(wiki_project_path) = resolve_wiki_project_path(request.wiki_project_path.as_deref())
+    else {
+        return hub_action_error(
+            "organize_failed",
+            "No default Wiki project configured in NOOS Hub.",
+            None,
+            request.wiki_project_path,
+        );
+    };
+    let source_path = feishu_source_path(&wiki_project_path, url);
+    if !source_path.exists() {
+        return hub_action_error(
+            "export_failed",
+            "No synced Markdown source exists for this Feishu document yet.",
+            Some(source_path.display().to_string()),
+            Some(wiki_project_path.display().to_string()),
+        );
+    }
+    if let Err(error) = queue_wiki_organize_by_touch(&source_path) {
+        return hub_action_error(
+            "organize_failed",
+            &error,
+            Some(source_path.display().to_string()),
+            Some(wiki_project_path.display().to_string()),
+        );
+    }
+
+    HubActionResponse {
+        ok: true,
+        status: "queued".to_string(),
+        message: "Wiki organization queued for the synced Feishu source.".to_string(),
+        error_code: None,
+        source_path: Some(source_path.display().to_string()),
+        wiki_project_path: Some(wiki_project_path.display().to_string()),
+        changed: request.force,
+    }
+}
+
+fn hub_action_error(
+    code: &str,
+    message: &str,
+    source_path: Option<String>,
+    wiki_project_path: Option<String>,
+) -> HubActionResponse {
+    HubActionResponse {
+        ok: false,
+        status: code.to_string(),
+        message: message.to_string(),
+        error_code: Some(code.to_string()),
+        source_path,
+        wiki_project_path,
+        changed: None,
+    }
+}
+
+fn resolve_wiki_project_path(explicit_path: Option<&str>) -> Option<PathBuf> {
+    explicit_path
+        .filter(|path| !path.trim().is_empty())
+        .map(expand_user_path)
+        .or_else(configured_default_wiki_project_path)
+}
+
+fn configured_default_wiki_project_path() -> Option<PathBuf> {
+    let config = read_json_object(&noos_home().join("config.json"));
+    string_config_value(&config, &["default_wiki_project"])
+        .or_else(|| string_config_value(&config, &["defaultWikiProject"]))
+        .or_else(|| string_config_value(&config, &["llm_wiki", "default_project"]))
+        .or_else(|| string_config_value(&config, &["llmWiki", "defaultProject"]))
+        .or_else(|| string_config_value(&config, &["wiki", "default_project"]))
+        .or_else(|| string_config_value(&config, &["wiki", "project_path"]))
+        .map(|path| expand_user_path(&path))
+}
+
+fn string_config_value(config: &Value, path: &[&str]) -> Option<String> {
+    let mut cursor = config;
+    for key in path {
+        cursor = cursor.get(*key)?;
+    }
+    cursor
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn expand_user_path(path: &str) -> PathBuf {
+    if let Some(stripped) = path.strip_prefix("~/") {
+        return home_dir().join(stripped);
+    }
+    PathBuf::from(path)
+}
+
+fn feishu_source_path(wiki_project_path: &Path, url: &str) -> PathBuf {
+    let id = feishu_token_from_url(url).unwrap_or_else(|| stable_hash_hex(url));
+    wiki_project_path
+        .join("raw")
+        .join("sources")
+        .join("feishu")
+        .join(format!("feishu-{}.md", source_id_slug(&id)))
+}
+
+fn feishu_token_from_url(url: &str) -> Option<String> {
+    let path = url.split('?').next().unwrap_or(url);
+    for marker in ["/docx/", "/wiki/", "/sheets/", "/base/", "/bitable/"] {
+        if let Some(rest) = path.split(marker).nth(1) {
+            let token = rest
+                .split(['/', '#', '?'])
+                .next()
+                .unwrap_or_default()
+                .trim();
+            if !token.is_empty() {
+                return Some(token.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn source_id_slug(value: &str) -> String {
+    let slug: String = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .chars()
+        .take(80)
+        .collect();
+    if slug.is_empty() {
+        stable_hash_hex(value)
+    } else {
+        slug
+    }
+}
+
+fn export_feishu_markdown(url: &str) -> Result<String, String> {
+    let attempts: Vec<Vec<String>> = vec![
+        vec![
+            "export".to_string(),
+            url.to_string(),
+            "--stdout".to_string(),
+        ],
+        vec![
+            "export".to_string(),
+            "--url".to_string(),
+            url.to_string(),
+            "--stdout".to_string(),
+        ],
+        vec![url.to_string(), "--stdout".to_string()],
+    ];
+    for args in attempts {
+        let output = Command::new("feishu-docx").args(&args).output();
+        let Ok(output) = output else {
+            continue;
+        };
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if output.status.success() && !stdout.is_empty() {
+            return Ok(stdout);
+        }
+        if looks_like_feishu_auth_error(&stderr) {
+            return Err(stderr);
+        }
+    }
+
+    Err("Feishu Markdown export failed. Install/configure feishu-docx or complete Feishu authorization in NOOS Hub.".to_string())
+}
+
+fn looks_like_feishu_auth_error(message: &str) -> bool {
+    let lower = message.to_lowercase();
+    lower.contains("auth")
+        || lower.contains("login")
+        || lower.contains("token")
+        || lower.contains("credential")
+        || lower.contains("permission")
+        || lower.contains("unauthorized")
+        || lower.contains("app_id")
+        || lower.contains("app secret")
+        || lower.contains("tenant")
+}
+
+fn build_feishu_source_markdown(
+    exported_markdown: &str,
+    url: &str,
+    title: &str,
+    token: &str,
+    wiki_project_path: &Path,
+) -> String {
+    let body = exported_markdown.trim();
+    format!(
+        "---\ntype: feishu_markdown_source\nsource_app: feishu\nsource_url: {}\nfeishu_token: {}\ntitle: {}\nlast_exported_at: {}\nexporter_version: noos-hub-v1\nwiki_project_path: {}\n---\n\n{}\n",
+        json_string(url),
+        json_string(token),
+        json_string(title),
+        json_string(&now_iso_utc()),
+        json_string(&wiki_project_path.display().to_string()),
+        body
+    )
+}
+
+fn feishu_source_body(markdown: &str) -> &str {
+    let trimmed = markdown.trim();
+    if !trimmed.starts_with("---\n") {
+        return trimmed;
+    }
+    let rest = &trimmed[4..];
+    if let Some(index) = rest.find("\n---") {
+        return rest[index + 4..].trim();
+    }
+    trimmed
+}
+
+fn write_feishu_source(source_path: &Path, markdown: &str) -> Result<(), String> {
+    let parent = source_path
+        .parent()
+        .ok_or_else(|| "Invalid Feishu source path.".to_string())?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let temp_path = source_path.with_extension("md.tmp");
+    fs::write(&temp_path, markdown).map_err(|error| error.to_string())?;
+    fs::rename(&temp_path, source_path).map_err(|error| error.to_string())
+}
+
+fn queue_wiki_organize_by_touch(source_path: &Path) -> Result<(), String> {
+    let content = fs::read_to_string(source_path).map_err(|error| error.to_string())?;
+    fs::write(source_path, content).map_err(|error| error.to_string())
+}
+
+fn json_string(value: &str) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string())
 }
 
 fn write_artifact_to_local_vault(request: HandoffWriteRequest) -> HandoffWriteResponse {
@@ -2096,6 +2518,39 @@ fn open_vault_file(noos_home: &Path, raw_path: &str) -> Result<String, String> {
         ));
     }
     open_existing_path(&path)
+}
+
+fn open_bundled_shuttle_extension(
+    app: &tauri::AppHandle,
+    repo_root: &Path,
+) -> Result<String, String> {
+    let candidates = [
+        app.path()
+            .resource_dir()
+            .ok()
+            .map(|path| path.join("noos-shuttle-extension")),
+        app.path()
+            .resource_dir()
+            .ok()
+            .map(|path| path.join("resources/noos-shuttle-extension")),
+        Some(repo_root.join("apps/noos-hub/src-tauri/resources/noos-shuttle-extension")),
+        Some(repo_root.join("dist")),
+    ];
+
+    let extension_dir = candidates
+        .into_iter()
+        .flatten()
+        .find(|path| path.join("manifest.json").is_file())
+        .ok_or_else(|| {
+            "No bundled NOOS Shuttle extension build was found. Rebuild NOOS Hub first."
+                .to_string()
+        })?;
+
+    open_existing_path(&extension_dir)?;
+    Ok(format!(
+        "Opened bundled NOOS Shuttle extension: {}\nLoad this folder from chrome://extensions or edge://extensions with Developer Mode enabled.",
+        extension_dir.display()
+    ))
 }
 
 fn project_runtime_from_vault_file(

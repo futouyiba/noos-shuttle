@@ -3,6 +3,10 @@ export type ShuttleLocale = "en" | "zh";
 export interface ShuttleCopy {
   localeName: string;
   ready: string;
+  globalBalloonTitle: string;
+  chatGptSurfaceTitle: string;
+  feishuSurfaceTitle: string;
+  surfaceUnavailable: string;
   close: string;
   ok: string;
   generateAndCollect: string;
@@ -73,6 +77,16 @@ export interface ShuttleCopy {
   vaultStatusNeedsRepair: string;
   vaultStatusMirror: string;
   vaultStatusRefresh: string;
+  defaultWikiProject: string;
+  defaultWikiProjectUnknown: string;
+  feishuDocumentTitle: string;
+  feishuSyncAndOrganize: string;
+  feishuSyncMarkdown: string;
+  feishuOrganizeWiki: string;
+  feishuMarkdownHint: string;
+  feishuActionFinished: (status: string, message: string) => string;
+  feishuActionNeedsAuth: string;
+  feishuActionFailed: string;
   extensionContextInvalid: string;
   promptInserted: string;
   promptSent: string;
@@ -117,6 +131,10 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
   en: {
     localeName: "English",
     ready: "Ready to package this conversation.",
+    globalBalloonTitle: "NOOS",
+    chatGptSurfaceTitle: "ChatGPT",
+    feishuSurfaceTitle: "Feishu Doc",
+    surfaceUnavailable: "No page-specific NOOS surface here.",
     close: "Close",
     ok: "OK",
     generateAndCollect: "Generate & Collect Handoff",
@@ -188,6 +206,16 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     vaultStatusNeedsRepair: "Hub is running, but the browser connection needs repair.",
     vaultStatusMirror: "Hub is not running. Saves use Browser Vault Mirror.",
     vaultStatusRefresh: "Refresh",
+    defaultWikiProject: "Target Wiki",
+    defaultWikiProjectUnknown: "Hub default Wiki project",
+    feishuDocumentTitle: "Current document",
+    feishuSyncAndOrganize: "Sync Markdown & Organize Wiki",
+    feishuSyncMarkdown: "Sync Markdown Only",
+    feishuOrganizeWiki: "Organize Wiki",
+    feishuMarkdownHint: "Overwrites the .md source in the document library, then queues Wiki organization.",
+    feishuActionFinished: (status, message) => `${status}: ${message}`,
+    feishuActionNeedsAuth: "Feishu authorization is required in NOOS Hub.",
+    feishuActionFailed: "Feishu action failed.",
     extensionContextInvalid: "The extension was updated or reloaded. Refresh this page and try again.",
     promptInserted: "Prompt inserted.",
     promptSent: "Prompt inserted and sent.",
@@ -221,6 +249,10 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
   zh: {
     localeName: "中文",
     ready: "可以把这段对话打包成交接稿，或沉淀成结晶。",
+    globalBalloonTitle: "NOOS",
+    chatGptSurfaceTitle: "ChatGPT",
+    feishuSurfaceTitle: "飞书文档",
+    surfaceUnavailable: "当前页面没有专属 NOOS 场景。",
     close: "关闭",
     ok: "知道了",
     generateAndCollect: "生成并拉取 Handoff",
@@ -291,6 +323,16 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     vaultStatusNeedsRepair: "Hub 正在运行，但浏览器连接需要修复。",
     vaultStatusMirror: "Hub 未运行，将保存到 Browser Vault Mirror。",
     vaultStatusRefresh: "刷新",
+    defaultWikiProject: "目标 Wiki",
+    defaultWikiProjectUnknown: "Hub 默认 Wiki 项目",
+    feishuDocumentTitle: "当前文档",
+    feishuSyncAndOrganize: "同步 Markdown 并整理 Wiki",
+    feishuSyncMarkdown: "仅同步 Markdown",
+    feishuOrganizeWiki: "整理 Wiki",
+    feishuMarkdownHint: "覆盖文档库中的 .md source，并加入 Wiki 整理队列。",
+    feishuActionFinished: (status, message) => `${status}：${message}`,
+    feishuActionNeedsAuth: "需要先在 NOOS Hub 完成飞书授权。",
+    feishuActionFailed: "飞书动作执行失败。",
     extensionContextInvalid: "插件已更新或上下文已失效。请刷新当前页面后再试。",
     promptInserted: "提示词已写入。",
     promptSent: "提示词已写入并发送。",

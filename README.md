@@ -321,6 +321,19 @@ This creates separate artifacts under `release/`:
 
 Official releases use GitHub Releases. Pushing a `v*` tag triggers `.github/workflows/release.yml`, which runs type checks, tests, packaging, builds the macOS Hub bundle, and uploads separated artifacts to the matching GitHub Release.
 
+NOOS Hub desktop updates are also served from GitHub Releases. The Hub checks
+`noos-hub-latest.json` from the latest release and only installs bundles signed
+with the updater public key in `apps/noos-hub/src-tauri/tauri.conf.json`. Before
+publishing Hub updates, configure these GitHub Actions secrets:
+
+- `NOOS_HUB_TAURI_SIGNING_PRIVATE_KEY`
+- `NOOS_HUB_TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+
+Hub bundles include the current NOOS Shuttle browser extension build as a Tauri
+resource. After updating Hub, open the Config view and choose "打开内置插件目录"
+to load the bundled extension folder from `chrome://extensions` or
+`edge://extensions` with Developer Mode enabled.
+
 ```sh
 git tag v0.1.2
 git push origin v0.1.2

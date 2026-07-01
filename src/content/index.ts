@@ -18,6 +18,8 @@ type ShuttleState = "idle" | "prompt-ready" | "waiting" | "captured" | "needs-ch
 type DeliveryMode = "copy" | "download" | "vault";
 type VaultRoute = "checking" | "hub" | "needs-repair" | "mirror";
 type VaultFeedTarget = "chat" | "project";
+type SurfaceKind = "chatgpt" | "feishu" | "none";
+type FeishuWikiAction = "sync_markdown" | "organize_wiki" | "sync_markdown_and_organize";
 type ModalState =
   | { kind: "success"; title: string; message: string }
   | { kind: "warnings"; title: string; message: string; warnings: string[] }
@@ -28,6 +30,7 @@ type ModalState =
 
 interface ViewState {
   open: boolean;
+  surfaceOpen: boolean;
   settingsOpen: boolean;
   state: ShuttleState;
   message: string;
@@ -45,6 +48,7 @@ interface ViewState {
   vaultBrowseFolder: string;
   vaultBrowseQuery: string;
   selectedVaultObjectKeys: string[];
+  wikiProjectPath: string;
   modal: ModalState;
 }
 
@@ -87,6 +91,18 @@ interface GeneratedImageArtifact {
   sourceUrl: string;
   width: number;
   height: number;
+}
+
+interface FeishuActionResponse {
+  ok?: boolean;
+  status?: string;
+  message?: string;
+  errorCode?: string;
+  error_code?: string;
+  sourcePath?: string;
+  source_path?: string;
+  wikiProjectPath?: string;
+  wiki_project_path?: string;
 }
 
 interface ActiveWait {
@@ -141,6 +157,7 @@ let preferredVaultAttachRoot: HTMLElement | null = null;
 
 const viewState: ViewState = {
   open: false,
+  surfaceOpen: false,
   settingsOpen: false,
   state: "idle",
   message: COPY[getStoredLocale()].ready,
@@ -158,6 +175,7 @@ const viewState: ViewState = {
   vaultBrowseFolder: "latest",
   vaultBrowseQuery: "",
   selectedVaultObjectKeys: [],
+  wikiProjectPath: "",
   modal: null
 };
 
@@ -196,55 +214,31 @@ function bootstrap(): void {
 function render(app: HTMLElement): void {
   const selectedThread = viewState.threads[viewState.selectedIndex];
   const copy = COPY[viewState.locale];
+  const surface = getCurrentSurface();
 
   app.innerHTML = `
     <button class="fab fab--${viewState.state}" type="button" aria-label="NOOS Shuttle">
       <span class="fab-logo" style="background-image: url('${escapeAttribute(SHUTTLE_ICON_URL)}')"></span>
     </button>
     ${
+      surface === "none"
+        ? ""
+        : `<button class="surface-fab surface-fab--${surface}" type="button" aria-label="${escapeAttribute(surfaceTitle(surface, copy))}">
+            <span>${surface === "feishu" ? "MD" : "AI"}</span>
+          </button>`
+    }
+    ${
       viewState.open
-        ? `<section class="popover" aria-label="NOOS Shuttle">
+        ? `<section class="popover global-popover" aria-label="${escapeAttribute(copy.globalBalloonTitle)}">
             <header class="header">
               <div>
-                <strong>NOOS Shuttle</strong>
+                <strong>${escapeHtml(copy.globalBalloonTitle)}</strong>
                 <span>${escapeHtml(viewState.message)}</span>
               </div>
               <button class="icon-button" type="button" data-action="close" aria-label="${copy.close}">x</button>
             </header>
-            <div class="primary-actions">
-              <button class="primary-action" type="button" data-action="generate-capture" ${
-                viewState.state === "waiting" ? "disabled" : ""
-              }>${copy.generateAndCollect}</button>
-              <button class="secondary-action" type="button" data-action="generate-crystal" ${
-                viewState.state === "waiting" ? "disabled" : ""
-              }>${copy.extractCrystal}</button>
-              ${
-                viewState.state === "waiting"
-                  ? `<button class="cancel-action" type="button" data-action="cancel-wait">${copy.cancel}</button>`
-                  : ""
-              }
-              <div class="auto-delivery">
-                <span>${copy.autoAfterCollect}</span>
-                <div class="delivery-options" role="group" aria-label="${copy.autoAfterCollect}">
-                  ${renderDeliveryOption("copy", copy.autoCopy)}
-                  ${renderDeliveryOption("download", copy.autoDownload)}
-                  ${renderDeliveryOption("vault", copy.autoSave)}
-                </div>
-                <label class="transcript-option">
-                  <input type="checkbox" data-action="toggle-transcript" ${viewState.captureFullTranscript ? "checked" : ""} />
-                  <span>${copy.captureFullTranscript}</span>
-                </label>
-              </div>
-            </div>
-            <div class="actions supporting-actions">
-              <button type="button" data-action="generate">${copy.draftHandoff}</button>
-              <button type="button" data-action="capture">${copy.collectHandoff}</button>
-              <button type="button" data-action="capture-crystal">${copy.scanCrystal}</button>
-              <button type="button" data-action="download-images">${copy.downloadImages}</button>
-            </div>
             ${renderVaultRoute(copy)}
             ${renderVaultImport()}
-            ${renderThreads(selectedThread)}
             <div class="settings">
               <button class="settings-toggle" type="button" data-action="settings">${copy.settings}</button>
               ${
@@ -266,6 +260,7 @@ function render(app: HTMLElement): void {
           </section>`
         : ""
     }
+    ${viewState.surfaceOpen && surface !== "none" ? renderSurfacePopover(surface, selectedThread, copy) : ""}
     ${renderModal()}
   `;
 
@@ -278,10 +273,19 @@ function render(app: HTMLElement): void {
     vaultFeedTarget = "chat";
     preferredVaultAttachRoot = null;
     viewState.open = !viewState.open;
+    viewState.surfaceOpen = false;
     render(app);
     if (viewState.open) {
       void refreshVaultStatus(app);
       void refreshVaultObjects(app);
+    }
+  });
+  app.querySelector(".surface-fab")?.addEventListener("click", () => {
+    viewState.surfaceOpen = !viewState.surfaceOpen;
+    viewState.open = false;
+    render(app);
+    if (viewState.surfaceOpen && getCurrentSurface() === "feishu") {
+      void refreshWikiTarget(app);
     }
   });
   installDragHandlers(app);
@@ -330,6 +334,82 @@ function renderDeliveryOption(mode: DeliveryMode, label: string): string {
   </button>`;
 }
 
+function renderSurfacePopover(surface: SurfaceKind, selectedThread: NoosThread | undefined, copy: (typeof COPY)[ShuttleLocale]): string {
+  return `<section class="popover surface-popover surface-popover--${surface}" aria-label="${escapeAttribute(surfaceTitle(surface, copy))}">
+    <header class="header">
+      <div>
+        <strong>${escapeHtml(surfaceTitle(surface, copy))}</strong>
+        <span>${escapeHtml(viewState.message)}</span>
+      </div>
+      <div class="header-actions">
+        <button class="surface-back" type="button" data-action="surface-back" aria-label="${escapeAttribute(copy.globalBalloonTitle)}">${escapeHtml(
+          copy.globalBalloonTitle
+        )}</button>
+        <button class="icon-button" type="button" data-action="close" aria-label="${copy.close}">x</button>
+      </div>
+    </header>
+    ${surface === "chatgpt" ? renderChatGptSurface(selectedThread, copy) : renderFeishuSurface(copy)}
+  </section>`;
+}
+
+function renderChatGptSurface(selectedThread: NoosThread | undefined, copy: (typeof COPY)[ShuttleLocale]): string {
+  return `<div class="primary-actions">
+    <button class="primary-action" type="button" data-action="generate-capture" ${
+      viewState.state === "waiting" ? "disabled" : ""
+    }>${copy.generateAndCollect}</button>
+    <button class="secondary-action" type="button" data-action="generate-crystal" ${
+      viewState.state === "waiting" ? "disabled" : ""
+    }>${copy.extractCrystal}</button>
+    ${
+      viewState.state === "waiting"
+        ? `<button class="cancel-action" type="button" data-action="cancel-wait">${copy.cancel}</button>`
+        : ""
+    }
+    <div class="auto-delivery">
+      <span>${copy.autoAfterCollect}</span>
+      <div class="delivery-options" role="group" aria-label="${copy.autoAfterCollect}">
+        ${renderDeliveryOption("copy", copy.autoCopy)}
+        ${renderDeliveryOption("download", copy.autoDownload)}
+        ${renderDeliveryOption("vault", copy.autoSave)}
+      </div>
+      <label class="transcript-option">
+        <input type="checkbox" data-action="toggle-transcript" ${viewState.captureFullTranscript ? "checked" : ""} />
+        <span>${copy.captureFullTranscript}</span>
+      </label>
+    </div>
+  </div>
+  <div class="actions supporting-actions">
+    <button type="button" data-action="generate">${copy.draftHandoff}</button>
+    <button type="button" data-action="capture">${copy.collectHandoff}</button>
+    <button type="button" data-action="capture-crystal">${copy.scanCrystal}</button>
+    <button type="button" data-action="download-images">${copy.downloadImages}</button>
+  </div>
+  ${renderThreads(selectedThread)}`;
+}
+
+function renderFeishuSurface(copy: (typeof COPY)[ShuttleLocale]): string {
+  const documentTitle = feishuDocumentTitle();
+  const target = viewState.wikiProjectPath || copy.defaultWikiProjectUnknown;
+  return `<div class="surface-panel">
+    <div class="surface-summary">
+      <span>${escapeHtml(copy.feishuDocumentTitle)}</span>
+      <strong>${escapeHtml(documentTitle)}</strong>
+    </div>
+    <div class="surface-summary">
+      <span>${escapeHtml(copy.defaultWikiProject)}</span>
+      <strong>${escapeHtml(target)}</strong>
+    </div>
+    <div class="primary-actions">
+      <button class="primary-action" type="button" data-action="feishu-sync-organize">${escapeHtml(copy.feishuSyncAndOrganize)}</button>
+      <div class="surface-secondary-actions">
+        <button class="secondary-action" type="button" data-action="feishu-sync-markdown">${escapeHtml(copy.feishuSyncMarkdown)}</button>
+        <button class="secondary-action" type="button" data-action="feishu-organize-wiki">${escapeHtml(copy.feishuOrganizeWiki)}</button>
+      </div>
+    </div>
+    <p class="surface-hint">${escapeHtml(copy.feishuMarkdownHint)}</p>
+  </div>`;
+}
+
 function renderVaultRoute(copy: (typeof COPY)[ShuttleLocale]): string {
   const message =
     viewState.vaultRoute === "hub"
@@ -376,6 +456,7 @@ function renderVaultImport(): string {
             ${renderVaultObjectGroup(copy.latestResults, results, selectedKeys)}
           </div>
           <footer>
+            <span class="shuttle-signature">FuTou 2026</span>
             <button type="button" data-action="feed-selected-vault-object" ${selectedKeys.length ? "" : "disabled"}>${escapeHtml(
               selectedKeys.length > 1 ? copy.attachSelectedToTarget(selectedKeys.length, targetLabel) : targetLabel
             )}</button>
@@ -650,7 +731,7 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
     captureContextPackForSelectedThread();
     const selectedThread = viewState.threads[viewState.selectedIndex];
     viewState.message = selectedThread?.warnings.length ? copy.capturedWithWarnings : copy.captured;
-    viewState.open = true;
+    openSurfacePanel();
     if (selectedThread?.warnings.length) {
       showValidationModal(selectedThread);
     }
@@ -698,8 +779,16 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
   }
 
   if (action === "close") {
-    viewState.open = false;
+    closePanels();
     render(app);
+    return;
+  }
+
+  if (action === "surface-back") {
+    openGlobalPanel();
+    render(app);
+    void refreshVaultStatus(app);
+    void refreshVaultObjects(app);
     return;
   }
 
@@ -760,6 +849,21 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
     return;
   }
 
+  if (action === "feishu-sync-organize") {
+    await runFeishuAction(app, "sync_markdown_and_organize");
+    return;
+  }
+
+  if (action === "feishu-sync-markdown") {
+    await runFeishuAction(app, "sync_markdown");
+    return;
+  }
+
+  if (action === "feishu-organize-wiki") {
+    await runFeishuAction(app, "organize_wiki");
+    return;
+  }
+
   if (action === "generate-capture") {
     await generateAndCollect(app);
     return;
@@ -774,7 +878,7 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
     cancelActiveWait();
     const inserted = insertIntoChatInput(createGenerateThreadPrompt(window.location.href, viewState.locale));
     viewState.state = inserted ? "prompt-ready" : "error";
-    viewState.open = false;
+    closePanels();
     viewState.message = inserted ? copy.promptInserted : copy.inputNotFound;
     render(app);
     if (inserted) {
@@ -788,6 +892,7 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
   if (action === "capture") {
     cancelActiveWait();
     applyManualCapture();
+    openSurfacePanel();
     render(app);
     return;
   }
@@ -795,6 +900,7 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
   if (action === "capture-crystal") {
     cancelActiveWait();
     applyManualCrystalCapture();
+    openSurfacePanel();
     render(app);
     return;
   }
@@ -841,7 +947,7 @@ async function generateAndCollect(app: HTMLElement): Promise<void> {
 
   cancelActiveWait();
   viewState.state = "waiting";
-  viewState.open = false;
+  closePanels();
   viewState.message = copy.waitingForHandoff;
   render(app);
 
@@ -871,7 +977,7 @@ async function generateAndCollectCrystal(app: HTMLElement): Promise<void> {
 
   cancelActiveWait();
   viewState.state = "waiting";
-  viewState.open = false;
+  closePanels();
   viewState.message = copy.waitingForCrystal;
   render(app);
 
@@ -935,7 +1041,7 @@ async function downloadGeneratedImages(app: HTMLElement): Promise<void> {
   const images = await collectGeneratedImages();
   if (images.length === 0) {
     viewState.state = "warning";
-    viewState.open = true;
+    openSurfacePanel();
     viewState.message = copy.noGeneratedImagesDetected;
     viewState.modal = {
       kind: "warnings",
@@ -967,7 +1073,7 @@ async function downloadGeneratedImages(app: HTMLElement): Promise<void> {
 
   if (!response.ok) {
     viewState.state = "error";
-    viewState.open = true;
+    openSurfacePanel();
     viewState.message = response.message ?? copy.vaultUnavailable;
     render(app);
     return;
@@ -975,7 +1081,7 @@ async function downloadGeneratedImages(app: HTMLElement): Promise<void> {
 
   const location = response.location || `Downloads/NOOS/vault/artifacts/files/${directory}`;
   viewState.state = "saved";
-  viewState.open = true;
+  openSurfacePanel();
   viewState.message = copy.imagesDownloaded(response.count ?? images.length, location);
   viewState.modal = {
     kind: "success",
@@ -1180,7 +1286,7 @@ function waitForGeneratedHandoff(app: HTMLElement, baselineBegin: number): void 
     const deliveryModes = activeDeliveryModes();
     viewState.message =
       candidate.warnings.length > 0 && deliveryModes.length > 0 ? copy.autoDeliverySkipped : candidate.warnings.length > 0 ? copy.capturedWithWarnings : copy.captured;
-    viewState.open = true;
+    openSurfacePanel();
     cancelActiveWait();
     if (candidate.warnings.length > 0) {
       showValidationModal(candidate);
@@ -1189,7 +1295,7 @@ function waitForGeneratedHandoff(app: HTMLElement, baselineBegin: number): void 
       void deliverSelectedThreads(deliveryModes, app);
     } else {
       viewState.modal = { kind: "success", title: copy.deliverySuccessTitle, message: copy.captured };
-      viewState.open = true;
+      openSurfacePanel();
       render(app);
     }
     return true;
@@ -1277,7 +1383,7 @@ function waitForGeneratedHandoff(app: HTMLElement, baselineBegin: number): void 
   const timeoutId = window.setTimeout(() => {
     cancelActiveWait();
     viewState.state = "error";
-    viewState.open = true;
+    openSurfacePanel();
     viewState.message = copy.waitingTimedOut;
     render(app);
   }, WAIT_FOR_HANDOFF_TIMEOUT_MS);
@@ -1300,7 +1406,7 @@ function waitForGeneratedCrystal(app: HTMLElement, baselineBegin: number): void 
     viewState.selectedCrystalIndex = result.crystals.indexOf(candidate);
     viewState.state = candidate.warnings.length ? "warning" : "captured";
     viewState.message = candidate.warnings.length ? copy.crystalCapturedWithWarnings : copy.crystalCaptured;
-    viewState.open = true;
+    openSurfacePanel();
     cancelActiveWait();
 
     viewState.modal = { kind: "choose-crystal" };
@@ -1388,7 +1494,7 @@ function waitForGeneratedCrystal(app: HTMLElement, baselineBegin: number): void 
   const timeoutId = window.setTimeout(() => {
     cancelActiveWait();
     viewState.state = "error";
-    viewState.open = true;
+    openSurfacePanel();
     viewState.message = copy.waitingTimedOut;
     render(app);
   }, WAIT_FOR_HANDOFF_TIMEOUT_MS);
@@ -1523,7 +1629,7 @@ function upsertProjectImportButton(app: HTMLElement): void {
     currentPageContext = getPageContext();
     vaultFeedTarget = "project";
     preferredVaultAttachRoot = findProjectSourceRoot(anchor);
-    viewState.open = true;
+    openGlobalPanel();
     viewState.message = COPY[viewState.locale].importFromNoos;
     render(app);
     void refreshVaultObjects(app);
@@ -1671,7 +1777,7 @@ async function exportProjectSourcesToNoos(app: HTMLElement, root: HTMLElement): 
   const sources = collectProjectSourceSnapshots(root);
   if (sources.length === 0) {
     viewState.state = "warning";
-    viewState.open = true;
+    openSurfacePanel();
     viewState.message = copy.noProjectSourcesDetected;
     viewState.modal = {
       kind: "warnings",
@@ -1704,7 +1810,7 @@ async function exportProjectSourcesToNoos(app: HTMLElement, root: HTMLElement): 
 
   if (!response.ok) {
     viewState.state = "error";
-    viewState.open = true;
+    openSurfacePanel();
     viewState.message = response.message ?? copy.vaultUnavailable;
     viewState.modal = {
       kind: "success",
@@ -1717,7 +1823,7 @@ async function exportProjectSourcesToNoos(app: HTMLElement, root: HTMLElement): 
 
   const location = response.location || pack.directory;
   viewState.state = "saved";
-  viewState.open = true;
+  openSurfacePanel();
   viewState.message = copy.projectSourcesExported(sources.length, location);
   viewState.modal = {
     kind: "success",
@@ -1914,7 +2020,7 @@ function checkPageContext(app: HTMLElement): void {
 
 function resetForConversationChange(app: HTMLElement): void {
   cancelActiveWait();
-  viewState.open = false;
+  closePanels();
   viewState.settingsOpen = false;
   viewState.state = "idle";
   viewState.message = COPY[viewState.locale].conversationChanged;
@@ -2012,6 +2118,57 @@ function isSupportedChatHost(host: string): boolean {
   ].some((candidate) => host === candidate || host.endsWith(`.${candidate}`));
 }
 
+function getCurrentSurface(): SurfaceKind {
+  const host = location.hostname.toLowerCase();
+  if (isFeishuDocumentPage(host, location.pathname)) {
+    return "feishu";
+  }
+  if (isSupportedChatHost(host)) {
+    return "chatgpt";
+  }
+  return "none";
+}
+
+function isFeishuDocumentPage(host: string, pathname: string): boolean {
+  if (!["feishu.cn", "larksuite.com"].some((candidate) => host === candidate || host.endsWith(`.${candidate}`))) {
+    return false;
+  }
+  return /\/(docx|wiki|sheets|base|bitable)\//i.test(pathname);
+}
+
+function surfaceTitle(surface: SurfaceKind, copy: (typeof COPY)[ShuttleLocale]): string {
+  if (surface === "feishu") {
+    return copy.feishuSurfaceTitle;
+  }
+  if (surface === "chatgpt") {
+    return copy.chatGptSurfaceTitle;
+  }
+  return copy.surfaceUnavailable;
+}
+
+function feishuDocumentTitle(): string {
+  return document.title.replace(/\s*[-|_]\s*(飞书|Feishu|Lark).*$/i, "").trim() || location.pathname;
+}
+
+function openGlobalPanel(): void {
+  viewState.open = true;
+  viewState.surfaceOpen = false;
+}
+
+function openSurfacePanel(): void {
+  if (getCurrentSurface() === "none") {
+    openGlobalPanel();
+    return;
+  }
+  viewState.surfaceOpen = true;
+  viewState.open = false;
+}
+
+function closePanels(): void {
+  viewState.open = false;
+  viewState.surfaceOpen = false;
+}
+
 function fingerprintText(value: string): string {
   let hash = 0;
   const normalized = value.replace(/\s+/g, " ").trim().slice(0, 2000);
@@ -2030,7 +2187,7 @@ async function deliverSelectedThreads(modes: DeliveryMode[], app: HTMLElement): 
   const copy = COPY[viewState.locale];
   const activeModes = uniqueDeliveryModes(modes);
   if (!selectedThread || activeModes.length === 0) {
-    viewState.open = true;
+    openSurfacePanel();
     viewState.modal = { kind: "success", title: copy.deliverySuccessTitle, message: copy.captured };
     render(app);
     return;
@@ -2045,7 +2202,7 @@ async function deliverSelectedThreads(modes: DeliveryMode[], app: HTMLElement): 
   }
 
   applySaveResult(messages.join(" "), ok);
-  viewState.open = true;
+  openSurfacePanel();
   viewState.modal = { kind: "success", title: ok ? copy.deliverySuccessTitle : copy.deliveryIssueTitle, message: viewState.message };
   render(app);
 }
@@ -2142,7 +2299,7 @@ async function deliverSelectedCrystal(app: HTMLElement): Promise<void> {
     title: response?.ok ? copy.deliverySuccessTitle : copy.deliveryIssueTitle,
     message: viewState.message
   };
-  viewState.open = true;
+  openSurfacePanel();
   render(app);
 }
 
@@ -2204,6 +2361,67 @@ async function refreshVaultObjects(
   }
 }
 
+async function refreshWikiTarget(app: HTMLElement): Promise<void> {
+  try {
+    const response = await sendExtensionMessage<
+      { type: "NOOS_GET_WIKI_TARGET" },
+      { ok?: boolean; projectPath?: string; project_path?: string; message?: string }
+    >({ type: "NOOS_GET_WIKI_TARGET" });
+    viewState.wikiProjectPath = response?.projectPath || response?.project_path || "";
+  } catch {
+    viewState.wikiProjectPath = "";
+  }
+  render(app);
+}
+
+async function runFeishuAction(app: HTMLElement, action: FeishuWikiAction): Promise<void> {
+  const copy = COPY[viewState.locale];
+  viewState.state = "waiting";
+  viewState.message = copy.feishuMarkdownHint;
+  openSurfacePanel();
+  render(app);
+
+  let response: FeishuActionResponse;
+  try {
+    response = await sendExtensionMessage<
+      {
+        type: "NOOS_FEISHU_WIKI_ACTION";
+        action: FeishuWikiAction;
+        url: string;
+        title?: string;
+        wikiProjectPath?: string;
+      },
+      FeishuActionResponse
+    >({
+      type: "NOOS_FEISHU_WIKI_ACTION",
+      action,
+      url: location.href,
+      title: feishuDocumentTitle(),
+      wikiProjectPath: viewState.wikiProjectPath || undefined
+    });
+  } catch (error) {
+    response = {
+      ok: false,
+      message: error instanceof Error ? error.message : copy.feishuActionFailed
+    };
+  }
+
+  const errorCode = response.errorCode || response.error_code;
+  if (!response.ok) {
+    viewState.state = errorCode === "needs_auth" ? "warning" : "error";
+    viewState.message = errorCode === "needs_auth" ? copy.feishuActionNeedsAuth : response.message || copy.feishuActionFailed;
+    openSurfacePanel();
+    render(app);
+    return;
+  }
+
+  viewState.state = response.status === "unchanged" ? "warning" : "saved";
+  viewState.wikiProjectPath = response.wikiProjectPath || response.wiki_project_path || viewState.wikiProjectPath;
+  viewState.message = copy.feishuActionFinished(response.status || "queued", response.message || "");
+  openSurfacePanel();
+  render(app);
+}
+
 async function feedSelectedVaultObject(app: HTMLElement): Promise<void> {
   const copy = COPY[viewState.locale];
   const lookupKeys = selectedVaultObjectKeys();
@@ -2254,7 +2472,7 @@ async function feedSelectedVaultObject(app: HTMLElement): Promise<void> {
         downloadMarkdownFile(createVaultObjectFilename(object), object.content);
       }
       viewState.state = "warning";
-      viewState.open = true;
+      openGlobalPanel();
       viewState.message = copy.vaultObjectsDownloadedForProject(lookupKeys);
       viewState.modal = {
         kind: "success",
@@ -2266,7 +2484,7 @@ async function feedSelectedVaultObject(app: HTMLElement): Promise<void> {
     }
 
     viewState.state = "saved";
-    viewState.open = true;
+    openGlobalPanel();
     viewState.message = copy.vaultObjectsAttachedToProject(lookupKeys);
     viewState.modal = {
       kind: "success",
@@ -2288,7 +2506,7 @@ async function feedSelectedVaultObject(app: HTMLElement): Promise<void> {
   }
 
   viewState.state = "saved";
-  viewState.open = true;
+  openGlobalPanel();
   viewState.message = allAttached ? copy.vaultObjectsAttached(lookupKeys) : copy.vaultObjectsInserted(lookupKeys);
   viewState.modal = {
     kind: "success",
@@ -2462,8 +2680,8 @@ function installDragHandlers(app: HTMLElement): void {
     const deltaY = event.clientY - dragStart.pointerY;
     if (Math.abs(deltaX) + Math.abs(deltaY) > 4) {
       dragStart.moved = true;
-      viewState.open = false;
-      app.querySelector(".popover")?.remove();
+      closePanels();
+      app.querySelectorAll(".popover").forEach((popover) => popover.remove());
     }
 
     shuttlePosition = clampPosition({ x: dragStart.originX + deltaX, y: dragStart.originY + deltaY });
