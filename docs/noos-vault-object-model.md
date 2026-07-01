@@ -292,6 +292,8 @@ Success response:
 }
 ```
 
+`object_id`, not `content_hash`, is the duplicate receipt key. In v0 the Hub derives `object_id` from the request `idempotency_key` when present, otherwise from object type plus content; `content_hash` is stored in the receipt and object index as a content fingerprint for audit and change detection.
+
 Ingest is a transaction, not a plain save button:
 
 ```text
