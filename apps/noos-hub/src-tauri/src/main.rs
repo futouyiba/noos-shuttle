@@ -6,7 +6,10 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Mutex, OnceLock,
+};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
@@ -210,6 +213,7 @@ struct CachedHubHealth {
 
 static HUB_HEALTH_CACHE: OnceLock<Mutex<Option<CachedHubHealth>>> = OnceLock::new();
 static SLEEP_RECOVERY_STATUS: OnceLock<Mutex<SleepRecoveryStatus>> = OnceLock::new();
+static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -1711,11 +1715,30 @@ fn json_path_string(value: &Value, path: &[&str]) -> Option<String> {
 }
 
 fn feishu_docx_command_candidates() -> Vec<PathBuf> {
-    let mut commands = vec![PathBuf::from("feishu-docx")];
+    let mut commands = Vec::new();
+    if let Ok(configured) = env::var("NOOS_FEISHU_DOCX") {
+        push_command_candidate(&mut commands, PathBuf::from(configured));
+    }
+    push_command_candidate(&mut commands, PathBuf::from("feishu-docx"));
+    push_command_candidate(
+        &mut commands,
+        PathBuf::from("/opt/homebrew/bin/feishu-docx"),
+    );
+    push_command_candidate(&mut commands, PathBuf::from("/usr/local/bin/feishu-docx"));
     let home = home_dir();
-    commands.push(home.join(".local/bin/feishu-docx"));
-    commands.push(home.join(".local/pipx/venvs/feishu-docx/bin/feishu-docx"));
+    push_command_candidate(&mut commands, home.join(".local/bin/feishu-docx"));
+    push_command_candidate(
+        &mut commands,
+        home.join(".local/pipx/venvs/feishu-docx/bin/feishu-docx"),
+    );
     commands
+}
+
+fn push_command_candidate(commands: &mut Vec<PathBuf>, path: PathBuf) {
+    if path.as_os_str().is_empty() || commands.iter().any(|candidate| candidate == &path) {
+        return;
+    }
+    commands.push(path);
 }
 
 fn looks_like_feishu_auth_error(message: &str) -> bool {
@@ -2089,24 +2112,24 @@ fn ensure_vault_layout(noos_home: &Path) -> Result<(), String> {
 
 fn ensure_json_file(path: &Path, default_value: Value) -> Result<(), String> {
     if path.exists() {
+        let text = fs::read_to_string(path)
+            .map_err(|error| format!("Failed to read JSON file {}: {error}", path.display()))?;
+        serde_json::from_str::<Value>(&text)
+            .map_err(|error| format!("Invalid JSON file {}: {error}", path.display()))?;
         return Ok(());
     }
-    let parent = path
-        .parent()
-        .ok_or_else(|| "Invalid index path.".to_string())?;
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    fs::write(
-        path,
-        serde_json::to_string_pretty(&default_value).map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())
+    write_json_file(path, &default_value)
 }
 
 fn update_vault_indexes(noos_home: &Path, object: VaultIndexObject) -> Result<(), String> {
     let index_dir = noos_home.join("vault/index");
     fs::create_dir_all(&index_dir).map_err(|error| error.to_string())?;
 
-    let mut keys = read_json_object(&index_dir.join("keys.json"));
+    let keys_path = index_dir.join("keys.json");
+    let objects_path = index_dir.join("objects.json");
+    let mut keys = read_json_object_strict(&keys_path)?;
+    let mut objects = read_json_object_strict(&objects_path)?;
+
     keys[&object.lookup_key] = json!({
         "object_id": object.object_id.clone(),
         "lookup_key": object.lookup_key.clone(),
@@ -2120,9 +2143,7 @@ fn update_vault_indexes(noos_home: &Path, object: VaultIndexObject) -> Result<()
         "updated_at_epoch": now_epoch(),
         "aliases": []
     });
-    write_json_file(&index_dir.join("keys.json"), &keys)?;
 
-    let mut objects = read_json_object(&index_dir.join("objects.json"));
     objects[&object.object_id] = json!({
         "object_id": object.object_id.clone(),
         "lookup_key": object.lookup_key.clone(),
@@ -2140,7 +2161,8 @@ fn update_vault_indexes(noos_home: &Path, object: VaultIndexObject) -> Result<()
         "idempotency_key": object.idempotency_key,
         "updated_at_epoch": now_epoch()
     });
-    write_json_file(&index_dir.join("objects.json"), &objects)?;
+    write_json_file(&objects_path, &objects)?;
+    write_json_file(&keys_path, &keys)?;
 
     let graph_path = index_dir.join("graph.json");
     if !graph_path.exists() {
@@ -2612,16 +2634,57 @@ fn read_json_object(path: &Path) -> Value {
         .unwrap_or_else(|| json!({}))
 }
 
+fn read_json_object_strict(path: &Path) -> Result<Value, String> {
+    if !path.exists() {
+        return Ok(json!({}));
+    }
+    let text = fs::read_to_string(path)
+        .map_err(|error| format!("Failed to read JSON object {}: {error}", path.display()))?;
+    let value: Value = serde_json::from_str(&text)
+        .map_err(|error| format!("Invalid JSON object {}: {error}", path.display()))?;
+    if value.is_object() {
+        Ok(value)
+    } else {
+        Err(format!("Expected JSON object in {}.", path.display()))
+    }
+}
+
 fn write_json_file(path: &Path, value: &Value) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(value)
+        .map_err(|error| format!("Failed to serialize JSON for {}: {error}", path.display()))?;
+    write_bytes_atomic(path, text.as_bytes())
+}
+
+fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| "Invalid index path.".to_string())?;
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    fs::write(
-        path,
-        serde_json::to_string_pretty(value).map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("Failed to create {}: {error}", parent.display()))?;
+    let temp = atomic_temp_path(path);
+    if let Err(error) = fs::write(&temp, bytes).and_then(|_| fs::rename(&temp, path)) {
+        let _ = fs::remove_file(&temp);
+        return Err(format!(
+            "Failed to atomically write {}: {error}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn atomic_temp_path(path: &Path) -> PathBuf {
+    let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("noos-json");
+    let temp_name = format!(
+        ".{filename}.tmp.{}.{}.{}",
+        std::process::id(),
+        now_epoch(),
+        counter
+    );
+    path.with_file_name(temp_name)
 }
 
 fn append_source_comment(content: &mut String, source: &HandoffSource) {
@@ -3775,6 +3838,112 @@ mod tests {
         let prepared = prepare_feishu_publish_markdown(markdown, "Fallback").unwrap();
 
         assert_eq!(prepared, markdown);
+    }
+
+    #[test]
+    fn feishu_docx_command_candidates_include_path_and_homebrew_locations() {
+        let commands = feishu_docx_command_candidates();
+
+        assert!(commands.contains(&PathBuf::from("feishu-docx")));
+        assert!(commands.contains(&PathBuf::from("/opt/homebrew/bin/feishu-docx")));
+        assert!(commands.contains(&PathBuf::from("/usr/local/bin/feishu-docx")));
+    }
+
+    #[test]
+    fn ensure_json_file_rejects_invalid_existing_json() {
+        let root = unique_test_dir("invalid-json-file");
+        let path = root.join("index.json");
+        fs::write(&path, "{not-json").unwrap();
+
+        let error = ensure_json_file(&path, json!({})).unwrap_err();
+        assert!(error.contains("Invalid JSON file"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn write_json_file_replaces_existing_json_without_tmp_leftovers() {
+        let root = unique_test_dir("atomic-json-write");
+        let path = root.join("index").join("objects.json");
+
+        write_json_file(&path, &json!({ "first": true })).unwrap();
+        write_json_file(&path, &json!({ "second": true })).unwrap();
+
+        let parsed: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(parsed["second"], true);
+        assert!(fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .all(|entry| !entry.file_name().to_string_lossy().contains(".tmp.")));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn vault_index_update_writes_resolvable_keys_and_objects() {
+        let root = unique_test_dir("vault-index-update");
+        let noos_home = root.join("home");
+        ensure_vault_layout(&noos_home).unwrap();
+        let object_path = noos_home.join("vault/handoffs/active/20260701-index-test.md");
+        fs::write(&object_path, "# Index Test").unwrap();
+
+        update_vault_indexes(
+            &noos_home,
+            test_index_object("noos_obj_index_test", "20260701-index-test", &object_path),
+        )
+        .unwrap();
+
+        let by_key = find_indexed_object_by_key(&noos_home, "20260701-index-test").unwrap();
+        assert_eq!(by_key["object_id"], "noos_obj_index_test");
+        assert_eq!(
+            existing_indexed_object(&noos_home, "noos_obj_index_test")
+                .unwrap()
+                .get("lookup_key")
+                .and_then(Value::as_str),
+            Some("20260701-index-test")
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn vault_index_update_rejects_corrupt_keys_before_writing_objects() {
+        let root = unique_test_dir("vault-index-corrupt");
+        let noos_home = root.join("home");
+        ensure_vault_layout(&noos_home).unwrap();
+        let keys_path = noos_home.join("vault/index/keys.json");
+        let objects_path = noos_home.join("vault/index/objects.json");
+        fs::write(&keys_path, "{not-json").unwrap();
+        let object_path = noos_home.join("vault/handoffs/active/20260701-index-test.md");
+        fs::write(&object_path, "# Index Test").unwrap();
+
+        let error = update_vault_indexes(
+            &noos_home,
+            test_index_object("noos_obj_index_test", "20260701-index-test", &object_path),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("Invalid JSON object"));
+        assert_eq!(fs::read_to_string(objects_path).unwrap(), "{}");
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn test_index_object(object_id: &str, lookup_key: &str, path: &Path) -> VaultIndexObject {
+        VaultIndexObject {
+            object_type: "handoff",
+            object_id: object_id.to_string(),
+            lookup_key: lookup_key.to_string(),
+            status: "active".to_string(),
+            path: path.display().to_string(),
+            title: Some("Index Test".to_string()),
+            source: json!({ "app": "unit-test" }),
+            source_url: Some("https://example.test/noos".to_string()),
+            created_at: "2026-07-01T00:00:00Z".to_string(),
+            content_hash: "sha256ish:test".to_string(),
+            request_id: Some("request-test".to_string()),
+            idempotency_key: Some("idempotency-test".to_string()),
+        }
     }
 
     fn unique_test_dir(name: &str) -> PathBuf {

@@ -188,6 +188,12 @@ nav button:hover {
   color: #174a7a;
 }
 
+.recovery-pill[data-recovery-state="preview"] {
+  border-color: rgba(89, 103, 95, 0.22);
+  background: #f4f7f4;
+  color: #45554c;
+}
+
 .recovery-pill[data-recovery-state="degraded"],
 .recovery-pill[data-recovery-state="relaunching"] {
   border-color: rgba(161, 58, 58, 0.28);
@@ -370,7 +376,7 @@ h3 {
 
 .summary-grid {
   display: grid;
-  grid-template-columns: 132px 132px minmax(0, 1fr);
+  grid-template-columns: repeat(4, minmax(132px, 1fr));
   gap: 12px;
 }
 
@@ -751,11 +757,6 @@ h3 {
 
 .connection-pill {
   flex: 0 0 auto;
-  border-radius: 999px;
-  background: #dff2e7;
-  color: #14573d;
-  padding: 7px 10px;
-  font: 850 12px/1 system-ui, sans-serif;
 }
 
 .next-action--ready {
@@ -777,6 +778,12 @@ h3 {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
+}
+
+.overview-context {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
 }
 
 .pipe {
@@ -1094,6 +1101,16 @@ li small {
   padding: 14px;
 }
 
+.panel--compact {
+  min-height: 0;
+}
+
+.panel--compact code {
+  display: block;
+  margin-top: 10px;
+  word-break: break-word;
+}
+
 .panel--primary {
   border-left: 4px solid #1d6b4f;
 }
@@ -1110,11 +1127,31 @@ li small {
 
 .empty-state {
   margin-top: 14px;
+  border: 1px solid rgba(23, 32, 26, 0.1);
   border-radius: 7px;
   background: #f6f8f6;
   padding: 12px;
   color: #607067;
   font: 600 12px/1.45 system-ui, sans-serif;
+}
+
+.vault-empty-state {
+  display: grid;
+  gap: 8px;
+  margin-top: 0;
+  padding: 16px;
+}
+
+.vault-empty-state h3 {
+  color: #17201a;
+  font-size: 18px;
+}
+
+.empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
 }
 
 .config-list {
@@ -1172,6 +1209,36 @@ li small {
   font: 500 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
+.log-page-panel {
+  min-height: 320px;
+  padding: 0;
+}
+
+.log-page-panel header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px;
+  border-bottom: 1px solid rgba(23, 32, 26, 0.08);
+}
+
+.log-page-panel header span {
+  color: #607067;
+  font: 600 12px/1.35 system-ui, sans-serif;
+}
+
+.log-page-output {
+  min-height: 240px;
+  max-height: 460px;
+  margin: 0;
+  overflow: auto;
+  padding: 14px;
+  white-space: pre-wrap;
+  color: #253129;
+  font: 500 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
 @media (max-width: 1080px) {
   #app {
     grid-template-columns: 190px minmax(0, 1fr);
@@ -1179,6 +1246,8 @@ li small {
 
   .card-grid,
   .pipeline,
+  .summary-grid,
+  .overview-context,
   .vault-layout,
   .vault-recent,
   .vault-metrics {

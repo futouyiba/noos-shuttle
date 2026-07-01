@@ -329,6 +329,23 @@ publishing Hub updates, configure these GitHub Actions secrets:
 - `NOOS_HUB_TAURI_SIGNING_PRIVATE_KEY`
 - `NOOS_HUB_TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
 
+Generate a matching updater key with the Tauri CLI, store the private key file
+contents in `NOOS_HUB_TAURI_SIGNING_PRIVATE_KEY`, store the password in
+`NOOS_HUB_TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, and keep the generated public key
+in `apps/noos-hub/src-tauri/tauri.conf.json`.
+
+```sh
+npm --prefix apps/noos-hub exec -- tauri signer generate --write-keys ~/.noos/keys/noos-hub-updater.key --password "<password>"
+```
+
+For local builds, `npm run hub:bundle` does not require release secrets. If no
+Tauri signing key is present, it builds the app bundle with updater artifacts
+disabled. To build signed updater artifacts locally, export either Tauri's
+standard variables (`TAURI_SIGNING_PRIVATE_KEY`,
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`) or the NOOS-prefixed equivalents above.
+For local key files, set `TAURI_SIGNING_PRIVATE_KEY` to the key file path, or
+use the NOOS convenience variable `NOOS_HUB_TAURI_SIGNING_PRIVATE_KEY_PATH`.
+
 Hub bundles include the current NOOS Shuttle browser extension build as a Tauri
 resource. After updating Hub, open the Config view and choose "打开内置插件目录"
 to load the bundled extension folder from `chrome://extensions` or
@@ -348,6 +365,7 @@ git push origin v0.1.2
 - `docs/noos-llm-wiki-bridge.md`: NOOS to LLM Wiki source bridge design
 - `docs/noos-vault-object-model.md`: Vault object model, key/index, ingest protocol, prompt feeding, and runtime projection
 - `docs/noos-hub-local-write-channel.md`: Hub-owned local write channel design and risks
+- `docs/noos-hub-updater-signing.md`: Hub updater signing key custody, release secrets, and verification
 - `docs/noos-shuttle-page-context-events.md`: browser page context event and state handling
 - `docs/noos-thread-format.md`: NOOS Thread v0.1 format
 - `docs/noos-shuttle-v0-design-breakdown.md`: v0 design breakdown

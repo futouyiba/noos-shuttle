@@ -37,6 +37,7 @@ jobs:
           bash -n scripts/noos-find-crystal.sh
           bash -n scripts/noos-import-browser-vault.sh
           bash -n scripts/noos-sync-handoffs-git.sh
+          bash -n scripts/noos-hub-bundle.sh
           bash -n scripts/package-extension.sh
           bash -n scripts/package-release-artifacts.sh
 

@@ -324,6 +324,22 @@ Hub 更新前，需要在 GitHub Actions 里配置：
 - `NOOS_HUB_TAURI_SIGNING_PRIVATE_KEY`
 - `NOOS_HUB_TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
 
+用 Tauri CLI 生成匹配的 updater key，把私钥文件内容保存到
+`NOOS_HUB_TAURI_SIGNING_PRIVATE_KEY`，把密码保存到
+`NOOS_HUB_TAURI_SIGNING_PRIVATE_KEY_PASSWORD`，并确保生成的公钥写入
+`apps/noos-hub/src-tauri/tauri.conf.json`。
+
+```sh
+npm --prefix apps/noos-hub exec -- tauri signer generate --write-keys ~/.noos/keys/noos-hub-updater.key --password "<password>"
+```
+
+本地构建不需要 release secrets。`npm run hub:bundle` 在没有 Tauri 签名 key
+时，会禁用 updater artifacts，只构建可启动的 app bundle。若要在本地生成已签名
+updater artifacts，可以导出 Tauri 标准变量（`TAURI_SIGNING_PRIVATE_KEY`、
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`），也可以导出上面的 NOOS 前缀变量。
+本地 key 文件路径可直接放在 `TAURI_SIGNING_PRIVATE_KEY` 里，或使用 NOOS
+便捷变量 `NOOS_HUB_TAURI_SIGNING_PRIVATE_KEY_PATH` 指向私钥文件路径。
+
 Hub bundle 会把当前 NOOS Shuttle 浏览器插件 build 一起作为 Tauri resource
 打进去。更新 Hub 后，在 Config 页面点击“打开内置插件目录”，然后在
 `chrome://extensions` 或 `edge://extensions` 开启开发者模式并加载该目录。
@@ -342,6 +358,7 @@ git push origin v0.1.2
 - `docs/noos-llm-wiki-bridge.md`：NOOS 到 LLM Wiki source 层桥接设计
 - `docs/noos-vault-object-model.md`：Vault 对象模型、key/index、入库协议、上下文投喂和 runtime projection
 - `docs/noos-hub-local-write-channel.md`：Hub 本机写入通道设计和风险
+- `docs/noos-hub-updater-signing.md`：Hub updater 签名 key 保管、release secrets 和验证步骤
 - `docs/noos-shuttle-page-context-events.zh-CN.md`：浏览器页面上下文事件与状态处理
 - `docs/noos-thread-format.md`：NOOS Thread v0.1 格式
 - `docs/noos-shuttle-v0-design-breakdown.md`：v0 设计拆解

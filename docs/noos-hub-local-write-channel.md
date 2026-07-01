@@ -153,6 +153,7 @@ Hub validates:
 - object metadata is written into `~/.noos/vault/index/keys.json` and `objects.json`
 - every indexed object includes `object_id`, `lookup_key`, `path`, `type`, `source`, and `created_at`
 - repeated writes with the same `idempotency_key` return the original receipt instead of writing another file
+- `content_hash` is recorded as object metadata for audit/change detection; duplicate receipt behavior is keyed by the stable `object_id` derived from `idempotency_key` or content identity
 
 ## Risks and Product Traps
 
@@ -164,7 +165,7 @@ The final local write channel has several sharp edges:
 - Hub availability: the browser extension can be active while Hub is closed. The extension must keep a recovery path rather than pretending the handoff reached the real vault.
 - Version drift: old Hub plus new extension, or new Hub plus old extension, can disagree on protocol shape. `/health` must report protocol version.
 - Path safety: the extension must never be allowed to choose arbitrary filesystem paths. It may suggest a filename; Hub decides the final path.
-- Duplicate writes: users may click save several times or collect multiple revisions. Hub should use sanitized filenames, content hash checks, and atomic writes.
+- Duplicate writes: users may click save several times or collect multiple revisions. Hub should use sanitized filenames, idempotency-derived `object_id` checks, recorded content hashes, and atomic writes.
 - Privacy boundary: handoffs can contain private project context. Git sync must remain a separate explicit action, and logs should not print full handoff bodies.
 - Cross-platform install: Native Messaging registration and filesystem conventions differ across macOS, Windows, and Linux. Localhost HTTP is easier to ship first.
 - Corporate browser policy: some managed machines may block localhost, extension host permissions, downloads, or Native Messaging.

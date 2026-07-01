@@ -20,3 +20,12 @@ Before editing, check `.noos/handoffs/active/`. If an active handoff exists, use
 - If the skill is not installed, read `.noos/skills/noos-consume-handoff/SKILL.md` and follow it.
 
 Do not move active handoffs to `.noos/handoffs/done/` unless the user asks for lifecycle cleanup or the task is clearly complete.
+
+## NOOS Hub Release Signing
+
+For Tauri updater signing key custody, GitHub secret names, local key paths, and
+release verification steps, read `docs/noos-hub-updater-signing.md`.
+
+Never commit, print, or summarize updater private key or signing password
+contents. It is safe to reference the documented key paths and GitHub secret
+names.
