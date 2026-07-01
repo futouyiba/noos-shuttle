@@ -144,6 +144,7 @@ const appElement = app;
 
 renderShell();
 void installSleepRecoveryListeners();
+void installUpdateMenuListeners();
 void loadHealth();
 void loadSleepRecoveryStatus();
 
@@ -256,6 +257,20 @@ async function installSleepRecoveryListeners(): Promise<void> {
 
   await listen("tauri://resumed", () => {
     void recoverFromSleep("frontend tauri resumed event");
+  });
+}
+
+async function installUpdateMenuListeners(): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+
+  await listen("noos://check-update", () => {
+    void checkForHubUpdate();
+  });
+
+  await listen("noos://install-update", () => {
+    void installHubUpdate();
   });
 }
 
@@ -854,11 +869,14 @@ async function checkForHubUpdate(): Promise<void> {
   try {
     const update = await check();
     if (!update) {
+      await setUpdateMenuInstallEnabled(false);
       setLog("NOOS Hub 已是最新版本。");
       return;
     }
+    await setUpdateMenuInstallEnabled(true);
     setLog(`发现新版本：${update.version}\n${update.body ?? ""}`.trim());
   } catch (error) {
+    await setUpdateMenuInstallEnabled(false);
     setLog(`检查更新失败：${String(error)}`);
   }
 }
@@ -873,9 +891,11 @@ async function installHubUpdate(): Promise<void> {
   try {
     const update = await check();
     if (!update) {
+      await setUpdateMenuInstallEnabled(false);
       setLog("NOOS Hub 已是最新版本。");
       return;
     }
+    await setUpdateMenuInstallEnabled(true);
 
     let downloaded = 0;
     await update.downloadAndInstall((event) => {
@@ -892,6 +912,18 @@ async function installHubUpdate(): Promise<void> {
     await relaunch();
   } catch (error) {
     setLog(`安装更新失败：${String(error)}`);
+  }
+}
+
+async function setUpdateMenuInstallEnabled(enabled: boolean): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+
+  try {
+    await invoke("set_update_menu_install_enabled", { enabled });
+  } catch {
+    // Older dev builds may not have the native menu command yet.
   }
 }
 

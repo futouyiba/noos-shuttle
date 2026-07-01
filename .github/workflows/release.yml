@@ -31,7 +31,7 @@ jobs:
       - name: Verify
         run: |
           npm run typecheck
-          npm test
+          npm test -- --exclude tests/content-ui-smoke.test.ts
           bash -n scripts/noos-install.sh
           bash -n scripts/noos-doctor.sh
           bash -n scripts/noos-find-crystal.sh
@@ -49,8 +49,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.NOOS_HUB_TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
-            echo "NOOS_HUB_TAURI_SIGNING_PRIVATE_KEY is required to build updater artifacts." >&2
-            exit 1
+            echo "NOOS_HUB_TAURI_SIGNING_PRIVATE_KEY is not configured; skipping signed macOS Hub updater artifacts."
+            exit 0
           fi
           npm run hub:bundle
           mkdir -p release

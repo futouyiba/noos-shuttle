@@ -9,7 +9,7 @@ use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 const LOCAL_WRITE_PORT: u16 = 17642;
 const HUB_PROTOCOL_VERSION: u8 = 1;
@@ -20,6 +20,10 @@ const SLEEP_GUARD_EXIT_AFTER_GAP_SECS: u64 = 10 * 60;
 const SLEEP_RECOVERY_MAX_ATTEMPTS: u8 = 3;
 const LOCAL_WRITE_RECOVERY_PROBE_TIMEOUT_MS: u64 = 1_500;
 const SLEEP_RECOVERY_CPU_LIMIT_PERCENT: f32 = 75.0;
+const MENU_CHECK_UPDATE_ID: &str = "noos_check_update";
+const MENU_INSTALL_UPDATE_ID: &str = "noos_install_update";
+const EVENT_CHECK_UPDATE: &str = "noos://check-update";
+const EVENT_INSTALL_UPDATE: &str = "noos://install-update";
 
 #[derive(Clone, Serialize)]
 struct HubHealth {
@@ -192,6 +196,10 @@ struct CachedHubHealth {
     cached_at_epoch: u64,
 }
 
+struct UpdateMenuState {
+    install_update_item: tauri::menu::MenuItem<tauri::Wry>,
+}
+
 static HUB_HEALTH_CACHE: OnceLock<Mutex<Option<CachedHubHealth>>> = OnceLock::new();
 static SLEEP_RECOVERY_STATUS: OnceLock<Mutex<SleepRecoveryStatus>> = OnceLock::new();
 
@@ -259,6 +267,14 @@ fn simulate_sleep_resume(gap_secs: Option<u64>) -> Result<SleepRecoveryStatus, S
         "manual sleep/resume recovery simulation",
         gap_secs.or(Some(sleep_resume_gap_threshold_secs() + 1)),
     ))
+}
+
+#[tauri::command]
+fn set_update_menu_install_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    app.state::<UpdateMenuState>()
+        .install_update_item
+        .set_enabled(enabled)
+        .map_err(|error| error.to_string())
 }
 
 fn cached_hub_health() -> Result<HubHealth, String> {
@@ -370,16 +386,53 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .setup(|app| {
+            install_app_menu(app)?;
+            Ok(())
+        })
+        .on_menu_event(|app, event| {
+            if event.id() == MENU_CHECK_UPDATE_ID {
+                let _ = app.emit(EVENT_CHECK_UPDATE, ());
+            } else if event.id() == MENU_INSTALL_UPDATE_ID {
+                let _ = app.emit(EVENT_INSTALL_UPDATE, ());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             get_hub_health,
             run_hub_action,
             get_sleep_recovery_status,
             mark_sleep_suspended,
             recover_from_sleep,
-            simulate_sleep_resume
+            simulate_sleep_resume,
+            set_update_menu_install_enabled
         ])
         .run(tauri::generate_context!())
         .expect("error while running NOOS Hub");
+}
+
+fn install_app_menu(app: &mut tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItemBuilder, Submenu};
+
+    let menu = Menu::default(app.handle())?;
+    let check_update = MenuItemBuilder::with_id(MENU_CHECK_UPDATE_ID, "Check for Updates...")
+        .build(app.handle())?;
+    let install_update = MenuItemBuilder::with_id(MENU_INSTALL_UPDATE_ID, "Install Update")
+        .enabled(false)
+        .build(app.handle())?;
+    let updates_menu = Submenu::with_id_and_items(
+        app.handle(),
+        "noos_updates_menu",
+        "Updates",
+        true,
+        &[&check_update, &install_update],
+    )?;
+
+    menu.append_items(&[&updates_menu])?;
+    app.set_menu(menu)?;
+    app.manage(UpdateMenuState {
+        install_update_item: install_update,
+    });
+    Ok(())
 }
 
 fn start_sleep_resume_guard() {
