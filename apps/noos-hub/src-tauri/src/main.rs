@@ -5,7 +5,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -135,6 +135,11 @@ struct HubActionRequest {
     url: Option<String>,
     title: Option<String>,
     wiki_project_path: Option<String>,
+    source_key: Option<String>,
+    mode: Option<String>,
+    destination_kind: Option<String>,
+    folder_token: Option<String>,
+    folder_name: Option<String>,
     force: Option<bool>,
 }
 
@@ -146,7 +151,16 @@ struct HubActionResponse {
     error_code: Option<String>,
     source_path: Option<String>,
     wiki_project_path: Option<String>,
+    document_url: Option<String>,
+    folder_name: Option<String>,
     changed: Option<bool>,
+}
+
+struct VaultMarkdownSource {
+    lookup_key: String,
+    title: Option<String>,
+    path: PathBuf,
+    content: String,
 }
 
 #[derive(Serialize)]
@@ -919,6 +933,7 @@ fn run_browser_hub_action(request: HubActionRequest) -> HubActionResponse {
         "feishu.exportMdAndOrganize" | "feishu.syncMarkdownAndOrganize" => {
             export_feishu_md(request, true)
         }
+        "feishu.publishMarkdown" => publish_feishu_markdown(request),
         "wiki.organizeSource" => organize_wiki_source(request),
         "wiki.openFeishuSourceFolder" => open_feishu_source_folder(request),
         "wiki.openProjectFolder" => open_wiki_project_folder(request),
@@ -993,6 +1008,8 @@ fn export_feishu_md(request: HubActionRequest, organize: bool) -> HubActionRespo
             error_code: None,
             source_path: Some(source_path.display().to_string()),
             wiki_project_path: Some(wiki_project_path.display().to_string()),
+            document_url: None,
+            folder_name: None,
             changed: Some(false),
         };
     }
@@ -1031,6 +1048,8 @@ fn export_feishu_md(request: HubActionRequest, organize: bool) -> HubActionRespo
             error_code: None,
             source_path: Some(source_path.display().to_string()),
             wiki_project_path: Some(wiki_project_path.display().to_string()),
+            document_url: None,
+            folder_name: None,
             changed: Some(true),
         };
     }
@@ -1042,7 +1061,111 @@ fn export_feishu_md(request: HubActionRequest, organize: bool) -> HubActionRespo
         error_code: None,
         source_path: Some(source_path.display().to_string()),
         wiki_project_path: Some(wiki_project_path.display().to_string()),
+        document_url: None,
+        folder_name: None,
         changed: Some(true),
+    }
+}
+
+fn publish_feishu_markdown(request: HubActionRequest) -> HubActionResponse {
+    let Some(source_key) = request
+        .source_key
+        .as_deref()
+        .filter(|key| !key.trim().is_empty())
+    else {
+        return hub_action_error(
+            "source_not_found",
+            "Missing NOOS Markdown source key.",
+            None,
+            request.wiki_project_path,
+        );
+    };
+    let source = match read_vault_markdown_source(source_key) {
+        Ok(source) => source,
+        Err((code, message)) => {
+            return hub_action_error(&code, &message, None, request.wiki_project_path);
+        }
+    };
+    let title = source
+        .title
+        .clone()
+        .unwrap_or_else(|| "NOOS Markdown".to_string());
+    let markdown = match prepare_feishu_publish_markdown(&source.content, &title) {
+        Ok(markdown) => markdown,
+        Err(message) => {
+            return hub_action_error(
+                "invalid_markdown",
+                &message,
+                Some(source.path.display().to_string()),
+                request.wiki_project_path,
+            );
+        }
+    };
+    let mode = request.mode.as_deref().unwrap_or("create");
+    if mode == "overwrite" {
+        let Some(url) = request
+            .url
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        else {
+            return hub_action_error(
+                "overwrite_failed",
+                "Missing current Feishu document URL.",
+                Some(source.path.display().to_string()),
+                request.wiki_project_path,
+            );
+        };
+        match overwrite_feishu_document(url, &markdown) {
+            Ok(document_url) => HubActionResponse {
+                ok: true,
+                status: "overwritten".to_string(),
+                message: "Current Feishu document overwritten from NOOS Markdown.".to_string(),
+                error_code: None,
+                source_path: Some(source.path.display().to_string()),
+                wiki_project_path: None,
+                document_url: Some(document_url.unwrap_or_else(|| url.to_string())),
+                folder_name: request.folder_name,
+                changed: Some(true),
+            },
+            Err(error) => hub_action_error(
+                if looks_like_feishu_auth_error(&error) {
+                    "needs_auth"
+                } else {
+                    "overwrite_failed"
+                },
+                &error,
+                Some(source.path.display().to_string()),
+                request.wiki_project_path,
+            ),
+        }
+    } else {
+        let destination = request.destination_kind.as_deref().unwrap_or("drive_root");
+        match create_feishu_document(&markdown, destination, request.folder_token.as_deref()) {
+            Ok(document_url) => HubActionResponse {
+                ok: true,
+                status: "published".to_string(),
+                message: format!(
+                    "NOOS Markdown published as a Feishu document: {}",
+                    source.lookup_key
+                ),
+                error_code: None,
+                source_path: Some(source.path.display().to_string()),
+                wiki_project_path: None,
+                document_url,
+                folder_name: request.folder_name,
+                changed: Some(true),
+            },
+            Err(error) => hub_action_error(
+                if looks_like_feishu_auth_error(&error) {
+                    "needs_auth"
+                } else {
+                    "publish_failed"
+                },
+                &error,
+                Some(source.path.display().to_string()),
+                request.wiki_project_path,
+            ),
+        }
     }
 }
 
@@ -1093,6 +1216,8 @@ fn organize_wiki_source(request: HubActionRequest) -> HubActionResponse {
         error_code: None,
         source_path: Some(source_path.display().to_string()),
         wiki_project_path: Some(wiki_project_path.display().to_string()),
+        document_url: None,
+        folder_name: None,
         changed: request.force,
     }
 }
@@ -1124,6 +1249,8 @@ fn open_feishu_source_folder(request: HubActionRequest) -> HubActionResponse {
             error_code: None,
             source_path: Some(source_folder.display().to_string()),
             wiki_project_path: Some(wiki_project_path.display().to_string()),
+            document_url: None,
+            folder_name: None,
             changed: None,
         },
         Err(error) => hub_action_error(
@@ -1161,6 +1288,8 @@ fn open_wiki_project_folder(request: HubActionRequest) -> HubActionResponse {
             error_code: None,
             source_path: None,
             wiki_project_path: Some(wiki_project_path.display().to_string()),
+            document_url: None,
+            folder_name: None,
             changed: None,
         },
         Err(error) => hub_action_error(
@@ -1185,6 +1314,8 @@ fn hub_action_error(
         error_code: Some(code.to_string()),
         source_path,
         wiki_project_path,
+        document_url: None,
+        folder_name: None,
         changed: None,
     }
 }
@@ -1404,6 +1535,179 @@ fn export_feishu_markdown(url: &str) -> Result<String, String> {
     }
 
     Err("Feishu MD export failed. Install/configure feishu-docx or complete Feishu authorization in NOOS Hub.".to_string())
+}
+
+fn read_vault_markdown_source(lookup_key: &str) -> Result<VaultMarkdownSource, (String, String)> {
+    let noos_home = noos_home();
+    let Some(indexed) = find_indexed_object_by_key(&noos_home, lookup_key)
+        .or_else(|| find_unindexed_vault_object_by_key(&noos_home, lookup_key))
+    else {
+        return Err((
+            "source_not_found".to_string(),
+            "NOOS Markdown source was not found.".to_string(),
+        ));
+    };
+    let Some(path) = indexed.get("path").and_then(Value::as_str) else {
+        return Err((
+            "source_not_found".to_string(),
+            "NOOS Markdown source has no local path.".to_string(),
+        ));
+    };
+    let path_buf = PathBuf::from(path);
+    if !is_inside_path(&path_buf, &noos_home.join("vault")) {
+        return Err((
+            "source_not_found".to_string(),
+            "NOOS Markdown source path is outside the local Vault.".to_string(),
+        ));
+    }
+    if path_buf
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| !extension.eq_ignore_ascii_case("md"))
+        .unwrap_or(true)
+    {
+        return Err((
+            "invalid_markdown".to_string(),
+            "NOOS source is not a Markdown file.".to_string(),
+        ));
+    }
+    let content = fs::read_to_string(&path_buf).map_err(|error| {
+        (
+            "source_not_found".to_string(),
+            format!("NOOS Markdown source could not be read: {error}"),
+        )
+    })?;
+    Ok(VaultMarkdownSource {
+        lookup_key: lookup_key.to_string(),
+        title: indexed
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| extract_frontmatter_value(&content, "title"))
+            .or_else(|| extract_heading_title(&content)),
+        path: path_buf,
+        content,
+    })
+}
+
+fn prepare_feishu_publish_markdown(content: &str, fallback_title: &str) -> Result<String, String> {
+    let body = strip_yaml_frontmatter(content).trim();
+    if body.is_empty() {
+        return Err("NOOS Markdown source is empty.".to_string());
+    }
+    if body.starts_with("# ") {
+        return Ok(body.to_string());
+    }
+    let title = fallback_title.trim();
+    let title = if title.is_empty() {
+        "NOOS Markdown"
+    } else {
+        title
+    };
+    Ok(format!("# {title}\n\n{body}"))
+}
+
+fn strip_yaml_frontmatter(content: &str) -> &str {
+    let trimmed = content.trim_start();
+    if !trimmed.starts_with("---\n") {
+        return trimmed;
+    }
+    let rest = &trimmed[4..];
+    if let Some(index) = rest.find("\n---") {
+        return &rest[index + 4..];
+    }
+    trimmed
+}
+
+fn create_feishu_document(
+    markdown: &str,
+    destination_kind: &str,
+    folder_token: Option<&str>,
+) -> Result<Option<String>, String> {
+    let mut args = vec![
+        "docs".to_string(),
+        "+create".to_string(),
+        "--api-version".to_string(),
+        "v2".to_string(),
+        "--doc-format".to_string(),
+        "markdown".to_string(),
+    ];
+    if destination_kind == "drive_folder" {
+        if let Some(token) = folder_token.filter(|token| !token.trim().is_empty()) {
+            args.push("--parent-token".to_string());
+            args.push(token.to_string());
+        } else {
+            args.push("--parent-position".to_string());
+            args.push("my_library".to_string());
+        }
+    } else {
+        args.push("--parent-position".to_string());
+        args.push("my_library".to_string());
+    }
+    args.push("--content".to_string());
+    args.push("-".to_string());
+
+    let payload = run_lark_cli_json_with_stdin(&args, markdown)?;
+    Ok(json_path_string(&payload, &["data", "document", "url"]))
+}
+
+fn overwrite_feishu_document(url: &str, markdown: &str) -> Result<Option<String>, String> {
+    let args = vec![
+        "docs".to_string(),
+        "+update".to_string(),
+        "--api-version".to_string(),
+        "v2".to_string(),
+        "--doc".to_string(),
+        url.to_string(),
+        "--command".to_string(),
+        "overwrite".to_string(),
+        "--doc-format".to_string(),
+        "markdown".to_string(),
+        "--content".to_string(),
+        "-".to_string(),
+    ];
+    let payload = run_lark_cli_json_with_stdin(&args, markdown)?;
+    Ok(json_path_string(&payload, &["data", "document", "url"]).or_else(|| Some(url.to_string())))
+}
+
+fn run_lark_cli_json_with_stdin(args: &[String], stdin_content: &str) -> Result<Value, String> {
+    let mut child = Command::new("lark-cli")
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("lark-cli could not be started: {error}"))?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin
+            .write_all(stdin_content.as_bytes())
+            .map_err(|error| format!("lark-cli stdin write failed: {error}"))?;
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("lark-cli failed: {error}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !output.status.success() {
+        let message = if stderr.is_empty() { stdout } else { stderr };
+        return Err(if message.is_empty() {
+            "lark-cli returned an error.".to_string()
+        } else {
+            message
+        });
+    }
+    if stdout.is_empty() {
+        return Ok(json!({ "ok": true }));
+    }
+    serde_json::from_str(&stdout).map_err(|_| stdout)
+}
+
+fn json_path_string(value: &Value, path: &[&str]) -> Option<String> {
+    let mut cursor = value;
+    for key in path {
+        cursor = cursor.get(*key)?;
+    }
+    cursor.as_str().map(str::to_string)
 }
 
 fn feishu_docx_command_candidates() -> Vec<PathBuf> {
@@ -3455,6 +3759,22 @@ mod tests {
         assert_eq!(found.as_deref(), Some(legacy.as_path()));
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prepare_feishu_publish_markdown_strips_frontmatter_and_adds_h1() {
+        let markdown = "---\ntitle: Source Title\n---\n\n## Section\n\nBody";
+        let prepared = prepare_feishu_publish_markdown(markdown, "Source Title").unwrap();
+
+        assert_eq!(prepared, "# Source Title\n\n## Section\n\nBody");
+    }
+
+    #[test]
+    fn prepare_feishu_publish_markdown_preserves_existing_h1() {
+        let markdown = "# Existing Title\n\n## Section\n\nBody";
+        let prepared = prepare_feishu_publish_markdown(markdown, "Fallback").unwrap();
+
+        assert_eq!(prepared, markdown);
     }
 
     fn unique_test_dir(name: &str) -> PathBuf {
