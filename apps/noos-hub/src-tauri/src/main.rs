@@ -21,9 +21,7 @@ const SLEEP_RECOVERY_MAX_ATTEMPTS: u8 = 3;
 const LOCAL_WRITE_RECOVERY_PROBE_TIMEOUT_MS: u64 = 1_500;
 const SLEEP_RECOVERY_CPU_LIMIT_PERCENT: f32 = 75.0;
 const MENU_CHECK_UPDATE_ID: &str = "noos_check_update";
-const MENU_INSTALL_UPDATE_ID: &str = "noos_install_update";
 const EVENT_CHECK_UPDATE: &str = "noos://check-update";
-const EVENT_INSTALL_UPDATE: &str = "noos://install-update";
 
 #[derive(Clone, Serialize)]
 struct HubHealth {
@@ -196,10 +194,6 @@ struct CachedHubHealth {
     cached_at_epoch: u64,
 }
 
-struct UpdateMenuState {
-    install_update_item: tauri::menu::MenuItem<tauri::Wry>,
-}
-
 static HUB_HEALTH_CACHE: OnceLock<Mutex<Option<CachedHubHealth>>> = OnceLock::new();
 static SLEEP_RECOVERY_STATUS: OnceLock<Mutex<SleepRecoveryStatus>> = OnceLock::new();
 
@@ -267,14 +261,6 @@ fn simulate_sleep_resume(gap_secs: Option<u64>) -> Result<SleepRecoveryStatus, S
         "manual sleep/resume recovery simulation",
         gap_secs.or(Some(sleep_resume_gap_threshold_secs() + 1)),
     ))
-}
-
-#[tauri::command]
-fn set_update_menu_install_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
-    app.state::<UpdateMenuState>()
-        .install_update_item
-        .set_enabled(enabled)
-        .map_err(|error| error.to_string())
 }
 
 fn cached_hub_health() -> Result<HubHealth, String> {
@@ -393,8 +379,6 @@ fn main() {
         .on_menu_event(|app, event| {
             if event.id() == MENU_CHECK_UPDATE_ID {
                 let _ = app.emit(EVENT_CHECK_UPDATE, ());
-            } else if event.id() == MENU_INSTALL_UPDATE_ID {
-                let _ = app.emit(EVENT_INSTALL_UPDATE, ());
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -403,35 +387,50 @@ fn main() {
             get_sleep_recovery_status,
             mark_sleep_suspended,
             recover_from_sleep,
-            simulate_sleep_resume,
-            set_update_menu_install_enabled
+            simulate_sleep_resume
         ])
         .run(tauri::generate_context!())
         .expect("error while running NOOS Hub");
 }
 
 fn install_app_menu(app: &mut tauri::App) -> tauri::Result<()> {
-    use tauri::menu::{Menu, MenuItemBuilder, Submenu};
+    #[cfg(target_os = "macos")]
+    use tauri::menu::PredefinedMenuItem;
+    use tauri::menu::{Menu, MenuItemBuilder, MenuItemKind};
+    #[cfg(not(target_os = "macos"))]
+    use tauri::menu::{Submenu, HELP_SUBMENU_ID};
 
     let menu = Menu::default(app.handle())?;
     let check_update = MenuItemBuilder::with_id(MENU_CHECK_UPDATE_ID, "Check for Updates...")
         .build(app.handle())?;
-    let install_update = MenuItemBuilder::with_id(MENU_INSTALL_UPDATE_ID, "Install Update")
-        .enabled(false)
-        .build(app.handle())?;
-    let updates_menu = Submenu::with_id_and_items(
-        app.handle(),
-        "noos_updates_menu",
-        "Updates",
-        true,
-        &[&check_update, &install_update],
-    )?;
 
-    menu.append_items(&[&updates_menu])?;
+    #[cfg(target_os = "macos")]
+    {
+        let separator = PredefinedMenuItem::separator(app.handle())?;
+        if let Some(MenuItemKind::Submenu(app_menu)) = menu.items()?.into_iter().next() {
+            app_menu.insert_items(&[&check_update, &separator], 2)?;
+        } else {
+            menu.append_items(&[&check_update])?;
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Some(MenuItemKind::Submenu(help_menu)) = menu.get(HELP_SUBMENU_ID) {
+            help_menu.append_items(&[&check_update])?;
+        } else {
+            let help_menu = Submenu::with_id_and_items(
+                app.handle(),
+                HELP_SUBMENU_ID,
+                "Help",
+                true,
+                &[&check_update],
+            )?;
+            menu.append_items(&[&help_menu])?;
+        }
+    }
+
     app.set_menu(menu)?;
-    app.manage(UpdateMenuState {
-        install_update_item: install_update,
-    });
     Ok(())
 }
 
@@ -951,8 +950,14 @@ fn export_feishu_md(request: HubActionRequest, organize: bool) -> HubActionRespo
         );
     };
 
-    let source_path = feishu_source_path(&wiki_project_path, url);
     let token = feishu_token_from_url(url).unwrap_or_else(|| stable_hash_hex(url));
+    let title = request
+        .title
+        .as_deref()
+        .unwrap_or("Untitled Feishu Document");
+    let source_path = feishu_source_path(&wiki_project_path, url, Some(title));
+    let existing_source_path = existing_feishu_source_path(&wiki_project_path, url, Some(title))
+        .unwrap_or_else(|| source_path.clone());
     let exported = match export_feishu_markdown(url) {
         Ok(markdown) => markdown,
         Err(error) => {
@@ -970,9 +975,17 @@ fn export_feishu_md(request: HubActionRequest, organize: bool) -> HubActionRespo
         }
     };
 
-    let previous = fs::read_to_string(&source_path).unwrap_or_default();
+    let previous = fs::read_to_string(&existing_source_path).unwrap_or_default();
     let changed = feishu_source_body(&previous) != exported.trim();
     if !changed {
+        if let Err(error) = migrate_feishu_source_path(&existing_source_path, &source_path) {
+            return hub_action_error(
+                "export_failed",
+                &error,
+                Some(source_path.display().to_string()),
+                Some(wiki_project_path.display().to_string()),
+            );
+        }
         return HubActionResponse {
             ok: true,
             status: "unchanged".to_string(),
@@ -984,15 +997,15 @@ fn export_feishu_md(request: HubActionRequest, organize: bool) -> HubActionRespo
         };
     }
 
-    let markdown = build_feishu_source_markdown(
-        &exported,
-        url,
-        &request
-            .title
-            .unwrap_or_else(|| "Untitled Feishu Document".to_string()),
-        &token,
-        &wiki_project_path,
-    );
+    let markdown = build_feishu_source_markdown(&exported, url, title, &token, &wiki_project_path);
+    if let Err(error) = migrate_feishu_source_path(&existing_source_path, &source_path) {
+        return hub_action_error(
+            "export_failed",
+            &error,
+            Some(source_path.display().to_string()),
+            Some(wiki_project_path.display().to_string()),
+        );
+    }
     if let Err(error) = write_feishu_source(&source_path, &markdown) {
         return hub_action_error(
             "export_failed",
@@ -1051,7 +1064,11 @@ fn organize_wiki_source(request: HubActionRequest) -> HubActionResponse {
             request.wiki_project_path,
         );
     };
-    let source_path = feishu_source_path(&wiki_project_path, url);
+    let source_path =
+        existing_feishu_source_path(&wiki_project_path, url, request.title.as_deref())
+            .unwrap_or_else(|| {
+                feishu_source_path(&wiki_project_path, url, request.title.as_deref())
+            });
     if !source_path.exists() {
         return hub_action_error(
             "export_failed",
@@ -1209,13 +1226,62 @@ fn expand_user_path(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-fn feishu_source_path(wiki_project_path: &Path, url: &str) -> PathBuf {
+fn feishu_source_path(wiki_project_path: &Path, url: &str, title: Option<&str>) -> PathBuf {
     let id = feishu_token_from_url(url).unwrap_or_else(|| stable_hash_hex(url));
-    wiki_project_path
-        .join("raw")
-        .join("sources")
-        .join("feishu")
-        .join(format!("feishu-{}.md", source_id_slug(&id)))
+    let filename = format!(
+        "feishu-{}--{}.md",
+        source_title_slug(title.unwrap_or("untitled")),
+        source_id_short_slug(&id)
+    );
+    feishu_source_folder(wiki_project_path).join(filename)
+}
+
+fn existing_feishu_source_path(
+    wiki_project_path: &Path,
+    url: &str,
+    title: Option<&str>,
+) -> Option<PathBuf> {
+    let target = feishu_source_path(wiki_project_path, url, title);
+    if target.exists() {
+        return Some(target);
+    }
+
+    let id = feishu_token_from_url(url).unwrap_or_else(|| stable_hash_hex(url));
+    let folder = feishu_source_folder(wiki_project_path);
+    let legacy = folder.join(format!("feishu-{}.md", source_id_slug(&id)));
+    if legacy.exists() {
+        return Some(legacy);
+    }
+
+    let suffix = format!("--{}.md", source_id_short_slug(&id));
+    fs::read_dir(&folder)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.starts_with("feishu-") && name.ends_with(&suffix))
+                .unwrap_or(false)
+        })
+}
+
+fn migrate_feishu_source_path(existing_path: &Path, target_path: &Path) -> Result<(), String> {
+    if existing_path == target_path || !existing_path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = target_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    if target_path.exists() {
+        fs::remove_file(existing_path).map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    fs::rename(existing_path, target_path).map_err(|error| error.to_string())
+}
+
+fn feishu_source_folder(wiki_project_path: &Path) -> PathBuf {
+    wiki_project_path.join("raw").join("sources").join("feishu")
 }
 
 fn feishu_token_from_url(url: &str) -> Option<String> {
@@ -1255,6 +1321,54 @@ fn source_id_slug(value: &str) -> String {
     } else {
         slug
     }
+}
+
+fn source_id_short_slug(value: &str) -> String {
+    source_id_slug(value).chars().take(12).collect()
+}
+
+fn source_title_slug(value: &str) -> String {
+    let mut slug = String::new();
+    let mut previous_dash = false;
+    for character in value.chars() {
+        let next = if character.is_ascii_alphanumeric() {
+            Some(character.to_ascii_lowercase())
+        } else if character == '-' || character == '_' || is_cjk_unified_ideograph(character) {
+            Some(character)
+        } else if character.is_whitespace() || character.is_ascii_punctuation() {
+            Some('-')
+        } else {
+            Some('-')
+        };
+
+        if let Some(character) = next {
+            if character == '-' {
+                if previous_dash {
+                    continue;
+                }
+                previous_dash = true;
+            } else {
+                previous_dash = false;
+            }
+            slug.push(character);
+        }
+        if slug.chars().count() >= 80 {
+            break;
+        }
+    }
+
+    let slug = slug.trim_matches(['-', '_']).to_string();
+    if slug.is_empty() {
+        "untitled".to_string()
+    } else {
+        slug
+    }
+}
+
+fn is_cjk_unified_ideograph(character: char) -> bool {
+    ('\u{4e00}'..='\u{9fff}').contains(&character)
+        || ('\u{3400}'..='\u{4dbf}').contains(&character)
+        || ('\u{f900}'..='\u{faff}').contains(&character)
 }
 
 fn export_feishu_markdown(url: &str) -> Result<String, String> {
@@ -3306,5 +3420,51 @@ mod tests {
         assert!(!status.local_write_healthy);
         assert!(status.relaunch_recommended);
         assert_eq!(restarts.get(), u32::from(SLEEP_RECOVERY_MAX_ATTEMPTS));
+    }
+
+    #[test]
+    fn feishu_source_path_includes_title_and_short_token() {
+        let wiki = Path::new("/tmp/wiki");
+        let url = "https://team.feishu.cn/docx/birldmo6vod3fnx8ajzcfa0hnef";
+        let title = "从博客 User Story 到机制、数值接口：P0 推导示例 v0.6";
+
+        let path = feishu_source_path(wiki, url, Some(title));
+        let filename = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+
+        assert!(filename.starts_with("feishu-从博客-user-story-到机制-数值接口-p0-推导示例-v0-6--"));
+        assert!(filename.ends_with("--birldmo6vod3.md"));
+    }
+
+    #[test]
+    fn existing_feishu_source_path_finds_legacy_token_filename() {
+        let root = unique_test_dir("feishu-legacy-source");
+        let wiki = root.join("wiki");
+        let url = "https://team.feishu.cn/docx/birldmo6vod3fnx8ajzcfa0hnef";
+        let legacy = wiki
+            .join("raw")
+            .join("sources")
+            .join("feishu")
+            .join("feishu-birldmo6vod3fnx8ajzcfa0hnef.md");
+        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        fs::write(&legacy, "# legacy").unwrap();
+
+        let found = existing_feishu_source_path(&wiki, url, Some("Readable Title"));
+        assert_eq!(found.as_deref(), Some(legacy.as_path()));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn unique_test_dir(name: &str) -> PathBuf {
+        let path = env::temp_dir().join(format!(
+            "noos-hub-{name}-{}-{}",
+            std::process::id(),
+            now_epoch()
+        ));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).unwrap();
+        path
     }
 }

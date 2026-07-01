@@ -1,13 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { check } from "@tauri-apps/plugin-updater";
+import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
 import noosLogoUrl from "./assets/noos-logo.png";
 import "./styles.css";
 
 type AdapterStatus = "ready" | "partial" | "missing" | "needs_action" | "error";
 type AdapterKind = "capture" | "transport" | "consumer" | "workspace";
 type ModelModeId = "local" | "user-key" | "noos-cloud";
+type UpdateCheckMode = "manual" | "silent";
+type UpdateStatus = "idle" | "checking" | "up-to-date" | "available" | "downloading" | "restarting" | "error";
 
 interface AdapterCheck {
   label: string;
@@ -104,6 +106,7 @@ const kindLabels: Record<AdapterKind, string> = {
 const kindOrder: AdapterKind[] = ["capture", "transport", "workspace", "consumer"];
 const githubUrl = "https://github.com/futouyiba/noos-shuttle";
 const docsUrl = "https://futouyiba.github.io/noos-shuttle/";
+const silentUpdateCheckDelayMs = 2500;
 
 const modelModes: Array<{
   id: ModelModeId;
@@ -135,6 +138,15 @@ let currentHealth: HubHealth | null = null;
 let currentRecoveryStatus: SleepRecoveryStatus | null = null;
 let activeSection = "noos";
 let healthLoadInFlight = false;
+let updateStatus: UpdateStatus = "idle";
+let updateDialogVisible = false;
+let updateBannerVisible = false;
+let updateCheckInFlight = false;
+let updateMessage = "";
+let updateDownloadedBytes = 0;
+let updateTotalBytes: number | undefined;
+let availableUpdate: Update | null = null;
+let dismissedUpdateVersion: string | null = null;
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) {
@@ -147,6 +159,7 @@ void installSleepRecoveryListeners();
 void installUpdateMenuListeners();
 void loadHealth();
 void loadSleepRecoveryStatus();
+scheduleSilentUpdateCheck();
 
 function renderShell(): void {
   appElement.innerHTML = `
@@ -184,9 +197,11 @@ function renderShell(): void {
           <button type="button" data-action="doctor">运行 Doctor</button>
         </div>
       </header>
+      <section class="update-banner" id="update-banner" hidden></section>
       <section id="content" class="content">
         <div class="loading">读取本机 NOOS 状态...</div>
       </section>
+      <section id="update-dialog-root"></section>
       <section class="log" id="log" hidden>
         <header>
           <strong>运行输出</strong>
@@ -266,12 +281,18 @@ async function installUpdateMenuListeners(): Promise<void> {
   }
 
   await listen("noos://check-update", () => {
-    void checkForHubUpdate();
+    void checkForHubUpdate({ mode: "manual" });
   });
+}
 
-  await listen("noos://install-update", () => {
-    void installHubUpdate();
-  });
+function scheduleSilentUpdateCheck(): void {
+  if (!isTauriRuntime()) {
+    return;
+  }
+
+  window.setTimeout(() => {
+    void checkForHubUpdate({ mode: "silent" });
+  }, silentUpdateCheckDelayMs);
 }
 
 async function recoverFromSleep(reason: string): Promise<void> {
@@ -372,10 +393,7 @@ function renderCurrentSection(): void {
     button.addEventListener("click", () => runAction(button.dataset.run ?? ""));
   });
   content.querySelector('[data-action="check-update"]')?.addEventListener("click", () => {
-    void checkForHubUpdate();
-  });
-  content.querySelector('[data-action="install-update"]')?.addEventListener("click", () => {
-    void installHubUpdate();
+    void checkForHubUpdate({ mode: "manual" });
   });
 }
 
@@ -705,7 +723,6 @@ function renderConfig(health: HubHealth): string {
       </div>
       <div class="section-actions">
         <button type="button" data-action="check-update">检查更新</button>
-        <button type="button" data-action="install-update">安装更新</button>
       </div>
     </section>
     <div class="config-list">
@@ -859,25 +876,63 @@ async function runAction(action: string): Promise<void> {
   }
 }
 
-async function checkForHubUpdate(): Promise<void> {
+async function checkForHubUpdate({ mode }: { mode: UpdateCheckMode }): Promise<void> {
   if (!isTauriRuntime()) {
     setLog("浏览器预览模式不会检查 GitHub Release 更新。");
     return;
   }
+  if (updateCheckInFlight) {
+    if (mode === "manual") {
+      updateDialogVisible = true;
+      renderUpdateSurfaces();
+    }
+    return;
+  }
 
-  setLog("检查 NOOS Hub 更新...\n");
+  updateCheckInFlight = true;
+  updateStatus = "checking";
+  updateMessage = "Checking GitHub Releases for a signed NOOS Hub update.";
+  updateDownloadedBytes = 0;
+  updateTotalBytes = undefined;
+  if (mode === "manual") {
+    updateDialogVisible = true;
+    updateBannerVisible = false;
+    renderUpdateSurfaces();
+  }
+
   try {
     const update = await check();
     if (!update) {
-      await setUpdateMenuInstallEnabled(false);
-      setLog("NOOS Hub 已是最新版本。");
+      availableUpdate = null;
+      updateStatus = "up-to-date";
+      updateMessage = "NOOS Hub is up to date.";
+      updateBannerVisible = false;
+      if (mode === "manual") {
+        renderUpdateSurfaces();
+      }
       return;
     }
-    await setUpdateMenuInstallEnabled(true);
-    setLog(`发现新版本：${update.version}\n${update.body ?? ""}`.trim());
+    availableUpdate = update;
+    updateStatus = "available";
+    updateMessage = `Version ${update.version} is available.`;
+    if (mode === "silent") {
+      updateBannerVisible = dismissedUpdateVersion !== update.version;
+      updateDialogVisible = false;
+    } else {
+      updateBannerVisible = false;
+      updateDialogVisible = true;
+    }
+    renderUpdateSurfaces();
   } catch (error) {
-    await setUpdateMenuInstallEnabled(false);
-    setLog(`检查更新失败：${String(error)}`);
+    updateStatus = "error";
+    updateMessage = `Could not check for updates: ${String(error)}`;
+    updateBannerVisible = false;
+    if (mode === "manual") {
+      updateDialogVisible = true;
+      renderUpdateSurfaces();
+    }
+  } finally {
+    updateCheckInFlight = false;
   }
 }
 
@@ -887,44 +942,210 @@ async function installHubUpdate(): Promise<void> {
     return;
   }
 
-  setLog("检查并准备安装 NOOS Hub 更新...\n");
   try {
-    const update = await check();
+    const update = availableUpdate ?? (await check());
     if (!update) {
-      await setUpdateMenuInstallEnabled(false);
-      setLog("NOOS Hub 已是最新版本。");
+      availableUpdate = null;
+      updateStatus = "up-to-date";
+      updateMessage = "NOOS Hub is up to date.";
+      updateDialogVisible = true;
+      updateBannerVisible = false;
+      renderUpdateSurfaces();
       return;
     }
-    await setUpdateMenuInstallEnabled(true);
 
     let downloaded = 0;
-    await update.downloadAndInstall((event) => {
+    availableUpdate = update;
+    updateStatus = "downloading";
+    updateMessage = `Downloading NOOS Hub ${update.version}.`;
+    updateDialogVisible = true;
+    updateBannerVisible = false;
+    renderUpdateSurfaces();
+
+    await update.downloadAndInstall((event: DownloadEvent) => {
       if (event.event === "Started") {
         downloaded = 0;
-        setLog(`开始下载 ${update.version}，大小 ${formatBytes(event.data.contentLength)}。`);
+        updateDownloadedBytes = 0;
+        updateTotalBytes = event.data.contentLength;
+        updateMessage = `Downloading NOOS Hub ${update.version}.`;
       } else if (event.event === "Progress") {
         downloaded += event.data.chunkLength;
-        setLog(`正在下载 ${update.version}：${formatBytes(downloaded)}`);
+        updateDownloadedBytes = downloaded;
       } else if (event.event === "Finished") {
-        setLog(`更新 ${update.version} 已安装，正在重启 NOOS Hub...`);
+        updateStatus = "restarting";
+        updateMessage = `NOOS Hub ${update.version} is installed. Restarting now.`;
       }
+      renderUpdateSurfaces();
     });
     await relaunch();
   } catch (error) {
-    setLog(`安装更新失败：${String(error)}`);
+    updateStatus = "error";
+    updateMessage = `Could not install update: ${String(error)}`;
+    updateDialogVisible = true;
+    updateBannerVisible = false;
+    renderUpdateSurfaces();
   }
 }
 
-async function setUpdateMenuInstallEnabled(enabled: boolean): Promise<void> {
-  if (!isTauriRuntime()) {
+function renderUpdateSurfaces(): void {
+  renderUpdateBanner();
+  renderUpdateDialog();
+}
+
+function renderUpdateBanner(): void {
+  const banner = appElement.querySelector<HTMLElement>("#update-banner");
+  if (!banner) return;
+
+  const visible = updateBannerVisible && !!availableUpdate && updateStatus === "available";
+  banner.hidden = !visible;
+  if (!visible || !availableUpdate) {
+    banner.innerHTML = "";
     return;
   }
 
-  try {
-    await invoke("set_update_menu_install_enabled", { enabled });
-  } catch {
-    // Older dev builds may not have the native menu command yet.
+  banner.innerHTML = `
+    <div>
+      <strong>NOOS Hub ${escapeHtml(availableUpdate.version)} is available.</strong>
+      <span>${escapeHtml(updateSummary(availableUpdate))}</span>
+    </div>
+    <button type="button" data-update-action="show">View Update</button>
+    <button type="button" data-update-action="dismiss" aria-label="Dismiss update notice">x</button>
+  `;
+  banner.querySelector('[data-update-action="show"]')?.addEventListener("click", () => {
+    updateDialogVisible = true;
+    updateBannerVisible = false;
+    renderUpdateSurfaces();
+  });
+  banner.querySelector('[data-update-action="dismiss"]')?.addEventListener("click", () => {
+    dismissedUpdateVersion = availableUpdate?.version ?? null;
+    updateBannerVisible = false;
+    renderUpdateSurfaces();
+  });
+}
+
+function renderUpdateDialog(): void {
+  const root = appElement.querySelector<HTMLElement>("#update-dialog-root");
+  if (!root) return;
+
+  if (!updateDialogVisible) {
+    root.innerHTML = "";
+    return;
   }
+
+  const title =
+    updateStatus === "available"
+      ? `NOOS Hub ${availableUpdate?.version ?? ""} is available`
+      : updateStatus === "up-to-date"
+        ? "NOOS Hub is up to date"
+        : updateStatus === "downloading"
+          ? "Installing update"
+          : updateStatus === "restarting"
+            ? "Restarting NOOS Hub"
+            : updateStatus === "error"
+              ? "Update check failed"
+              : "Checking for updates";
+  const body = updateDialogBody();
+  const actions = updateDialogActions();
+
+  root.innerHTML = `
+    <div class="modal-backdrop" role="presentation">
+      <section class="update-dialog" role="dialog" aria-modal="true" aria-labelledby="update-dialog-title">
+        <header>
+          <div>
+            <p class="eyebrow">Software Update</p>
+            <h2 id="update-dialog-title">${escapeHtml(title)}</h2>
+          </div>
+          <button type="button" data-update-action="close" aria-label="Close update dialog">x</button>
+        </header>
+        <div class="update-dialog-body">${body}</div>
+        <footer>${actions}</footer>
+      </section>
+    </div>
+  `;
+
+  root.querySelector('[data-update-action="close"]')?.addEventListener("click", closeUpdateDialog);
+  root.querySelector('[data-update-action="later"]')?.addEventListener("click", closeUpdateDialog);
+  root.querySelector('[data-update-action="retry"]')?.addEventListener("click", () => {
+    void checkForHubUpdate({ mode: "manual" });
+  });
+  root.querySelector('[data-update-action="install"]')?.addEventListener("click", () => {
+    void installHubUpdate();
+  });
+}
+
+function updateDialogBody(): string {
+  if (updateStatus === "checking") {
+    return `<p>${escapeHtml(updateMessage)}</p><div class="update-progress update-progress--indeterminate"><span></span></div>`;
+  }
+  if (updateStatus === "up-to-date") {
+    return `<p>${escapeHtml(updateMessage)}</p>`;
+  }
+  if (updateStatus === "available" && availableUpdate) {
+    return `
+      <p>${escapeHtml(updateMessage)}</p>
+      ${availableUpdate.body ? `<pre>${escapeHtml(trimReleaseNotes(availableUpdate.body))}</pre>` : ""}
+    `;
+  }
+  if (updateStatus === "downloading") {
+    const progress = updateProgressPercent();
+    return `
+      <p>${escapeHtml(updateMessage)}</p>
+      <div class="update-progress"><span style="width: ${progress}%"></span></div>
+      <small>${escapeHtml(formatUpdateProgress())}</small>
+    `;
+  }
+  if (updateStatus === "restarting") {
+    return `<p>${escapeHtml(updateMessage)}</p>`;
+  }
+  if (updateStatus === "error") {
+    return `<p>${escapeHtml(updateMessage)}</p>`;
+  }
+  return `<p>${escapeHtml(updateMessage || "Checking for updates.")}</p>`;
+}
+
+function updateDialogActions(): string {
+  if (updateStatus === "available") {
+    return `
+      <button type="button" data-update-action="later">Later</button>
+      <button type="button" data-update-action="install">Install and Restart</button>
+    `;
+  }
+  if (updateStatus === "error") {
+    return `
+      <button type="button" data-update-action="later">Close</button>
+      <button type="button" data-update-action="retry">Retry</button>
+    `;
+  }
+  if (updateStatus === "checking" || updateStatus === "downloading" || updateStatus === "restarting") {
+    return `<button type="button" disabled>${escapeHtml(updateStatus === "checking" ? "Checking..." : "Working...")}</button>`;
+  }
+  return `<button type="button" data-update-action="later">Close</button>`;
+}
+
+function closeUpdateDialog(): void {
+  updateDialogVisible = false;
+  renderUpdateSurfaces();
+}
+
+function updateSummary(update: Update): string {
+  return update.body ? trimReleaseNotes(update.body).split("\n")[0] || "A signed update is ready to install." : "A signed update is ready to install.";
+}
+
+function trimReleaseNotes(value: string): string {
+  const trimmed = value.trim();
+  return trimmed.length > 900 ? `${trimmed.slice(0, 900).trim()}...` : trimmed;
+}
+
+function updateProgressPercent(): number {
+  if (!updateTotalBytes || updateTotalBytes <= 0) return 20;
+  return Math.max(4, Math.min(100, Math.round((updateDownloadedBytes / updateTotalBytes) * 100)));
+}
+
+function formatUpdateProgress(): string {
+  if (!updateTotalBytes) {
+    return `${formatBytes(updateDownloadedBytes)} downloaded`;
+  }
+  return `${formatBytes(updateDownloadedBytes)} of ${formatBytes(updateTotalBytes)}`;
 }
 
 function formatBytes(value?: number): string {
