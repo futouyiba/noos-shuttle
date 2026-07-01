@@ -140,6 +140,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (isFeishuPublishMarkdownMessage(message)) {
+    runFeishuPublishMarkdown(message)
+      .then(sendResponse)
+      .catch((error) => {
+        sendResponse({
+          ok: false,
+          status: "hub_unavailable",
+          errorCode: "hub_unavailable",
+          message: error instanceof Error ? error.message : "NOOS Hub publish action failed."
+        });
+      });
+    return true;
+  }
+
   return false;
 });
 
@@ -204,6 +218,18 @@ interface FeishuWikiActionMessage {
   url: string;
   title?: string;
   wikiProjectPath?: string;
+}
+
+interface FeishuPublishMarkdownMessage {
+  type: "NOOS_FEISHU_PUBLISH_MARKDOWN";
+  action: "publish_markdown";
+  sourceKey: string;
+  mode: "create" | "overwrite";
+  destinationKind: "drive_root" | "drive_folder" | "current_doc";
+  url: string;
+  title?: string;
+  folderToken?: string;
+  folderName?: string;
 }
 
 interface VaultStatusResponse {
@@ -327,6 +353,25 @@ function isFeishuWikiActionMessage(value: unknown): value is FeishuWikiActionMes
   );
 }
 
+function isFeishuPublishMarkdownMessage(value: unknown): value is FeishuPublishMarkdownMessage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const message = value as Partial<FeishuPublishMarkdownMessage>;
+  return (
+    message.type === "NOOS_FEISHU_PUBLISH_MARKDOWN" &&
+    message.action === "publish_markdown" &&
+    typeof message.sourceKey === "string" &&
+    (message.mode === "create" || message.mode === "overwrite") &&
+    (message.destinationKind === "drive_root" || message.destinationKind === "drive_folder" || message.destinationKind === "current_doc") &&
+    typeof message.url === "string" &&
+    (message.title === undefined || typeof message.title === "string") &&
+    (message.folderToken === undefined || typeof message.folderToken === "string") &&
+    (message.folderName === undefined || typeof message.folderName === "string")
+  );
+}
+
 async function getVaultRecentObjects(): Promise<unknown> {
   return getAuthorizedHubJson(HUB_VAULT_RECENT_URL);
 }
@@ -360,6 +405,27 @@ async function runFeishuWikiAction(message: FeishuWikiActionMessage): Promise<un
     force: message.action === "organize_wiki"
   });
   return normalizeHubPayload(payload);
+}
+
+async function runFeishuPublishMarkdown(message: FeishuPublishMarkdownMessage): Promise<unknown> {
+  const payload = await postAuthorizedHubJson(HUB_ACTION_URL, {
+    command: feishuPublishCommandForAction(message.action),
+    source_key: message.sourceKey,
+    mode: message.mode,
+    destination_kind: message.destinationKind,
+    url: message.url,
+    title: message.title,
+    folder_token: message.folderToken,
+    folder_name: message.folderName
+  });
+  return normalizeHubPayload(payload);
+}
+
+export function feishuPublishCommandForAction(action: FeishuPublishMarkdownMessage["action"]): string {
+  const commandByAction: Record<FeishuPublishMarkdownMessage["action"], string> = {
+    publish_markdown: "feishu.publishMarkdown"
+  };
+  return commandByAction[action];
 }
 
 export function feishuCommandForAction(action: FeishuWikiActionMessage["action"]): string {
@@ -442,7 +508,9 @@ function normalizeHubPayload(payload: unknown): unknown {
     errorCode: value.errorCode ?? value.error_code,
     projectPath: value.projectPath ?? value.project_path,
     wikiProjectPath: value.wikiProjectPath ?? value.wiki_project_path,
-    sourcePath: value.sourcePath ?? value.source_path
+    sourcePath: value.sourcePath ?? value.source_path,
+    documentUrl: value.documentUrl ?? value.document_url,
+    folderName: value.folderName ?? value.folder_name
   };
 }
 

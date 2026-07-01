@@ -329,6 +329,8 @@ describe("content script smoke flow", () => {
     await waitForShuttleText(page, "仅导出 MD");
     await waitForShuttleText(page, "打开 MD 源目录");
     await waitForShuttleText(page, "打开 Wiki 项目目录");
+    await waitForShuttleText(page, "NOOS 到飞书");
+    await waitForShuttleText(page, "选择 NOOS Markdown");
     await waitForShuttleText(page, "/tmp/noos/wiki/work");
 
     await clickShuttle(page, "[data-action='feishu-export-organize']");
@@ -359,7 +361,67 @@ describe("content script smoke flow", () => {
       action: "open_wiki_folder",
       url: "https://team.feishu.cn/docx/ABC123"
     });
+
+    await clickShuttle(page, "[data-action='feishu-select-markdown']");
+    await waitForShuttleText(page, "用于发布到飞书");
+    await clickShuttle(page, "[data-action='feed-selected-vault-object']");
+    await waitForShuttleText(page, "已选 Markdown");
+    await waitForShuttleText(page, "发布为新文档");
+    await waitForShuttleText(page, "覆盖当前文档");
+
+    await clickShuttle(page, "[data-action='feishu-publish-new']");
+    await waitForShuttleText(page, "published");
+    const publishRequest = await page.evaluate(() => (globalThis as unknown as { lastFeishuPublish?: unknown }).lastFeishuPublish);
+    expect(publishRequest).toMatchObject({
+      type: "NOOS_FEISHU_PUBLISH_MARKDOWN",
+      action: "publish_markdown",
+      sourceKey: "20260601-plan-md",
+      mode: "create",
+      destinationKind: "current_doc",
+      url: "https://team.feishu.cn/docx/ABC123"
+    });
+
+    await clickShuttle(page, "[data-action='feishu-overwrite-current']");
+    await waitForShuttleText(page, "确认覆盖当前飞书文档？");
+    await clickShuttle(page, "[data-action='confirm-feishu-overwrite']");
+    const overwriteRequest = await page.evaluate(() => (globalThis as unknown as { lastFeishuPublish?: unknown }).lastFeishuPublish);
+    expect(overwriteRequest).toMatchObject({
+      action: "publish_markdown",
+      sourceKey: "20260601-plan-md",
+      mode: "overwrite",
+      destinationKind: "current_doc"
+    });
     await page.close();
+  });
+
+  it("shows Feishu publish targets for root and child folders", async () => {
+    const rootPage = await newMockFeishuPage({
+      url: "https://team.feishu.cn/drive/home",
+      title: "飞书文档"
+    });
+
+    await clickShuttle(rootPage, ".surface-fab");
+    await clickShuttle(rootPage, "[data-action='feishu-select-markdown']");
+    await waitForShuttleText(rootPage, "用于发布到飞书");
+    await clickShuttle(rootPage, "[data-action='feed-selected-vault-object']");
+    await waitForShuttleText(rootPage, "发布到主文件夹");
+    expect(await rootPage.locator("[data-action='feishu-overwrite-current']").count()).toBe(0);
+    await rootPage.close();
+
+    const folderPage = await newMockFeishuPage({
+      url: "https://team.feishu.cn/drive/folder/fldABC123",
+      title: "Campaign Docs - 飞书云文档",
+      body: "<main><h1 data-noos-folder-title>Campaign Docs</h1></main>"
+    });
+
+    await clickShuttle(folderPage, ".surface-fab");
+    await clickShuttle(folderPage, "[data-action='feishu-select-markdown']");
+    await waitForShuttleText(folderPage, "用于发布到飞书");
+    await clickShuttle(folderPage, "[data-action='feed-selected-vault-object']");
+    await waitForShuttleText(folderPage, "Campaign Docs");
+    await waitForShuttleText(folderPage, "发布到当前文件夹");
+    expect(await folderPage.locator("[data-action='feishu-overwrite-current']").count()).toBe(0);
+    await folderPage.close();
   });
 });
 
@@ -582,7 +644,16 @@ async function newMockProjectPage(options: { withFileInput?: boolean } = {}): Pr
   return page;
 }
 
-async function newMockFeishuPage(): Promise<Page> {
+async function newMockFeishuPage(
+  options: {
+    url?: string;
+    title?: string;
+    body?: string;
+  } = {}
+): Promise<Page> {
+  const url = options.url ?? "https://team.feishu.cn/docx/ABC123";
+  const title = options.title ?? "Quarterly Plan - 飞书云文档";
+  const body = options.body ?? "<main><h1>Quarterly Plan</h1></main>";
   const page = await browser.newPage();
   await page.addInitScript(() => {
     window.localStorage.setItem("noos-shuttle-locale", "zh");
@@ -596,6 +667,34 @@ async function newMockFeishuPage(): Promise<Page> {
           if (message.type === "NOOS_GET_WIKI_TARGET") {
             return { ok: true, projectPath: "/tmp/noos/wiki/work", message: "Default Wiki project loaded." };
           }
+          if (message.type === "NOOS_GET_VAULT_RECENT" || message.type === "NOOS_BROWSE_VAULT") {
+            return {
+              ok: true,
+              objects: [
+                {
+                  object_type: "result",
+                  lookup_key: "20260601-plan-md",
+                  key: "20260601-plan-md",
+                  title: "NOOS Plan Markdown",
+                  path: "/tmp/noos/vault/results/inbox/20260601-plan-md.md"
+                }
+              ],
+              folders: [{ id: "latest", label: "Latest", kind: "system" }]
+            };
+          }
+          if (message.type === "NOOS_GET_VAULT_OBJECT") {
+            return {
+              ok: true,
+              object: {
+                object_type: "result",
+                lookup_key: "20260601-plan-md",
+                key: "20260601-plan-md",
+                title: "NOOS Plan Markdown",
+                path: "/tmp/noos/vault/results/inbox/20260601-plan-md.md",
+                content: "# NOOS Plan Markdown\n\nBody"
+              }
+            };
+          }
           if (message.type === "NOOS_FEISHU_WIKI_ACTION") {
             (globalThis as unknown as { lastFeishuAction?: unknown }).lastFeishuAction = message;
             const action = (message as { action?: string }).action;
@@ -605,6 +704,16 @@ async function newMockFeishuPage(): Promise<Page> {
               message: action?.startsWith("open_") ? "Opened folder." : "Feishu MD exported and Wiki organization queued.",
               sourcePath: "/tmp/noos/wiki/work/raw/sources/feishu/feishu-abc123.md",
               wikiProjectPath: "/tmp/noos/wiki/work"
+            };
+          }
+          if (message.type === "NOOS_FEISHU_PUBLISH_MARKDOWN") {
+            (globalThis as unknown as { lastFeishuPublish?: unknown }).lastFeishuPublish = message;
+            const mode = (message as { mode?: string }).mode;
+            return {
+              ok: true,
+              status: mode === "overwrite" ? "overwritten" : "published",
+              message: mode === "overwrite" ? "Current Feishu document overwritten." : "NOOS Markdown published.",
+              documentUrl: "https://team.feishu.cn/docx/PUBLISHED"
             };
           }
           return { ok: true };
@@ -618,17 +727,17 @@ async function newMockFeishuPage(): Promise<Page> {
     };
   });
 
-  await page.route("https://team.feishu.cn/docx/ABC123", (route) =>
+  await page.route("**/*", (route) =>
     route.fulfill({
       contentType: "text/html",
       body: `<!doctype html>
 <html>
-  <head><meta charset="utf-8"><title>Quarterly Plan - 飞书云文档</title></head>
-  <body><main><h1>Quarterly Plan</h1></main></body>
+  <head><meta charset="utf-8"><title>${title}</title></head>
+  <body>${body}</body>
 </html>`
     })
   );
-  await page.goto("https://team.feishu.cn/docx/ABC123");
+  await page.goto(url);
   await page.addScriptTag({ content: contentScript });
   return page;
 }

@@ -41,6 +41,7 @@ export interface ShuttleCopy {
   clearSelection: string;
   attachToCurrentChat: string;
   attachToProjectSources: string;
+  attachToFeishuPublish: string;
   attachSelectedToTarget: (count: number, targetLabel: string) => string;
   noVaultObjects: string;
   vaultObjectAttached: (key: string) => string;
@@ -81,12 +82,33 @@ export interface ShuttleCopy {
   defaultWikiProject: string;
   defaultWikiProjectUnknown: string;
   feishuDocumentTitle: string;
+  feishuPageLocation: string;
+  feishuRootFolder: string;
+  feishuCurrentFolder: string;
+  feishuExportSectionTitle: string;
   feishuExportMdAndOrganize: string;
   feishuExportMd: string;
   feishuOrganizeWiki: string;
   feishuOpenMarkdownFolder: string;
   feishuOpenWikiFolder: string;
   feishuMarkdownHint: string;
+  feishuPublishSectionTitle: string;
+  feishuPublishSectionHint: string;
+  feishuSelectMarkdown: string;
+  feishuChangeMarkdown: string;
+  feishuSelectedMarkdown: string;
+  feishuMarkdownSelected: (key: string) => string;
+  feishuPublishNewDocument: string;
+  feishuPublishToRootFolder: string;
+  feishuPublishToCurrentFolder: string;
+  feishuOverwriteCurrentDocument: string;
+  feishuOverwriteConfirmTitle: string;
+  feishuOverwriteConfirmMessage: string;
+  feishuPublishHint: string;
+  feishuPublishNeedsSource: string;
+  feishuPublishFinished: (status: string, message: string) => string;
+  feishuPublishNeedsAuth: string;
+  feishuPublishFailed: string;
   feishuActionFinished: (status: string, message: string) => string;
   feishuActionNeedsAuth: string;
   feishuActionFailed: string;
@@ -172,6 +194,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     clearSelection: "Clear selection",
     attachToCurrentChat: "Attach to current chat",
     attachToProjectSources: "Attach to Project sources",
+    attachToFeishuPublish: "Use for Feishu publish",
     attachSelectedToTarget: (count, targetLabel) => (count > 1 ? `${targetLabel} (${count})` : targetLabel),
     noVaultObjects: "No recent NOOS Vault objects found.",
     vaultObjectAttached: (key) => `Attached NOOS object: ${key}`,
@@ -213,12 +236,33 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     defaultWikiProject: "Target Wiki",
     defaultWikiProjectUnknown: "Hub default Wiki project",
     feishuDocumentTitle: "Current document",
+    feishuPageLocation: "Current location",
+    feishuRootFolder: "Main folder",
+    feishuCurrentFolder: "Current folder",
+    feishuExportSectionTitle: "Feishu to NOOS",
     feishuExportMdAndOrganize: "Export MD & Organize Wiki",
     feishuExportMd: "Export MD Only",
     feishuOrganizeWiki: "Organize Wiki",
     feishuOpenMarkdownFolder: "Open MD Sources",
     feishuOpenWikiFolder: "Open Wiki Project",
     feishuMarkdownHint: "Export MD overwrites the stable .md source. Organize Wiki queues that source for Wiki organization.",
+    feishuPublishSectionTitle: "NOOS to Feishu",
+    feishuPublishSectionHint: "Choose one NOOS Markdown source and publish it as a Feishu document.",
+    feishuSelectMarkdown: "Choose NOOS Markdown",
+    feishuChangeMarkdown: "Change Markdown",
+    feishuSelectedMarkdown: "Selected Markdown",
+    feishuMarkdownSelected: (key) => `Selected NOOS Markdown: ${key}`,
+    feishuPublishNewDocument: "Publish as New Document",
+    feishuPublishToRootFolder: "Publish to Main Folder",
+    feishuPublishToCurrentFolder: "Publish to Current Folder",
+    feishuOverwriteCurrentDocument: "Overwrite Current Document",
+    feishuOverwriteConfirmTitle: "Overwrite current Feishu document?",
+    feishuOverwriteConfirmMessage: "This will replace the entire current Feishu document with the selected NOOS Markdown content.",
+    feishuPublishHint: "Publish converts the Markdown body into Feishu document content, not an attachment.",
+    feishuPublishNeedsSource: "Choose a NOOS Markdown source first.",
+    feishuPublishFinished: (status, message) => `${status}: ${message}`,
+    feishuPublishNeedsAuth: "Feishu authorization is required in NOOS Hub.",
+    feishuPublishFailed: "Feishu publish failed.",
     feishuActionFinished: (status, message) => `${status}: ${message}`,
     feishuActionNeedsAuth: "Feishu authorization is required in NOOS Hub.",
     feishuActionFailed: "Feishu action failed.",
@@ -293,6 +337,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     clearSelection: "清空选择",
     attachToCurrentChat: "附加到当前对话",
     attachToProjectSources: "附加到 Project 源",
+    attachToFeishuPublish: "用于发布到飞书",
     attachSelectedToTarget: (count, targetLabel) => (count > 1 ? `${targetLabel}（${count}）` : targetLabel),
     noVaultObjects: "没有找到最近的 NOOS Vault 对象。",
     vaultObjectAttached: (key) => `已附加 NOOS 对象：${key}`,
@@ -333,12 +378,33 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     defaultWikiProject: "目标 Wiki",
     defaultWikiProjectUnknown: "Hub 默认 Wiki 项目",
     feishuDocumentTitle: "当前文档",
+    feishuPageLocation: "当前位置",
+    feishuRootFolder: "主文件夹",
+    feishuCurrentFolder: "当前文件夹",
+    feishuExportSectionTitle: "飞书到 NOOS",
     feishuExportMdAndOrganize: "导出 MD 并整理 Wiki",
     feishuExportMd: "仅导出 MD",
     feishuOrganizeWiki: "整理 Wiki",
     feishuOpenMarkdownFolder: "打开 MD 源目录",
     feishuOpenWikiFolder: "打开 Wiki 项目目录",
     feishuMarkdownHint: "导出 MD 会覆盖当前飞书文档对应的稳定 .md source；整理 Wiki 会将该 source 加入整理队列。",
+    feishuPublishSectionTitle: "NOOS 到飞书",
+    feishuPublishSectionHint: "选择一个 NOOS Markdown 源，并发布为飞书文档正文。",
+    feishuSelectMarkdown: "选择 NOOS Markdown",
+    feishuChangeMarkdown: "更换 Markdown",
+    feishuSelectedMarkdown: "已选 Markdown",
+    feishuMarkdownSelected: (key) => `已选择 NOOS Markdown：${key}`,
+    feishuPublishNewDocument: "发布为新文档",
+    feishuPublishToRootFolder: "发布到主文件夹",
+    feishuPublishToCurrentFolder: "发布到当前文件夹",
+    feishuOverwriteCurrentDocument: "覆盖当前文档",
+    feishuOverwriteConfirmTitle: "确认覆盖当前飞书文档？",
+    feishuOverwriteConfirmMessage: "这会用选中的 NOOS Markdown 全文替换当前飞书文档内容。",
+    feishuPublishHint: "发布会把 Markdown 正文转换成飞书文档内容，不是上传附件。",
+    feishuPublishNeedsSource: "请先选择一个 NOOS Markdown 源。",
+    feishuPublishFinished: (status, message) => `${status}：${message}`,
+    feishuPublishNeedsAuth: "需要先在 NOOS Hub 完成飞书授权。",
+    feishuPublishFailed: "飞书发布失败。",
     feishuActionFinished: (status, message) => `${status}：${message}`,
     feishuActionNeedsAuth: "需要先在 NOOS Hub 完成飞书授权。",
     feishuActionFailed: "飞书动作执行失败。",

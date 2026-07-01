@@ -17,8 +17,11 @@ import styles from "./styles.css?inline";
 type ShuttleState = "idle" | "prompt-ready" | "waiting" | "captured" | "needs-choice" | "warning" | "saved" | "error";
 type DeliveryMode = "copy" | "download" | "vault";
 type VaultRoute = "checking" | "hub" | "needs-repair" | "mirror";
-type VaultFeedTarget = "chat" | "project";
+type VaultFeedTarget = "chat" | "project" | "feishu_publish";
 type SurfaceKind = "chatgpt" | "feishu" | "none";
+type FeishuPageContextKind = "doc" | "drive_root" | "drive_folder";
+type FeishuPublishMode = "create" | "overwrite";
+type FeishuPublishDestinationKind = "current_doc" | "drive_root" | "drive_folder";
 type FeishuWikiAction =
   | "export_md"
   | "organize_wiki"
@@ -31,6 +34,7 @@ type ModalState =
   | { kind: "choose-thread" }
   | { kind: "choose-crystal" }
   | { kind: "vault-picker" }
+  | { kind: "confirm-feishu-overwrite" }
   | null;
 
 interface ViewState {
@@ -53,6 +57,7 @@ interface ViewState {
   vaultBrowseFolder: string;
   vaultBrowseQuery: string;
   selectedVaultObjectKeys: string[];
+  selectedPublishSource: VaultObjectContent | null;
   wikiProjectPath: string;
   modal: ModalState;
 }
@@ -108,6 +113,16 @@ interface FeishuActionResponse {
   source_path?: string;
   wikiProjectPath?: string;
   wiki_project_path?: string;
+  documentUrl?: string;
+  document_url?: string;
+  folderName?: string;
+  folder_name?: string;
+}
+
+interface FeishuPageContext {
+  kind: FeishuPageContextKind;
+  label: string;
+  folderToken?: string;
 }
 
 interface ActiveWait {
@@ -180,6 +195,7 @@ const viewState: ViewState = {
   vaultBrowseFolder: "latest",
   vaultBrowseQuery: "",
   selectedVaultObjectKeys: [],
+  selectedPublishSource: null,
   wikiProjectPath: "",
   modal: null
 };
@@ -393,30 +409,87 @@ function renderChatGptSurface(selectedThread: NoosThread | undefined, copy: (typ
 }
 
 function renderFeishuSurface(copy: (typeof COPY)[ShuttleLocale]): string {
+  const pageContext = getFeishuPageContext();
   const documentTitle = feishuDocumentTitle();
   const target = viewState.wikiProjectPath || copy.defaultWikiProjectUnknown;
+  const contextLabel =
+    pageContext?.kind === "drive_root"
+      ? copy.feishuRootFolder
+      : pageContext?.kind === "drive_folder"
+        ? pageContext.label || copy.feishuCurrentFolder
+        : documentTitle;
   return `<div class="surface-panel">
     <div class="surface-summary">
-      <span>${escapeHtml(copy.feishuDocumentTitle)}</span>
-      <strong>${escapeHtml(documentTitle)}</strong>
+      <span>${escapeHtml(pageContext?.kind === "doc" ? copy.feishuDocumentTitle : copy.feishuPageLocation)}</span>
+      <strong>${escapeHtml(contextLabel)}</strong>
     </div>
-    <div class="surface-summary">
-      <span>${escapeHtml(copy.defaultWikiProject)}</span>
-      <strong>${escapeHtml(target)}</strong>
-    </div>
-    <div class="primary-actions">
-      <button class="primary-action" type="button" data-action="feishu-export-organize">${escapeHtml(copy.feishuExportMdAndOrganize)}</button>
-      <div class="surface-secondary-actions">
-        <button class="secondary-action" type="button" data-action="feishu-export-md">${escapeHtml(copy.feishuExportMd)}</button>
-        <button class="secondary-action" type="button" data-action="feishu-organize-wiki">${escapeHtml(copy.feishuOrganizeWiki)}</button>
-      </div>
-    </div>
-    <div class="surface-folder-actions">
-      <button type="button" data-action="feishu-open-markdown-folder">${escapeHtml(copy.feishuOpenMarkdownFolder)}</button>
-      <button type="button" data-action="feishu-open-wiki-folder">${escapeHtml(copy.feishuOpenWikiFolder)}</button>
-    </div>
-    <p class="surface-hint">${escapeHtml(copy.feishuMarkdownHint)}</p>
+    ${
+      pageContext?.kind === "doc"
+        ? `<section class="surface-section">
+            <div class="surface-section-title">${escapeHtml(copy.feishuExportSectionTitle)}</div>
+            <div class="surface-summary">
+              <span>${escapeHtml(copy.defaultWikiProject)}</span>
+              <strong>${escapeHtml(target)}</strong>
+            </div>
+            <div class="primary-actions">
+              <button class="primary-action" type="button" data-action="feishu-export-organize">${escapeHtml(copy.feishuExportMdAndOrganize)}</button>
+              <div class="surface-secondary-actions">
+                <button class="secondary-action" type="button" data-action="feishu-export-md">${escapeHtml(copy.feishuExportMd)}</button>
+                <button class="secondary-action" type="button" data-action="feishu-organize-wiki">${escapeHtml(copy.feishuOrganizeWiki)}</button>
+              </div>
+            </div>
+            <div class="surface-folder-actions">
+              <button type="button" data-action="feishu-open-markdown-folder">${escapeHtml(copy.feishuOpenMarkdownFolder)}</button>
+              <button type="button" data-action="feishu-open-wiki-folder">${escapeHtml(copy.feishuOpenWikiFolder)}</button>
+            </div>
+            <p class="surface-hint">${escapeHtml(copy.feishuMarkdownHint)}</p>
+          </section>`
+        : ""
+    }
+    ${renderFeishuPublishSection(pageContext, copy)}
   </div>`;
+}
+
+function renderFeishuPublishSection(pageContext: FeishuPageContext | null, copy: (typeof COPY)[ShuttleLocale]): string {
+  const selected = viewState.selectedPublishSource;
+  const selectedTitle = selected?.title || selected?.name || selected?.lookup_key || selected?.key || "";
+  const selectedPath = selected?.path || selected?.lookup_key || selected?.key || "";
+  const publishLabel =
+    pageContext?.kind === "drive_root"
+      ? copy.feishuPublishToRootFolder
+      : pageContext?.kind === "drive_folder"
+        ? copy.feishuPublishToCurrentFolder
+        : copy.feishuPublishNewDocument;
+  return `<section class="surface-section surface-section--publish">
+    <div class="surface-section-title">${escapeHtml(copy.feishuPublishSectionTitle)}</div>
+    ${
+      selected
+        ? `<div class="surface-summary">
+            <span>${escapeHtml(copy.feishuSelectedMarkdown)}</span>
+            <strong>${escapeHtml(selectedTitle || selectedPath)}</strong>
+            ${selectedPath ? `<small>${escapeHtml(selectedPath)}</small>` : ""}
+          </div>`
+        : `<p class="surface-hint">${escapeHtml(copy.feishuPublishSectionHint)}</p>`
+    }
+    <div class="primary-actions">
+      ${
+        selected
+          ? `<button class="primary-action" type="button" data-action="feishu-publish-new">${escapeHtml(publishLabel)}</button>
+             ${
+               pageContext?.kind === "doc"
+                 ? `<button class="danger-action" type="button" data-action="feishu-overwrite-current">${escapeHtml(copy.feishuOverwriteCurrentDocument)}</button>`
+                 : ""
+             }`
+          : `<button class="primary-action" type="button" data-action="feishu-select-markdown">${escapeHtml(copy.feishuSelectMarkdown)}</button>`
+      }
+      ${
+        selected
+          ? `<button class="secondary-action" type="button" data-action="feishu-select-markdown">${escapeHtml(copy.feishuChangeMarkdown)}</button>`
+          : ""
+      }
+    </div>
+    <p class="surface-hint">${escapeHtml(copy.feishuPublishHint)}</p>
+  </section>`;
 }
 
 function renderVaultRoute(copy: (typeof COPY)[ShuttleLocale]): string {
@@ -443,7 +516,8 @@ function renderVaultImport(): string {
   const results = viewState.vaultObjects.filter((item) => item.object_type === "result").slice(0, 2);
   const newest = viewState.vaultObjects.slice(0, 2);
   const selectedKeys = selectedVaultObjectKeys();
-  const targetLabel = vaultFeedTarget === "project" ? copy.attachToProjectSources : copy.attachToCurrentChat;
+  const targetLabel = vaultTargetLabel(copy);
+  const canUseSelection = canUseVaultSelection(selectedKeys);
 
   return `<section class="vault-import" aria-label="${escapeAttribute(copy.importFromNoos)}">
     <header>
@@ -466,13 +540,30 @@ function renderVaultImport(): string {
           </div>
           <footer>
             <span class="shuttle-signature">FuTou 2026</span>
-            <button type="button" data-action="feed-selected-vault-object" ${selectedKeys.length ? "" : "disabled"}>${escapeHtml(
+            <button type="button" data-action="feed-selected-vault-object" ${canUseSelection ? "" : "disabled"}>${escapeHtml(
               selectedKeys.length > 1 ? copy.attachSelectedToTarget(selectedKeys.length, targetLabel) : targetLabel
             )}</button>
           </footer>`
         : `<div class="vault-import-empty">${escapeHtml(copy.noVaultObjects)}</div>`
     }
   </section>`;
+}
+
+function vaultTargetLabel(copy: (typeof COPY)[ShuttleLocale]): string {
+  if (vaultFeedTarget === "project") {
+    return copy.attachToProjectSources;
+  }
+  if (vaultFeedTarget === "feishu_publish") {
+    return copy.attachToFeishuPublish;
+  }
+  return copy.attachToCurrentChat;
+}
+
+function canUseVaultSelection(selectedKeys: string[]): boolean {
+  if (vaultFeedTarget === "feishu_publish") {
+    return selectedKeys.length === 1;
+  }
+  return selectedKeys.length > 0;
 }
 
 function renderVaultObjectGroup(title: string, objects: VaultObjectSummary[], selectedKeys: string[]): string {
@@ -647,7 +738,8 @@ function renderModal(): string {
 
   if (modal.kind === "vault-picker") {
     const selectedKeys = selectedVaultObjectKeys();
-    const targetLabel = vaultFeedTarget === "project" ? copy.attachToProjectSources : copy.attachToCurrentChat;
+    const targetLabel = vaultTargetLabel(copy);
+    const canUseSelection = canUseVaultSelection(selectedKeys);
 
     return `<div class="modal-backdrop" role="presentation">
       <section class="modal modal--wide" role="dialog" aria-modal="true" aria-label="${copy.browseVaultObjects}">
@@ -677,9 +769,25 @@ function renderModal(): string {
         </div>
         <footer class="modal-actions">
           <button type="button" data-action="clear-vault-selection">${copy.clearSelection}</button>
-          <button class="modal-primary-action" type="button" data-action="feed-selected-vault-object" ${
-            selectedKeys.length ? "" : "disabled"
-          }>${escapeHtml(copy.attachSelectedToTarget(selectedKeys.length, targetLabel))}</button>
+          <button class="modal-primary-action" type="button" data-action="feed-selected-vault-object" ${canUseSelection ? "" : "disabled"}>${escapeHtml(
+            copy.attachSelectedToTarget(selectedKeys.length, targetLabel)
+          )}</button>
+        </footer>
+      </section>
+    </div>`;
+  }
+
+  if (modal.kind === "confirm-feishu-overwrite") {
+    return `<div class="modal-backdrop" role="presentation">
+      <section class="modal" role="dialog" aria-modal="true" aria-label="${escapeAttribute(copy.feishuOverwriteConfirmTitle)}">
+        <header class="modal-header">
+          <strong>${escapeHtml(copy.feishuOverwriteConfirmTitle)}</strong>
+          <button class="icon-button" type="button" data-action="modal-close" aria-label="${copy.close}">x</button>
+        </header>
+        <p>${escapeHtml(copy.feishuOverwriteConfirmMessage)}</p>
+        <footer class="modal-actions">
+          <button type="button" data-action="modal-close">${copy.cancel}</button>
+          <button class="modal-danger-action" type="button" data-action="confirm-feishu-overwrite">${copy.feishuOverwriteCurrentDocument}</button>
         </footer>
       </section>
     </div>`;
@@ -880,6 +988,40 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
 
   if (action === "feishu-open-wiki-folder") {
     await runFeishuAction(app, "open_wiki_folder");
+    return;
+  }
+
+  if (action === "feishu-select-markdown") {
+    vaultFeedTarget = "feishu_publish";
+    viewState.selectedVaultObjectKeys = viewState.selectedPublishSource ? [vaultObjectKey(viewState.selectedPublishSource)].filter(Boolean) : [];
+    viewState.message = copy.feishuSelectMarkdown;
+    openGlobalPanel();
+    viewState.modal = { kind: "vault-picker" };
+    render(app);
+    await refreshVaultObjects(app, { preserveSelection: true });
+    return;
+  }
+
+  if (action === "feishu-publish-new") {
+    await runFeishuPublish(app, "create");
+    return;
+  }
+
+  if (action === "feishu-overwrite-current") {
+    if (!viewState.selectedPublishSource) {
+      viewState.message = copy.feishuPublishNeedsSource;
+      openSurfacePanel();
+      render(app);
+      return;
+    }
+    viewState.modal = { kind: "confirm-feishu-overwrite" };
+    render(app);
+    return;
+  }
+
+  if (action === "confirm-feishu-overwrite") {
+    viewState.modal = null;
+    await runFeishuPublish(app, "overwrite");
     return;
   }
 
@@ -2138,21 +2280,77 @@ function isSupportedChatHost(host: string): boolean {
 }
 
 function getCurrentSurface(): SurfaceKind {
-  const host = location.hostname.toLowerCase();
-  if (isFeishuDocumentPage(host, location.pathname)) {
+  if (getFeishuPageContext()) {
     return "feishu";
   }
+  const host = location.hostname.toLowerCase();
   if (isSupportedChatHost(host)) {
     return "chatgpt";
   }
   return "none";
 }
 
+function getFeishuPageContext(): FeishuPageContext | null {
+  const host = location.hostname.toLowerCase();
+  const pathname = location.pathname;
+  if (!isFeishuHost(host)) {
+    return null;
+  }
+  if (isFeishuDocumentPage(host, pathname)) {
+    return { kind: "doc", label: feishuDocumentTitle() };
+  }
+
+  const folderToken = feishuFolderTokenFromLocation();
+  if (folderToken) {
+    return { kind: "drive_folder", label: feishuFolderTitle(), folderToken };
+  }
+  if (isFeishuDriveRootPage(pathname)) {
+    return { kind: "drive_root", label: COPY[viewState.locale].feishuRootFolder };
+  }
+  return null;
+}
+
+function isFeishuHost(host: string): boolean {
+  return ["feishu.cn", "larksuite.com"].some((candidate) => host === candidate || host.endsWith(`.${candidate}`));
+}
+
 function isFeishuDocumentPage(host: string, pathname: string): boolean {
-  if (!["feishu.cn", "larksuite.com"].some((candidate) => host === candidate || host.endsWith(`.${candidate}`))) {
+  if (!isFeishuHost(host)) {
     return false;
   }
   return /\/(docx|wiki|sheets|base|bitable)\//i.test(pathname);
+}
+
+function isFeishuDriveRootPage(pathname: string): boolean {
+  return pathname === "/" || /^\/(drive|space|docs)(\/(home|my|personal|files)?)?\/?$/i.test(pathname);
+}
+
+function feishuFolderTokenFromLocation(): string | undefined {
+  const pathname = location.pathname;
+  const pathMatch = pathname.match(/\/(?:drive|space|docs)\/(?:folder|folders)\/([^/?#]+)/i) || pathname.match(/\/folder\/([^/?#]+)/i);
+  const token = pathMatch?.[1] || new URLSearchParams(location.search).get("folder_token") || new URLSearchParams(location.search).get("folderToken");
+  return token?.trim() || undefined;
+}
+
+function feishuFolderTitle(): string {
+  return (
+    document.querySelector<HTMLElement>("[data-noos-folder-title]")?.innerText.trim() ||
+    document.querySelector<HTMLElement>("[aria-current='page']")?.textContent?.trim() ||
+    feishuDocumentTitle()
+  );
+}
+
+function feishuPublishDestinationKind(pageContext: FeishuPageContext, mode: FeishuPublishMode): FeishuPublishDestinationKind {
+  if (mode === "overwrite") {
+    return "current_doc";
+  }
+  if (pageContext.kind === "drive_folder") {
+    return "drive_folder";
+  }
+  if (pageContext.kind === "drive_root") {
+    return "drive_root";
+  }
+  return "current_doc";
 }
 
 function surfaceTitle(surface: SurfaceKind, copy: (typeof COPY)[ShuttleLocale]): string {
@@ -2170,6 +2368,10 @@ function surfaceSubtitle(surface: SurfaceKind, copy: (typeof COPY)[ShuttleLocale
     return viewState.message;
   }
   if (viewState.state === "idle" || viewState.message === copy.ready || viewState.message === copy.conversationChanged) {
+    const pageContext = getFeishuPageContext();
+    if (pageContext && pageContext.kind !== "doc") {
+      return copy.feishuPublishSectionHint;
+    }
     return copy.feishuSurfaceReady;
   }
   return viewState.message;
@@ -2451,6 +2653,92 @@ async function runFeishuAction(app: HTMLElement, action: FeishuWikiAction): Prom
   render(app);
 }
 
+async function runFeishuPublish(app: HTMLElement, mode: FeishuPublishMode): Promise<void> {
+  const copy = COPY[viewState.locale];
+  const source = viewState.selectedPublishSource;
+  const pageContext = getFeishuPageContext();
+  if (!source) {
+    viewState.state = "warning";
+    viewState.message = copy.feishuPublishNeedsSource;
+    openSurfacePanel();
+    render(app);
+    return;
+  }
+  if (!pageContext) {
+    viewState.state = "error";
+    viewState.message = copy.feishuActionFailed;
+    render(app);
+    return;
+  }
+  if (mode === "overwrite" && pageContext.kind !== "doc") {
+    viewState.state = "error";
+    viewState.message = copy.feishuActionFailed;
+    render(app);
+    return;
+  }
+
+  const destinationKind = feishuPublishDestinationKind(pageContext, mode);
+  viewState.state = "waiting";
+  viewState.message = copy.feishuPublishHint;
+  openSurfacePanel();
+  render(app);
+
+  let response: FeishuActionResponse;
+  try {
+    response = await sendExtensionMessage<
+      {
+        type: "NOOS_FEISHU_PUBLISH_MARKDOWN";
+        action: "publish_markdown";
+        sourceKey: string;
+        mode: FeishuPublishMode;
+        destinationKind: FeishuPublishDestinationKind;
+        url: string;
+        title?: string;
+        folderToken?: string;
+        folderName?: string;
+      },
+      FeishuActionResponse
+    >({
+      type: "NOOS_FEISHU_PUBLISH_MARKDOWN",
+      action: "publish_markdown",
+      sourceKey: vaultObjectKey(source),
+      mode,
+      destinationKind,
+      url: location.href,
+      title: feishuDocumentTitle(),
+      folderToken: pageContext.folderToken,
+      folderName: pageContext.label
+    });
+  } catch (error) {
+    response = {
+      ok: false,
+      message: error instanceof Error ? error.message : copy.feishuPublishFailed
+    };
+  }
+
+  const errorCode = response.errorCode || response.error_code;
+  if (!response.ok) {
+    viewState.state = errorCode === "needs_auth" ? "warning" : "error";
+    viewState.message = errorCode === "needs_auth" ? copy.feishuPublishNeedsAuth : response.message || copy.feishuPublishFailed;
+    openSurfacePanel();
+    render(app);
+    return;
+  }
+
+  viewState.state = "saved";
+  viewState.message = copy.feishuPublishFinished(response.status || "published", response.message || "");
+  const documentUrl = response.documentUrl || response.document_url;
+  if (documentUrl) {
+    viewState.modal = {
+      kind: "success",
+      title: copy.deliverySuccessTitle,
+      message: `${viewState.message} ${documentUrl}`
+    };
+  }
+  openSurfacePanel();
+  render(app);
+}
+
 async function feedSelectedVaultObject(app: HTMLElement): Promise<void> {
   const copy = COPY[viewState.locale];
   const lookupKeys = selectedVaultObjectKeys();
@@ -2460,20 +2748,14 @@ async function feedSelectedVaultObject(app: HTMLElement): Promise<void> {
     return;
   }
 
+  if (vaultFeedTarget === "feishu_publish") {
+    await selectVaultObjectForFeishuPublish(app, lookupKeys[0]);
+    return;
+  }
+
   const objects: VaultObjectContent[] = [];
   for (const lookupKey of lookupKeys) {
-    let response: { ok?: boolean; object?: VaultObjectContent; message?: string };
-    try {
-      response = await sendExtensionMessage<
-        { type: "NOOS_GET_VAULT_OBJECT"; lookupKey: string },
-        { ok?: boolean; object?: VaultObjectContent; message?: string }
-      >({ type: "NOOS_GET_VAULT_OBJECT", lookupKey });
-    } catch (error) {
-      response = {
-        ok: false,
-        message: error instanceof Error ? error.message : copy.vaultUnavailable
-      };
-    }
+    const response = await loadVaultObject(lookupKey, copy);
 
     if (!response.ok || !response.object) {
       viewState.state = "error";
@@ -2545,7 +2827,43 @@ async function feedSelectedVaultObject(app: HTMLElement): Promise<void> {
   render(app);
 }
 
-function vaultObjectKey(object: VaultObjectSummary | undefined): string {
+async function selectVaultObjectForFeishuPublish(app: HTMLElement, lookupKey: string): Promise<void> {
+  const copy = COPY[viewState.locale];
+  const response = await loadVaultObject(lookupKey, copy);
+  if (!response.ok || !response.object) {
+    viewState.state = "error";
+    viewState.message = response.message ?? copy.vaultUnavailable;
+    render(app);
+    return;
+  }
+
+  viewState.selectedPublishSource = response.object;
+  viewState.selectedVaultObjectKeys = [lookupKey];
+  viewState.state = "saved";
+  viewState.message = copy.feishuMarkdownSelected(lookupKey);
+  viewState.modal = null;
+  openSurfacePanel();
+  render(app);
+}
+
+async function loadVaultObject(
+  lookupKey: string,
+  copy: (typeof COPY)[ShuttleLocale]
+): Promise<{ ok?: boolean; object?: VaultObjectContent; message?: string }> {
+  try {
+    return await sendExtensionMessage<
+      { type: "NOOS_GET_VAULT_OBJECT"; lookupKey: string },
+      { ok?: boolean; object?: VaultObjectContent; message?: string }
+    >({ type: "NOOS_GET_VAULT_OBJECT", lookupKey });
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : copy.vaultUnavailable
+    };
+  }
+}
+
+function vaultObjectKey(object: VaultObjectSummary | VaultObjectContent | undefined): string {
   return object?.lookup_key || object?.key || object?.name?.replace(/\.md$/i, "") || "";
 }
 
