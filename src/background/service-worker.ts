@@ -193,7 +193,14 @@ interface WikiTargetMessage {
 
 interface FeishuWikiActionMessage {
   type: "NOOS_FEISHU_WIKI_ACTION";
-  action: "sync_markdown" | "organize_wiki" | "sync_markdown_and_organize";
+  action:
+    | "export_md"
+    | "organize_wiki"
+    | "export_md_and_organize"
+    | "open_markdown_folder"
+    | "open_wiki_folder"
+    | "sync_markdown"
+    | "sync_markdown_and_organize";
   url: string;
   title?: string;
   wikiProjectPath?: string;
@@ -307,7 +314,13 @@ function isFeishuWikiActionMessage(value: unknown): value is FeishuWikiActionMes
   const message = value as Partial<FeishuWikiActionMessage>;
   return (
     message.type === "NOOS_FEISHU_WIKI_ACTION" &&
-    (message.action === "sync_markdown" || message.action === "organize_wiki" || message.action === "sync_markdown_and_organize") &&
+    (message.action === "export_md" ||
+      message.action === "sync_markdown" ||
+      message.action === "organize_wiki" ||
+      message.action === "export_md_and_organize" ||
+      message.action === "sync_markdown_and_organize" ||
+      message.action === "open_markdown_folder" ||
+      message.action === "open_wiki_folder") &&
     typeof message.url === "string" &&
     (message.title === undefined || typeof message.title === "string") &&
     (message.wikiProjectPath === undefined || typeof message.wikiProjectPath === "string")
@@ -339,19 +352,27 @@ async function getWikiTarget(): Promise<unknown> {
 }
 
 async function runFeishuWikiAction(message: FeishuWikiActionMessage): Promise<unknown> {
-  const commandByAction: Record<FeishuWikiActionMessage["action"], string> = {
-    sync_markdown: "feishu.syncMarkdown",
-    organize_wiki: "wiki.organizeSource",
-    sync_markdown_and_organize: "feishu.syncMarkdownAndOrganize"
-  };
   const payload = await postAuthorizedHubJson(HUB_ACTION_URL, {
-    command: commandByAction[message.action],
+    command: feishuCommandForAction(message.action),
     url: message.url,
     title: message.title,
     wiki_project_path: message.wikiProjectPath,
     force: message.action === "organize_wiki"
   });
   return normalizeHubPayload(payload);
+}
+
+export function feishuCommandForAction(action: FeishuWikiActionMessage["action"]): string {
+  const commandByAction: Record<FeishuWikiActionMessage["action"], string> = {
+    export_md: "feishu.exportMd",
+    sync_markdown: "feishu.syncMarkdown",
+    organize_wiki: "wiki.organizeSource",
+    export_md_and_organize: "feishu.exportMdAndOrganize",
+    sync_markdown_and_organize: "feishu.syncMarkdownAndOrganize",
+    open_markdown_folder: "wiki.openFeishuSourceFolder",
+    open_wiki_folder: "wiki.openProjectFolder"
+  };
+  return commandByAction[action];
 }
 
 async function getAuthorizedHubJson(url: string): Promise<unknown> {

@@ -19,7 +19,12 @@ type DeliveryMode = "copy" | "download" | "vault";
 type VaultRoute = "checking" | "hub" | "needs-repair" | "mirror";
 type VaultFeedTarget = "chat" | "project";
 type SurfaceKind = "chatgpt" | "feishu" | "none";
-type FeishuWikiAction = "sync_markdown" | "organize_wiki" | "sync_markdown_and_organize";
+type FeishuWikiAction =
+  | "export_md"
+  | "organize_wiki"
+  | "export_md_and_organize"
+  | "open_markdown_folder"
+  | "open_wiki_folder";
 type ModalState =
   | { kind: "success"; title: string; message: string }
   | { kind: "warnings"; title: string; message: string; warnings: string[] }
@@ -339,7 +344,7 @@ function renderSurfacePopover(surface: SurfaceKind, selectedThread: NoosThread |
     <header class="header">
       <div>
         <strong>${escapeHtml(surfaceTitle(surface, copy))}</strong>
-        <span>${escapeHtml(viewState.message)}</span>
+        <span>${escapeHtml(surfaceSubtitle(surface, copy))}</span>
       </div>
       <div class="header-actions">
         <button class="surface-back" type="button" data-action="surface-back" aria-label="${escapeAttribute(copy.globalBalloonTitle)}">${escapeHtml(
@@ -400,11 +405,15 @@ function renderFeishuSurface(copy: (typeof COPY)[ShuttleLocale]): string {
       <strong>${escapeHtml(target)}</strong>
     </div>
     <div class="primary-actions">
-      <button class="primary-action" type="button" data-action="feishu-sync-organize">${escapeHtml(copy.feishuSyncAndOrganize)}</button>
+      <button class="primary-action" type="button" data-action="feishu-export-organize">${escapeHtml(copy.feishuExportMdAndOrganize)}</button>
       <div class="surface-secondary-actions">
-        <button class="secondary-action" type="button" data-action="feishu-sync-markdown">${escapeHtml(copy.feishuSyncMarkdown)}</button>
+        <button class="secondary-action" type="button" data-action="feishu-export-md">${escapeHtml(copy.feishuExportMd)}</button>
         <button class="secondary-action" type="button" data-action="feishu-organize-wiki">${escapeHtml(copy.feishuOrganizeWiki)}</button>
       </div>
+    </div>
+    <div class="surface-folder-actions">
+      <button type="button" data-action="feishu-open-markdown-folder">${escapeHtml(copy.feishuOpenMarkdownFolder)}</button>
+      <button type="button" data-action="feishu-open-wiki-folder">${escapeHtml(copy.feishuOpenWikiFolder)}</button>
     </div>
     <p class="surface-hint">${escapeHtml(copy.feishuMarkdownHint)}</p>
   </div>`;
@@ -849,18 +858,28 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
     return;
   }
 
-  if (action === "feishu-sync-organize") {
-    await runFeishuAction(app, "sync_markdown_and_organize");
+  if (action === "feishu-export-organize") {
+    await runFeishuAction(app, "export_md_and_organize");
     return;
   }
 
-  if (action === "feishu-sync-markdown") {
-    await runFeishuAction(app, "sync_markdown");
+  if (action === "feishu-export-md") {
+    await runFeishuAction(app, "export_md");
     return;
   }
 
   if (action === "feishu-organize-wiki") {
     await runFeishuAction(app, "organize_wiki");
+    return;
+  }
+
+  if (action === "feishu-open-markdown-folder") {
+    await runFeishuAction(app, "open_markdown_folder");
+    return;
+  }
+
+  if (action === "feishu-open-wiki-folder") {
+    await runFeishuAction(app, "open_wiki_folder");
     return;
   }
 
@@ -2144,6 +2163,16 @@ function surfaceTitle(surface: SurfaceKind, copy: (typeof COPY)[ShuttleLocale]):
     return copy.chatGptSurfaceTitle;
   }
   return copy.surfaceUnavailable;
+}
+
+function surfaceSubtitle(surface: SurfaceKind, copy: (typeof COPY)[ShuttleLocale]): string {
+  if (surface !== "feishu") {
+    return viewState.message;
+  }
+  if (viewState.state === "idle" || viewState.message === copy.ready || viewState.message === copy.conversationChanged) {
+    return copy.feishuSurfaceReady;
+  }
+  return viewState.message;
 }
 
 function feishuDocumentTitle(): string {

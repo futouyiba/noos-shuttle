@@ -863,9 +863,13 @@ fn wiki_target_payload() -> Value {
 
 fn run_browser_hub_action(request: HubActionRequest) -> HubActionResponse {
     match request.command.as_str() {
-        "feishu.syncMarkdown" => sync_feishu_markdown(request, false),
-        "feishu.syncMarkdownAndOrganize" => sync_feishu_markdown(request, true),
+        "feishu.exportMd" | "feishu.syncMarkdown" => export_feishu_md(request, false),
+        "feishu.exportMdAndOrganize" | "feishu.syncMarkdownAndOrganize" => {
+            export_feishu_md(request, true)
+        }
         "wiki.organizeSource" => organize_wiki_source(request),
+        "wiki.openFeishuSourceFolder" => open_feishu_source_folder(request),
+        "wiki.openProjectFolder" => open_wiki_project_folder(request),
         _ => hub_action_error(
             "export_failed",
             "Unknown Hub action command.",
@@ -875,7 +879,7 @@ fn run_browser_hub_action(request: HubActionRequest) -> HubActionResponse {
     }
 }
 
-fn sync_feishu_markdown(request: HubActionRequest, organize: bool) -> HubActionResponse {
+fn export_feishu_md(request: HubActionRequest, organize: bool) -> HubActionResponse {
     let Some(url) = request.url.as_deref() else {
         return hub_action_error(
             "export_failed",
@@ -919,7 +923,7 @@ fn sync_feishu_markdown(request: HubActionRequest, organize: bool) -> HubActionR
         return HubActionResponse {
             ok: true,
             status: "unchanged".to_string(),
-            message: "Feishu Markdown source is unchanged.".to_string(),
+            message: "Feishu MD source is unchanged.".to_string(),
             error_code: None,
             source_path: Some(source_path.display().to_string()),
             wiki_project_path: Some(wiki_project_path.display().to_string()),
@@ -957,7 +961,7 @@ fn sync_feishu_markdown(request: HubActionRequest, organize: bool) -> HubActionR
         return HubActionResponse {
             ok: true,
             status: "queued".to_string(),
-            message: "Feishu Markdown synced and Wiki organization queued.".to_string(),
+            message: "Feishu MD exported and Wiki organization queued.".to_string(),
             error_code: None,
             source_path: Some(source_path.display().to_string()),
             wiki_project_path: Some(wiki_project_path.display().to_string()),
@@ -967,8 +971,8 @@ fn sync_feishu_markdown(request: HubActionRequest, organize: bool) -> HubActionR
 
     HubActionResponse {
         ok: true,
-        status: "synced".to_string(),
-        message: "Feishu Markdown synced to the Wiki source library.".to_string(),
+        status: "exported".to_string(),
+        message: "Feishu MD exported to the Wiki source library.".to_string(),
         error_code: None,
         source_path: Some(source_path.display().to_string()),
         wiki_project_path: Some(wiki_project_path.display().to_string()),
@@ -998,7 +1002,7 @@ fn organize_wiki_source(request: HubActionRequest) -> HubActionResponse {
     if !source_path.exists() {
         return hub_action_error(
             "export_failed",
-            "No synced Markdown source exists for this Feishu document yet.",
+            "No exported MD source exists for this Feishu document yet.",
             Some(source_path.display().to_string()),
             Some(wiki_project_path.display().to_string()),
         );
@@ -1015,11 +1019,86 @@ fn organize_wiki_source(request: HubActionRequest) -> HubActionResponse {
     HubActionResponse {
         ok: true,
         status: "queued".to_string(),
-        message: "Wiki organization queued for the synced Feishu source.".to_string(),
+        message: "Wiki organization queued for the exported Feishu source.".to_string(),
         error_code: None,
         source_path: Some(source_path.display().to_string()),
         wiki_project_path: Some(wiki_project_path.display().to_string()),
         changed: request.force,
+    }
+}
+
+fn open_feishu_source_folder(request: HubActionRequest) -> HubActionResponse {
+    let Some(wiki_project_path) = resolve_wiki_project_path(request.wiki_project_path.as_deref())
+    else {
+        return hub_action_error(
+            "open_failed",
+            "No default Wiki project configured in NOOS Hub.",
+            None,
+            request.wiki_project_path,
+        );
+    };
+    let source_folder = wiki_project_path.join("raw").join("sources").join("feishu");
+    if let Err(error) = fs::create_dir_all(&source_folder) {
+        return hub_action_error(
+            "open_failed",
+            &error.to_string(),
+            Some(source_folder.display().to_string()),
+            Some(wiki_project_path.display().to_string()),
+        );
+    }
+    match open_existing_path(&source_folder) {
+        Ok(message) => HubActionResponse {
+            ok: true,
+            status: "opened".to_string(),
+            message,
+            error_code: None,
+            source_path: Some(source_folder.display().to_string()),
+            wiki_project_path: Some(wiki_project_path.display().to_string()),
+            changed: None,
+        },
+        Err(error) => hub_action_error(
+            "open_failed",
+            &error,
+            Some(source_folder.display().to_string()),
+            Some(wiki_project_path.display().to_string()),
+        ),
+    }
+}
+
+fn open_wiki_project_folder(request: HubActionRequest) -> HubActionResponse {
+    let Some(wiki_project_path) = resolve_wiki_project_path(request.wiki_project_path.as_deref())
+    else {
+        return hub_action_error(
+            "open_failed",
+            "No default Wiki project configured in NOOS Hub.",
+            None,
+            request.wiki_project_path,
+        );
+    };
+    if !wiki_project_path.exists() {
+        return hub_action_error(
+            "open_failed",
+            "Wiki project directory does not exist.",
+            None,
+            Some(wiki_project_path.display().to_string()),
+        );
+    }
+    match open_existing_path(&wiki_project_path) {
+        Ok(message) => HubActionResponse {
+            ok: true,
+            status: "opened".to_string(),
+            message,
+            error_code: None,
+            source_path: None,
+            wiki_project_path: Some(wiki_project_path.display().to_string()),
+            changed: None,
+        },
+        Err(error) => hub_action_error(
+            "open_failed",
+            &error,
+            None,
+            Some(wiki_project_path.display().to_string()),
+        ),
     }
 }
 
@@ -1138,24 +1217,34 @@ fn export_feishu_markdown(url: &str) -> Result<String, String> {
             url.to_string(),
             "--stdout".to_string(),
         ],
-        vec![url.to_string(), "--stdout".to_string()],
     ];
+    let commands = feishu_docx_command_candidates();
     for args in attempts {
-        let output = Command::new("feishu-docx").args(&args).output();
-        let Ok(output) = output else {
-            continue;
-        };
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        if output.status.success() && !stdout.is_empty() {
-            return Ok(stdout);
-        }
-        if looks_like_feishu_auth_error(&stderr) {
-            return Err(stderr);
+        for command in &commands {
+            let output = Command::new(command).args(&args).output();
+            let Ok(output) = output else {
+                continue;
+            };
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if output.status.success() && !stdout.is_empty() {
+                return Ok(stdout);
+            }
+            if looks_like_feishu_auth_error(&stderr) {
+                return Err(stderr);
+            }
         }
     }
 
-    Err("Feishu Markdown export failed. Install/configure feishu-docx or complete Feishu authorization in NOOS Hub.".to_string())
+    Err("Feishu MD export failed. Install/configure feishu-docx or complete Feishu authorization in NOOS Hub.".to_string())
+}
+
+fn feishu_docx_command_candidates() -> Vec<PathBuf> {
+    let mut commands = vec![PathBuf::from("feishu-docx")];
+    let home = home_dir();
+    commands.push(home.join(".local/bin/feishu-docx"));
+    commands.push(home.join(".local/pipx/venvs/feishu-docx/bin/feishu-docx"));
+    commands
 }
 
 fn looks_like_feishu_auth_error(message: &str) -> bool {
@@ -2542,8 +2631,7 @@ fn open_bundled_shuttle_extension(
         .flatten()
         .find(|path| path.join("manifest.json").is_file())
         .ok_or_else(|| {
-            "No bundled NOOS Shuttle extension build was found. Rebuild NOOS Hub first."
-                .to_string()
+            "No bundled NOOS Shuttle extension build was found. Rebuild NOOS Hub first.".to_string()
         })?;
 
     open_existing_path(&extension_dir)?;

@@ -206,7 +206,6 @@
 .surface-summary span {
   color: #5c665f;
   font: 700 10px/1.2 system-ui, sans-serif;
-  text-transform: uppercase;
 }
 
 .surface-summary strong {
@@ -219,6 +218,29 @@
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+}
+
+.surface-folder-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0 14px;
+}
+
+.surface-folder-actions button {
+  min-height: 34px;
+  padding: 0 8px;
+  border: 1px solid rgba(23, 32, 26, 0.14);
+  border-radius: 6px;
+  background: #ffffff;
+  color: #17201a;
+  cursor: pointer;
+  font: 700 12px/1.2 system-ui, sans-serif;
+}
+
+.surface-folder-actions button:hover:not(:disabled) {
+  border-color: rgba(29, 107, 79, 0.45);
+  background: #f2faf6;
 }
 
 .surface-hint {

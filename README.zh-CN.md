@@ -336,6 +336,7 @@ git push origin v0.1.2
 ## 文档
 
 - `docs/noos-install-architecture.md`：整体安装架构
+- `docs/noos-hub-shuttle-user-guide.zh-CN.md`：NOOS Hub 和 Shuttle 插件的安装、使用与核心概念
 - `docs/noos-downstream-integration.md`：下游 agent 集成设计
 - `docs/noos-handoff-vault-strategy.md`：handoff 入库策略
 - `docs/noos-llm-wiki-bridge.md`：NOOS 到 LLM Wiki source 层桥接设计

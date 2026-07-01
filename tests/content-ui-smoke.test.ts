@@ -325,20 +325,40 @@ describe("content script smoke flow", () => {
 
     await clickShuttle(page, ".surface-fab");
     await waitForShuttleText(page, "飞书文档");
-    await waitForShuttleText(page, "同步 Markdown 并整理 Wiki");
+    await waitForShuttleText(page, "导出 MD 并整理 Wiki");
+    await waitForShuttleText(page, "仅导出 MD");
+    await waitForShuttleText(page, "打开 MD 源目录");
+    await waitForShuttleText(page, "打开 Wiki 项目目录");
     await waitForShuttleText(page, "/tmp/noos/wiki/work");
 
-    await clickShuttle(page, "[data-action='feishu-sync-organize']");
+    await clickShuttle(page, "[data-action='feishu-export-organize']");
     await waitForShuttleText(page, "queued");
 
     const request = await page.evaluate(() => (globalThis as unknown as { lastFeishuAction?: unknown }).lastFeishuAction);
     expect(request).toMatchObject({
       type: "NOOS_FEISHU_WIKI_ACTION",
-      action: "sync_markdown_and_organize",
+      action: "export_md_and_organize",
       url: "https://team.feishu.cn/docx/ABC123"
     });
     expect(request).toHaveProperty("title", "Quarterly Plan");
     expect(request).toHaveProperty("wikiProjectPath", "/tmp/noos/wiki/work");
+
+    await clickShuttle(page, "[data-action='feishu-open-markdown-folder']");
+    await waitForShuttleText(page, "opened");
+    const openMarkdownRequest = await page.evaluate(() => (globalThis as unknown as { lastFeishuAction?: unknown }).lastFeishuAction);
+    expect(openMarkdownRequest).toMatchObject({
+      type: "NOOS_FEISHU_WIKI_ACTION",
+      action: "open_markdown_folder",
+      url: "https://team.feishu.cn/docx/ABC123"
+    });
+
+    await clickShuttle(page, "[data-action='feishu-open-wiki-folder']");
+    const openWikiRequest = await page.evaluate(() => (globalThis as unknown as { lastFeishuAction?: unknown }).lastFeishuAction);
+    expect(openWikiRequest).toMatchObject({
+      type: "NOOS_FEISHU_WIKI_ACTION",
+      action: "open_wiki_folder",
+      url: "https://team.feishu.cn/docx/ABC123"
+    });
     await page.close();
   });
 });
@@ -578,10 +598,11 @@ async function newMockFeishuPage(): Promise<Page> {
           }
           if (message.type === "NOOS_FEISHU_WIKI_ACTION") {
             (globalThis as unknown as { lastFeishuAction?: unknown }).lastFeishuAction = message;
+            const action = (message as { action?: string }).action;
             return {
               ok: true,
-              status: "queued",
-              message: "Feishu Markdown synced and Wiki organization queued.",
+              status: action?.startsWith("open_") ? "opened" : "queued",
+              message: action?.startsWith("open_") ? "Opened folder." : "Feishu MD exported and Wiki organization queued.",
               sourcePath: "/tmp/noos/wiki/work/raw/sources/feishu/feishu-abc123.md",
               wikiProjectPath: "/tmp/noos/wiki/work"
             };

@@ -6,6 +6,7 @@ export interface ShuttleCopy {
   globalBalloonTitle: string;
   chatGptSurfaceTitle: string;
   feishuSurfaceTitle: string;
+  feishuSurfaceReady: string;
   surfaceUnavailable: string;
   close: string;
   ok: string;
@@ -80,9 +81,11 @@ export interface ShuttleCopy {
   defaultWikiProject: string;
   defaultWikiProjectUnknown: string;
   feishuDocumentTitle: string;
-  feishuSyncAndOrganize: string;
-  feishuSyncMarkdown: string;
+  feishuExportMdAndOrganize: string;
+  feishuExportMd: string;
   feishuOrganizeWiki: string;
+  feishuOpenMarkdownFolder: string;
+  feishuOpenWikiFolder: string;
   feishuMarkdownHint: string;
   feishuActionFinished: (status: string, message: string) => string;
   feishuActionNeedsAuth: string;
@@ -134,6 +137,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     globalBalloonTitle: "NOOS",
     chatGptSurfaceTitle: "ChatGPT",
     feishuSurfaceTitle: "Feishu Doc",
+    feishuSurfaceReady: "Export this Feishu document as MD, then organize it into the target Wiki when needed.",
     surfaceUnavailable: "No page-specific NOOS surface here.",
     close: "Close",
     ok: "OK",
@@ -209,10 +213,12 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     defaultWikiProject: "Target Wiki",
     defaultWikiProjectUnknown: "Hub default Wiki project",
     feishuDocumentTitle: "Current document",
-    feishuSyncAndOrganize: "Sync Markdown & Organize Wiki",
-    feishuSyncMarkdown: "Sync Markdown Only",
+    feishuExportMdAndOrganize: "Export MD & Organize Wiki",
+    feishuExportMd: "Export MD Only",
     feishuOrganizeWiki: "Organize Wiki",
-    feishuMarkdownHint: "Overwrites the .md source in the document library, then queues Wiki organization.",
+    feishuOpenMarkdownFolder: "Open MD Sources",
+    feishuOpenWikiFolder: "Open Wiki Project",
+    feishuMarkdownHint: "Export MD overwrites the stable .md source. Organize Wiki queues that source for Wiki organization.",
     feishuActionFinished: (status, message) => `${status}: ${message}`,
     feishuActionNeedsAuth: "Feishu authorization is required in NOOS Hub.",
     feishuActionFailed: "Feishu action failed.",
@@ -252,6 +258,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     globalBalloonTitle: "NOOS",
     chatGptSurfaceTitle: "ChatGPT",
     feishuSurfaceTitle: "飞书文档",
+    feishuSurfaceReady: "将当前飞书文档导出为 MD，并按需加入目标 Wiki 的整理队列。",
     surfaceUnavailable: "当前页面没有专属 NOOS 场景。",
     close: "关闭",
     ok: "知道了",
@@ -326,10 +333,12 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     defaultWikiProject: "目标 Wiki",
     defaultWikiProjectUnknown: "Hub 默认 Wiki 项目",
     feishuDocumentTitle: "当前文档",
-    feishuSyncAndOrganize: "同步 Markdown 并整理 Wiki",
-    feishuSyncMarkdown: "仅同步 Markdown",
+    feishuExportMdAndOrganize: "导出 MD 并整理 Wiki",
+    feishuExportMd: "仅导出 MD",
     feishuOrganizeWiki: "整理 Wiki",
-    feishuMarkdownHint: "覆盖文档库中的 .md source，并加入 Wiki 整理队列。",
+    feishuOpenMarkdownFolder: "打开 MD 源目录",
+    feishuOpenWikiFolder: "打开 Wiki 项目目录",
+    feishuMarkdownHint: "导出 MD 会覆盖当前飞书文档对应的稳定 .md source；整理 Wiki 会将该 source 加入整理队列。",
     feishuActionFinished: (status, message) => `${status}：${message}`,
     feishuActionNeedsAuth: "需要先在 NOOS Hub 完成飞书授权。",
     feishuActionFailed: "飞书动作执行失败。",
