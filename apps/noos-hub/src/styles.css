@@ -1441,9 +1441,9 @@ ul {
 
 .cfg-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.7fr);
+  grid-template-columns: minmax(0, 1fr) minmax(300px, auto);
   gap: 16px;
-  align-items: center;
+  align-items: flex-start;
   border: 1px solid rgba(23, 32, 26, 0.1);
   border-radius: 8px;
   background: #ffffff;
@@ -1452,6 +1452,7 @@ ul {
 
 .cfg-row-info strong {
   display: block;
+  margin-top: 2px;
   font: 850 13px/1.2 system-ui, sans-serif;
 }
 
@@ -1485,22 +1486,32 @@ ul {
   font: 650 13px/1.3 system-ui, sans-serif;
 }
 
+.cfg-value-text[hidden] {
+  display: none;
+}
+
 .cfg-edit-btn {
   flex: 0 0 auto;
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   min-height: 0;
-  border-color: transparent;
-  background: transparent;
-  color: #a0aaa3;
-  font-size: 13px;
+  border: 1px solid rgba(23, 32, 26, 0.1);
+  border-radius: 6px;
+  background: #ffffff;
+  color: #556159;
+  font-size: 14px;
   padding: 0;
+  cursor: pointer;
 }
 
 .cfg-edit-btn:hover {
-  border-color: rgba(23, 32, 26, 0.12);
+  border-color: rgba(29, 107, 79, 0.32);
   background: #f2faf6;
   color: #1d6b4f;
+}
+
+.cfg-edit-btn[hidden] {
+  display: none;
 }
 
 .cfg-edit-form {
@@ -1518,7 +1529,7 @@ ul {
 .cfg-edit-form input,
 .cfg-edit-form select {
   flex: 1;
-  min-width: 0;
+  min-width: 120px;
   min-height: 32px;
   border: 1px solid rgba(29, 107, 79, 0.32);
   border-radius: 6px;
@@ -1666,7 +1677,12 @@ ul {
 
   .vault-recent,
   .vault-flow,
-  .config-row {
+  .config-row,
+  .cfg-row {
     grid-template-columns: 1fr;
+  }
+
+  .cfg-row-value {
+    justify-content: flex-start;
   }
 }
