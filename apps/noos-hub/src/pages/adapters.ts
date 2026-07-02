@@ -60,20 +60,21 @@ function renderKindSection(adapters: AdapterHealth[], kind: AdapterKind): string
 
 function renderAdapterRow(adapter: AdapterHealth): string {
   const firstAction = adapter.actions[0];
+  const tags = adapter.checks.map(renderCheckTag).join("");
 
   return `
     <article class="adapter-row adapter-row--${adapter.status}">
-      <div class="adapter-row-left">
+      <div class="adapter-row-body">
         <span class="pill pill--${adapter.status}">${statusLabels[adapter.status]}</span>
-        <div>
-          <strong>${escapeHtml(adapter.name)}</strong>
+        <div class="adapter-row-main">
+          <div class="adapter-row-head">
+            <strong>${escapeHtml(adapter.name)}</strong>
+            ${tags ? `<span class="adapter-row-tags">${tags}</span>` : ""}
+          </div>
           <p>${escapeHtml(adapter.summary)}</p>
         </div>
       </div>
-      <div class="adapter-row-right">
-        ${adapter.checks.map(renderCheckTag).join("")}
-        ${firstAction ? `<button type="button" data-run="${escapeHtml(firstAction.id)}">${escapeHtml(firstAction.label)}</button>` : ""}
-      </div>
+      ${firstAction ? `<button type="button" data-run="${escapeHtml(firstAction.id)}" class="adapter-row-btn">${escapeHtml(firstAction.label)}</button>` : ""}
     </article>
   `;
 }

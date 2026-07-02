@@ -787,7 +787,7 @@ h3 {
   padding: 12px 14px;
 }
 
-.adapter-row-left {
+.adapter-row-body {
   display: flex;
   gap: 10px;
   align-items: flex-start;
@@ -795,39 +795,50 @@ h3 {
   flex: 1;
 }
 
-.adapter-row-left strong {
-  display: block;
+.adapter-row-main {
+  min-width: 0;
+}
+
+.adapter-row-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.adapter-row-head strong {
   font: 800 13px/1.2 system-ui, sans-serif;
 }
 
-.adapter-row-left p {
-  max-width: 480px;
-  margin-top: 3px;
+.adapter-row-tags {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.adapter-row-main p {
+  max-width: 520px;
+  margin-top: 4px;
   color: #56625a;
   font: 500 12px/1.4 system-ui, sans-serif;
 }
 
-.adapter-row-right {
-  display: flex;
-  gap: 6px;
-  align-items: center;
+.adapter-row-btn {
   flex: 0 0 auto;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  padding-top: 2px;
+  align-self: flex-start;
+  margin-top: 2px;
 }
 
 .check-tag {
   display: inline-flex;
-  min-height: 22px;
+  min-height: 20px;
   align-items: center;
   border-radius: 999px;
   background: #edf3ef;
   color: #344039;
-  font: 650 10px/1 system-ui, sans-serif;
-  padding: 0 7px;
+  font: 600 10px/1 system-ui, sans-serif;
+  padding: 0 6px;
   white-space: nowrap;
-  flex: 0 0 auto;
 }
 
 .check-tag--ready {
@@ -1603,9 +1614,8 @@ ul {
     align-items: stretch;
   }
 
-  .adapter-row-right {
-    justify-content: flex-start;
-    padding-top: 8px;
+  .adapter-row-btn {
+    align-self: flex-start;
   }
 
   .vault-recent,
