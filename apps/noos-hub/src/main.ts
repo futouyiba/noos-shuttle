@@ -7,6 +7,7 @@ import { mockHealth, mockSleepRecoveryStatus } from "./mock";
 import { renderAdapters } from "./pages/adapters";
 import { renderConfig, type ConfigData } from "./pages/config";
 import { renderDashboard } from "./pages/dashboard";
+import { renderHelp } from "./pages/help";
 import { renderVault } from "./pages/vault";
 import { createVaultBrowserState, renderVaultBrowser, type VaultBrowserState } from "./pages/vault-browser";
 import { sleepRecoveryDisplay } from "./status";
@@ -16,45 +17,63 @@ import { renderUpdateBannerHtml, renderUpdateDialogHtml } from "./update/render"
 import { escapeHtml } from "./ui/html";
 import { setVaultFileActionDataRuns } from "./vault-file-actions";
 
-type SectionId = "home" | "vault" | "adapters" | "config";
+type SectionId = "home" | "vault" | "adapters" | "config" | "help";
 
 const silentUpdateCheckDelayMs = 2500;
-const navItems: Array<{
+interface SectionMeta {
   id: SectionId;
   label: string;
   eyebrow: string;
   title: string;
   summary: string;
-}> = [
-  {
+}
+
+const sectionMeta: Record<SectionId, SectionMeta> = {
+  home: {
     id: "home",
     label: "首页",
     eyebrow: "NOOS Hub",
     title: "本机上下文中枢",
     summary: "连接器状态、建议操作和最近文件一览。"
   },
-  {
+  vault: {
     id: "vault",
     label: "Vault",
     eyebrow: "NOOS Vault",
     title: "本机产物与交接",
     summary: "管理 Handoff、Crystal、Browser Mirror 和 Agent Projection。"
   },
-  {
+  adapters: {
     id: "adapters",
     label: "连接器",
     eyebrow: "Adapters",
     title: "连接器安装状态",
     summary: "检查浏览器、Git、工作区和下游 agent 的可用性。"
   },
-  {
+  config: {
     id: "config",
     label: "设置",
     eyebrow: "Settings",
     title: "本机配置与更新",
     summary: "查看路径、更新入口和内置 Shuttle 扩展。"
+  },
+  help: {
+    id: "help",
+    label: "帮助",
+    eyebrow: "Help",
+    title: "NOOS Hub 帮助",
+    summary: "快速理解 Handoff、Crystal、Vault、连接器和本机同步边界。"
   }
+};
+
+const navItems: SectionMeta[] = [
+  sectionMeta.home,
+  sectionMeta.vault,
+  sectionMeta.adapters,
+  sectionMeta.config
 ];
+
+const sectionItems = Object.values(sectionMeta);
 
 let currentHealth: HubHealth | null = null;
 let currentRecoveryStatus: SleepRecoveryStatus | null = null;
@@ -91,7 +110,7 @@ void loadSleepRecoveryStatus();
 scheduleSilentUpdateCheck();
 
 function renderShell(): void {
-  const shellItem = navItems.find((item) => item.id === activeSection) ?? navItems[0];
+  const shellItem = sectionMeta[activeSection] ?? sectionMeta.home;
 
   appElement.innerHTML = `
     <aside class="sidebar">
@@ -119,6 +138,7 @@ function renderShell(): void {
         </div>
         <div class="topbar-actions">
           <span class="recovery-pill" data-recovery-state="running">睡眠恢复：检查中</span>
+          ${navButton("help", "帮助", "topbar-help")}
           <button type="button" data-action="refresh">刷新</button>
           <button type="button" data-action="doctor">运行 Doctor</button>
         </div>
@@ -149,9 +169,10 @@ function renderShell(): void {
   appElement.querySelector('[data-action="clear-log"]')?.addEventListener("click", () => setLog(""));
 }
 
-function navButton(section: SectionId, label: string): string {
+function navButton(section: SectionId, label: string, className = ""): string {
   const active = activeSection === section;
-  return `<button type="button" data-section="${section}" class="${active ? "active" : ""}" ${active ? 'aria-current="page"' : ""}>${label}</button>`;
+  const classes = [className, active ? "active" : ""].filter(Boolean).join(" ");
+  return `<button type="button" data-section="${section}" class="${classes}" ${active ? 'aria-current="page"' : ""}>${label}</button>`;
 }
 
 function bindSectionButtons(root: ParentNode): void {
@@ -163,7 +184,7 @@ function bindSectionButtons(root: ParentNode): void {
 }
 
 function parseSectionId(value: string | undefined, fallback: SectionId = "home"): SectionId {
-  return navItems.some((item) => item.id === value) ? (value as SectionId) : fallback;
+  return sectionItems.some((item) => item.id === value) ? (value as SectionId) : fallback;
 }
 
 function setActiveSection(section: SectionId, options: { updateHistory?: boolean } = {}): void {
@@ -504,6 +525,9 @@ function renderCurrentSection(): void {
       content.innerHTML = renderConfig(currentHealth, currentConfig);
       void loadConfig();
       break;
+    case "help":
+      content.innerHTML = renderHelp(currentHealth);
+      break;
     case "home":
     default:
       content.innerHTML = renderDashboard(currentHealth);
@@ -531,7 +555,7 @@ function renderCurrentSection(): void {
 }
 
 function renderShellContext(): void {
-  const item = navItems.find((entry) => entry.id === activeSection) ?? navItems[0];
+  const item = sectionMeta[activeSection] ?? sectionMeta.home;
   const eyebrow = appElement.querySelector<HTMLElement>("#section-eyebrow");
   const title = appElement.querySelector<HTMLElement>("#section-title");
   const summary = appElement.querySelector<HTMLElement>("#section-summary");

@@ -200,6 +200,12 @@ nav button:hover {
   flex: 0 0 auto;
 }
 
+.topbar-help.active {
+  border-color: rgba(29, 107, 79, 0.32);
+  background: #1d6b4f;
+  color: #ffffff;
+}
+
 .recovery-pill {
   display: inline-flex;
   min-height: 34px;
@@ -747,6 +753,178 @@ h3 {
   margin-top: 6px;
   color: #56625a;
   font: 500 12px/1.45 system-ui, sans-serif;
+}
+
+.db-about-actions {
+  margin-top: 12px;
+}
+
+/* ===== Help ===== */
+
+.help-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 22px;
+  border: 1px solid rgba(23, 32, 26, 0.1);
+  border-left: 4px solid #1d6b4f;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 20px;
+}
+
+.help-hero h2 {
+  margin-top: 4px;
+  font-size: 24px;
+}
+
+.help-hero p:not(.eyebrow),
+.help-panel > p {
+  max-width: 760px;
+  margin-top: 8px;
+  color: #56625a;
+  font: 600 13px/1.5 system-ui, sans-serif;
+}
+
+.help-quick-actions {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.help-layout {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.help-panel {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  min-width: 0;
+  border: 1px solid rgba(23, 32, 26, 0.1);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 16px;
+}
+
+.help-panel--wide {
+  grid-column: 1 / -1;
+}
+
+.help-panel h3 {
+  font-size: 16px;
+}
+
+.help-steps,
+.help-status-list,
+.help-path-list,
+.help-checklist {
+  display: grid;
+  gap: 8px;
+}
+
+.help-step {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px;
+  min-width: 0;
+}
+
+.help-step > span {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #e6f4ec;
+  color: #14573d;
+  font: 850 12px/1 system-ui, sans-serif;
+}
+
+.help-step strong,
+.help-path-list strong,
+.help-checklist strong,
+.help-status-list strong,
+.help-terms dt {
+  color: #17201a;
+  font: 800 13px/1.25 system-ui, sans-serif;
+}
+
+.help-step p,
+.help-checklist span,
+.help-status-list span,
+.help-terms dd {
+  margin: 4px 0 0;
+  color: #5c6860;
+  font: 550 12px/1.45 system-ui, sans-serif;
+}
+
+.help-terms {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.help-terms > div,
+.help-status-list > div,
+.help-path-list > div,
+.help-checklist li {
+  min-width: 0;
+  border-radius: 7px;
+  background: #f8faf8;
+  padding: 11px;
+}
+
+.help-status-list {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.help-status-list > div {
+  border-top: 3px solid #dce5df;
+}
+
+.help-flow {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.help-flow span {
+  position: relative;
+  display: inline-flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(29, 107, 79, 0.18);
+  border-radius: 7px;
+  background: #f6fbf8;
+  color: #254738;
+  font: 800 12px/1.2 system-ui, sans-serif;
+  text-align: center;
+  padding: 0 10px;
+}
+
+.help-flow span:not(:last-child)::after {
+  content: ">";
+  position: absolute;
+  right: -8px;
+  z-index: 1;
+  color: #7b8981;
+  font: 850 11px/1 system-ui, sans-serif;
+}
+
+.help-path-list code {
+  display: block;
+  margin-top: 5px;
+  color: #254738;
+}
+
+.help-checklist {
+  list-style: none;
 }
 
 /* ===== Adapter stack (replaces card grid) ===== */
@@ -1609,6 +1787,10 @@ ul {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .help-status-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .adapter-row {
     flex-direction: column;
     align-items: stretch;
@@ -1664,7 +1846,8 @@ ul {
   .topbar,
   .section-head,
   .vault-command,
-  .db-hero {
+  .db-hero,
+  .help-hero {
     flex-direction: column;
     align-items: stretch;
   }
@@ -1675,8 +1858,22 @@ ul {
 
   .db-status-cards,
   .db-recent-grid,
-  .db-about-grid {
+  .db-about-grid,
+  .help-layout,
+  .help-terms,
+  .help-status-list,
+  .help-flow {
     grid-template-columns: 1fr;
+  }
+
+  .help-panel--wide {
+    grid-column: auto;
+  }
+
+  .help-flow span:not(:last-child)::after {
+    content: "v";
+    right: auto;
+    bottom: -9px;
   }
 
   .topbar-actions,

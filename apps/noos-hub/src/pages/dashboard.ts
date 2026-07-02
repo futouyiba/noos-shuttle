@@ -75,6 +75,9 @@ export function renderDashboard(health: HubHealth): string {
           <p>Hub 通过连接器感知浏览器插件、Git、Codex / Claude Code 的安装状态，并生成对应的安装或修复动作。</p>
         </div>
       </div>
+      <div class="db-about-actions">
+        <button type="button" data-section="help">打开完整帮助</button>
+      </div>
     </details>
   `;
 }

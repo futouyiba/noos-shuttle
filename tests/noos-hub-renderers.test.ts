@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { renderDashboard } from "../apps/noos-hub/src/pages/dashboard";
+import { renderHelp } from "../apps/noos-hub/src/pages/help";
 import { renderLogs } from "../apps/noos-hub/src/pages/logs";
 import { renderVault } from "../apps/noos-hub/src/pages/vault";
 import type { AdapterHealth, HubHealth } from "../apps/noos-hub/src/types";
@@ -78,6 +79,16 @@ describe("NOOS Hub page renderers", () => {
 
     expect(html).toContain("log-page-output");
     expect(html).toContain("hello &lt;script&gt;alert(1)&lt;/script&gt;");
+  });
+
+  it("renders help content around concepts, status, and local-first storage", () => {
+    const html = renderHelp(healthFixture());
+
+    expect(html).toContain("Handoff");
+    expect(html).toContain("Crystal");
+    expect(html).toContain("Browser Mirror");
+    expect(html).toContain("Hub 默认是本机优先");
+    expect(html).toContain("~/.noos/vault/handoffs/active");
   });
 });
 
