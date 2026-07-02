@@ -778,9 +778,9 @@ h3 {
 
 .adapter-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 14px;
+  gap: 12px;
   border: 1px solid rgba(23, 32, 26, 0.1);
   border-radius: 8px;
   background: #ffffff;
@@ -792,6 +792,7 @@ h3 {
   gap: 10px;
   align-items: flex-start;
   min-width: 0;
+  flex: 1;
 }
 
 .adapter-row-left strong {
@@ -800,7 +801,7 @@ h3 {
 }
 
 .adapter-row-left p {
-  max-width: 520px;
+  max-width: 480px;
   margin-top: 3px;
   color: #56625a;
   font: 500 12px/1.4 system-ui, sans-serif;
@@ -808,23 +809,25 @@ h3 {
 
 .adapter-row-right {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
   flex: 0 0 auto;
   flex-wrap: wrap;
   justify-content: flex-end;
+  padding-top: 2px;
 }
 
 .check-tag {
   display: inline-flex;
-  min-height: 24px;
+  min-height: 22px;
   align-items: center;
   border-radius: 999px;
   background: #edf3ef;
   color: #344039;
-  font: 650 11px/1 system-ui, sans-serif;
-  padding: 0 8px;
+  font: 650 10px/1 system-ui, sans-serif;
+  padding: 0 7px;
   white-space: nowrap;
+  flex: 0 0 auto;
 }
 
 .check-tag--ready {
@@ -1602,6 +1605,7 @@ ul {
 
   .adapter-row-right {
     justify-content: flex-start;
+    padding-top: 8px;
   }
 
   .vault-recent,
