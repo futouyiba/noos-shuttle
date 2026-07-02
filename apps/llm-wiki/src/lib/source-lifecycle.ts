@@ -21,6 +21,7 @@ import {
 } from "@/lib/sources-merge"
 import { removeFromIngestCache } from "@/lib/ingest-cache"
 import { removePageEmbedding } from "@/lib/embedding"
+import { cascadeDeleteWikiPagesWithRefs } from "@/lib/wiki-page-delete"
 import {
   buildDeletedKeys,
   cleanIndexListing,
@@ -284,7 +285,6 @@ export async function deleteSourceFiles(
 
   let deletedWikiPaths: string[] = []
   if (pagesToDelete.length > 0) {
-    const { cascadeDeleteWikiPagesWithRefs } = await import("@/lib/wiki-page-delete")
     const result = await cascadeDeleteWikiPagesWithRefs(pp, pagesToDelete)
     deletedWikiPaths = result.deletedPaths
   }

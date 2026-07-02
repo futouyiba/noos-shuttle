@@ -90,6 +90,8 @@ describe("NOOS Hub page renderers", () => {
     expect(html).toContain("Browser Mirror");
     expect(html).toContain("Hub 默认是本机优先");
     expect(html).toContain("~/.noos/vault/handoffs/active");
+    expect(html).toContain("~/Downloads/NOOS/vault");
+    expect(html).not.toContain("vault/browser-mirror");
   });
 
   it("escapes non-standard config select values", () => {

@@ -6,11 +6,15 @@ import i18n from "@/i18n"
 import { useWikiStore } from "@/stores/wiki-store"
 import { useReviewStore } from "@/stores/review-store"
 import { useChatStore } from "@/stores/chat-store"
+import { useUpdateStore } from "@/stores/update-store"
 import { listDirectory, openProject } from "@/commands/fs"
-import { getLastProject, getRecentProjects, saveLastProject, loadLlmConfig, loadLanguage, loadSearchApiConfig, loadEmbeddingConfig, loadMultimodalConfig, loadOutputLanguage, loadProviderConfigs, loadActivePresetId, loadProxyConfig, loadScheduledImportConfig, saveScheduledImportConfig, loadSourceWatchConfig } from "@/lib/project-store"
+import { getLastProject, getRecentProjects, saveLastProject, loadLlmConfig, loadLanguage, loadSearchApiConfig, loadEmbeddingConfig, loadMultimodalConfig, loadOutputLanguage, loadProviderConfigs, loadActivePresetId, loadProxyConfig, loadScheduledImportConfig, saveScheduledImportConfig, loadSourceWatchConfig, loadUpdateCheckState, saveUpdateCheckState, saveLlmConfig } from "@/lib/project-store"
 import { loadReviewItems, loadChatHistory } from "@/lib/persist"
 import { setupAutoSave } from "@/lib/auto-save"
 import { startClipWatcher, stopClipWatcher } from "@/lib/clip-watcher"
+import { startProjectFileSync, stopProjectFileSync, rescanProjectFileSync } from "@/lib/project-file-sync"
+import { startScheduledImport, stopScheduledImport } from "@/lib/scheduled-import"
+import { checkForUpdates, UPDATE_CHECK_CACHE_MS } from "@/lib/update-check"
 import { AppLayout } from "@/components/layout/app-layout"
 import { WelcomeScreen } from "@/components/project/welcome-screen"
 import { CreateProjectDialog } from "@/components/project/create-project-dialog"
@@ -102,9 +106,6 @@ function App() {
       try {
         const config = await loadSourceWatchConfig(current.id)
         useWikiStore.getState().setSourceWatchConfig(config)
-        const { startProjectFileSync, stopProjectFileSync, rescanProjectFileSync } = await import(
-          "@/lib/project-file-sync"
-        )
         if (config.enabled) {
           await startProjectFileSync(current, config)
           await rescanProjectFileSync(current, config)
@@ -120,7 +121,6 @@ function App() {
         const savedScheduledImport = await loadScheduledImportConfig(current.path)
         const scheduledConfig = savedScheduledImport ?? useWikiStore.getState().scheduledImportConfig
         useWikiStore.getState().setScheduledImportConfig(scheduledConfig)
-        const { startScheduledImport, stopScheduledImport } = await import("@/lib/scheduled-import")
         stopScheduledImport()
         if (scheduledConfig.enabled && scheduledConfig.path && scheduledConfig.interval > 0) {
           startScheduledImport(current, scheduledConfig)
@@ -161,47 +161,43 @@ function App() {
   // ships in production builds.
   useEffect(() => {
     if (!import.meta.env.DEV) return
-    ;(async () => {
-      const storeMod = await import("@/stores/update-store")
-      const { useUpdateStore } = storeMod
-      // Expose the live store getter on window so you can inspect
-      // state from devtools when debugging banner behavior.
-      ;(window as unknown as { __llmwiki_updateStore?: typeof useUpdateStore }).__llmwiki_updateStore = useUpdateStore
-      ;(window as unknown as { __llmwiki_testUpdateBanner?: (clear?: boolean) => void }).__llmwiki_testUpdateBanner = (clear = false) => {
-        if (clear) {
-          useUpdateStore.getState().setResult(
-            { kind: "up-to-date", local: __APP_VERSION__, remote: __APP_VERSION__ },
-            Date.now(),
-          )
-          useUpdateStore.getState().setDismissed(null)
-          console.log("[test] update banner cleared")
-          return
-        }
+    // Expose the live store getter on window so you can inspect
+    // state from devtools when debugging banner behavior.
+    ;(window as unknown as { __llmwiki_updateStore?: typeof useUpdateStore }).__llmwiki_updateStore = useUpdateStore
+    ;(window as unknown as { __llmwiki_testUpdateBanner?: (clear?: boolean) => void }).__llmwiki_testUpdateBanner = (clear = false) => {
+      if (clear) {
         useUpdateStore.getState().setResult(
-          {
-            kind: "available",
-            local: __APP_VERSION__,
-            remote: "v999.0.0",
-            release: {
-              name: "v999.0.0 (test)",
-              tag_name: "v999.0.0",
-              body:
-                "Test release for banner-UX verification.\n\n" +
-                "- Bigger red dot on the Settings icon\n" +
-                "- Top banner with one-click dismiss\n" +
-                "- Once dismissed, won't reappear for this version",
-              html_url: "https://github.com/nashsu/llm_wiki/releases",
-              published_at: new Date().toISOString(),
-            },
-          },
+          { kind: "up-to-date", local: __APP_VERSION__, remote: __APP_VERSION__ },
           Date.now(),
         )
         useUpdateStore.getState().setDismissed(null)
-        console.log(
-          "[test] update banner injected. Run __llmwiki_testUpdateBanner(true) to clear.",
-        )
+        console.log("[test] update banner cleared")
+        return
       }
-    })()
+      useUpdateStore.getState().setResult(
+        {
+          kind: "available",
+          local: __APP_VERSION__,
+          remote: "v999.0.0",
+          release: {
+            name: "v999.0.0 (test)",
+            tag_name: "v999.0.0",
+            body:
+              "Test release for banner-UX verification.\n\n" +
+              "- Bigger red dot on the Settings icon\n" +
+              "- Top banner with one-click dismiss\n" +
+              "- Once dismissed, won't reappear for this version",
+            html_url: "https://github.com/nashsu/llm_wiki/releases",
+            published_at: new Date().toISOString(),
+          },
+        },
+        Date.now(),
+      )
+      useUpdateStore.getState().setDismissed(null)
+      console.log(
+        "[test] update banner injected. Run __llmwiki_testUpdateBanner(true) to clear.",
+      )
+    }
   }, [])
 
   // Background update check — hydrate persisted user preferences, then
@@ -216,14 +212,6 @@ function App() {
     const timer = setTimeout(async () => {
       if (cancelled) return
       try {
-        const { loadUpdateCheckState, saveUpdateCheckState } = await import(
-          "@/lib/project-store"
-        )
-        const { useUpdateStore } = await import("@/stores/update-store")
-        const { checkForUpdates, UPDATE_CHECK_CACHE_MS } = await import(
-          "@/lib/update-check"
-        )
-
         const persisted = await loadUpdateCheckState()
         if (persisted) useUpdateStore.getState().hydrate(persisted)
 
@@ -324,7 +312,6 @@ function App() {
             const override = (savedProviderConfigs ?? {})[savedActivePreset]
             const resolved = resolveConfig(preset, override, currentFallback)
             useWikiStore.getState().setLlmConfig(resolved)
-            const { saveLlmConfig } = await import("@/lib/project-store")
             await saveLlmConfig(resolved)
           }
         }
@@ -428,15 +415,15 @@ function App() {
     // Start scheduled import if enabled
     const scheduledImportConfig = useWikiStore.getState().scheduledImportConfig
     if (scheduledImportConfig.enabled && scheduledImportConfig.path && scheduledImportConfig.interval > 0) {
-      import("@/lib/scheduled-import").then(({ startScheduledImport }) => {
+      try {
         startScheduledImport(proj, scheduledImportConfig)
-      }).catch((err) =>
+      } catch (err) {
         console.error("Failed to start scheduled import:", err)
-      )
+      }
     }
 
     // Start project source watch if enabled
-    import("@/lib/project-file-sync").then(async ({ startProjectFileSync, stopProjectFileSync }) => {
+    try {
       const config = await loadSourceWatchConfig(proj.id)
       useWikiStore.getState().setSourceWatchConfig(config)
       if (config.enabled) {
@@ -446,7 +433,9 @@ function App() {
       } else {
         stopProjectFileSync().catch(() => {})
       }
-    }).catch((err) => console.error("Failed to configure project file sync:", err))
+    } catch (err) {
+      console.error("Failed to configure project file sync:", err)
+    }
     // Notify local clip server of the current project + all recent projects
     fetch("http://127.0.0.1:19827/project", {
       method: "POST",
@@ -521,9 +510,7 @@ function App() {
 
   async function handleSwitchProject() {
     // Stop scheduled import before switching projects
-    import("@/lib/scheduled-import").then(({ stopScheduledImport }) => {
-      stopScheduledImport()
-    }).catch(() => {})
+    stopScheduledImport()
 
     // Save current project's scheduled import config before clearing
     const currentProject = useWikiStore.getState().project

@@ -10,6 +10,7 @@ import { checkIngestCache, saveIngestCache } from "@/lib/ingest-cache"
 import { sanitizeIngestedFileContent } from "@/lib/ingest-sanitize"
 import { mergePageContent, type MergeFn } from "@/lib/page-merge"
 import { withProjectLock } from "@/lib/project-mutex"
+import { embedPage } from "@/lib/embedding"
 import {
   extractAndSaveSourceImages,
   buildImageMarkdownSection,
@@ -721,7 +722,6 @@ async function autoIngestImpl(
   const embCfg = useWikiStore.getState().embeddingConfig
   if (embCfg.enabled && embCfg.model && writtenPaths.length > 0) {
     try {
-      const { embedPage } = await import("@/lib/embedding")
       for (const wpath of writtenPaths) {
         const pageId = wpath.split("/").pop()?.replace(/\.md$/, "") ?? ""
         if (!pageId || ["index", "log", "overview"].includes(pageId)) continue
@@ -1380,7 +1380,6 @@ async function reembedSourceSummary(pp: string, fileName: string): Promise<void>
       /^---\n[\s\S]*?^title:\s*["']?(.+?)["']?\s*$/m,
     )
     const title = titleMatch ? titleMatch[1].trim() : sourceBaseName
-    const { embedPage } = await import("@/lib/embedding")
     await embedPage(pp, sourceBaseName, title, content, embCfg)
     console.log(`[ingest:caption] re-embedded ${sourceBaseName} with captioned alt text`)
   } catch (err) {

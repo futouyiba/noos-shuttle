@@ -15,6 +15,18 @@ preferred_path: .noos/handoffs/active/2026-07-01-hub-ux-refactor.md
 
 # NOOS Hub UX Refactor — Dashboard, Navigation, and Readability Overhaul
 
+## Current Status Addendum — 2026-07-02
+
+This handoff is retained in `active/` for continuity, but its original merge
+instructions are no longer current. The referenced UX refactor commits are now
+on `main`, followed by additional Hub polish commits through
+`9fc0a32 Exclude temporary Hub targets from release source package`.
+
+Do not treat the separate `noos-shuttle-hub-ux-refactor` worktree or the
+"Merge to main" item below as pending work unless a new handoff says so. The
+remaining useful context in this file is historical design rationale and known
+follow-up areas.
+
 ## Intent
 
 Hand off the NOOS Hub UX refactoring work to the main agent so it can verify, merge,

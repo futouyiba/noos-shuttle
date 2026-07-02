@@ -12,6 +12,8 @@ import { useChatStore } from "@/stores/chat-store"
 import { useReviewStore } from "@/stores/review-store"
 import { useActivityStore } from "@/stores/activity-store"
 import { useResearchStore } from "@/stores/research-store"
+import { stopProjectFileSync } from "@/lib/project-file-sync"
+import { stopScheduledImport } from "@/lib/scheduled-import"
 
 export async function resetProjectState(): Promise<void> {
   // Zustand stores — clear all per-project data (synchronous)
@@ -38,25 +40,19 @@ export async function resetProjectState(): Promise<void> {
     panelOpen: false,
   })
 
+  try {
+    stopScheduledImport()
+  } catch (err) {
+    console.warn("[Reset Project State] stopScheduledImport failed:", err)
+  }
+
   // Module-level caches — load in parallel and clear each, surfacing any
   // failure instead of swallowing it.
-  const [queueMod, dedupQueueMod, graphMod, fileSyncMod, scheduledImportMod] = await Promise.allSettled([
+  const [queueMod, dedupQueueMod, graphMod] = await Promise.allSettled([
     import("@/lib/ingest-queue"),
     import("@/lib/dedup-queue"),
     import("@/lib/graph-relevance"),
-    import("@/lib/project-file-sync"),
-    import("@/lib/scheduled-import"),
   ])
-
-  if (scheduledImportMod.status === "fulfilled") {
-    try {
-      scheduledImportMod.value.stopScheduledImport()
-    } catch (err) {
-      console.warn("[Reset Project State] stopScheduledImport failed:", err)
-    }
-  } else {
-    console.warn("[Reset Project State] Failed to load scheduled-import:", scheduledImportMod.reason)
-  }
 
   if (queueMod.status === "fulfilled") {
     try {
@@ -92,14 +88,10 @@ export async function resetProjectState(): Promise<void> {
     console.warn("[Reset Project State] Failed to load graph-relevance:", graphMod.reason)
   }
 
-  if (fileSyncMod.status === "fulfilled") {
-    try {
-      await fileSyncMod.value.stopProjectFileSync()
-    } catch (err) {
-      console.warn("[Reset Project State] stopProjectFileSync failed:", err)
-    }
-  } else {
-    console.warn("[Reset Project State] Failed to load project-file-sync:", fileSyncMod.reason)
+  try {
+    await stopProjectFileSync()
+  } catch (err) {
+    console.warn("[Reset Project State] stopProjectFileSync failed:", err)
   }
 
 }

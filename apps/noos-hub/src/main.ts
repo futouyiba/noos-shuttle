@@ -560,9 +560,7 @@ function renderCurrentSection(): void {
       void runAction(button.dataset.run ?? "", event.currentTarget as HTMLButtonElement);
     });
   });
-  content.querySelector('[data-action="check-update"]')?.addEventListener("click", () => {
-    void checkForHubUpdate({ mode: "manual" });
-  });
+  bindContentActionButtons(content);
 
   if (activeSection === "config") {
     bindConfigEditEvents(content);
@@ -838,6 +836,7 @@ async function loadConfig(): Promise<void> {
     content.innerHTML = renderConfig(currentHealth, currentConfig);
     bindConfigEditEvents(content);
     bindRunButtons(content);
+    bindContentActionButtons(content);
   }
 }
 
@@ -914,6 +913,14 @@ function bindRunButtons(root: ParentNode): void {
   root.querySelectorAll<HTMLButtonElement>("[data-run]").forEach((button) => {
     button.addEventListener("click", (event) => {
       void runAction(button.dataset.run ?? "", event.currentTarget as HTMLButtonElement);
+    });
+  });
+}
+
+function bindContentActionButtons(root: ParentNode): void {
+  root.querySelectorAll<HTMLButtonElement>('[data-action="check-update"]').forEach((button) => {
+    button.addEventListener("click", () => {
+      void checkForHubUpdate({ mode: "manual" });
     });
   });
 }
