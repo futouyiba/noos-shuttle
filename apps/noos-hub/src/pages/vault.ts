@@ -69,6 +69,9 @@ export function renderVault(health: HubHealth): string {
       ${recentVaultPanel("handoffs", "最近 Handoff", "交给下游 Agent 继续执行", health.recent_files.handoffs, health.noos_home)}
       ${recentVaultPanel("crystals", "最近 Crystal", "长期复用的讨论结晶", health.recent_files.crystals, health.noos_home)}
     </section>
+    <section id="vault-browser" class="vault-browser">
+      <div class="vb-loading">加载文件列表…</div>
+    </section>
     <details class="diagnostics">
       <summary>高级 / 诊断</summary>
       <div class="diagnostics-grid">

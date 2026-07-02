@@ -384,6 +384,29 @@ fn run_hub_action(app: tauri::AppHandle, action: String) -> Result<String, Strin
     result
 }
 
+#[tauri::command]
+fn browse_vault(folder: Option<String>, query: Option<String>) -> Result<serde_json::Value, String> {
+    Ok(vault_browse_payload(
+        &noos_home(),
+        folder.as_deref(),
+        query.as_deref(),
+    ))
+}
+
+#[tauri::command]
+fn get_vault_object(key: String) -> Result<serde_json::Value, String> {
+    let payload = vault_object_payload(&noos_home(), &key);
+    if payload.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        Ok(payload)
+    } else {
+        Err(payload
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Object not found")
+            .to_string())
+    }
+}
+
 fn main() {
     start_local_write_server();
     start_sleep_resume_guard();
@@ -405,7 +428,9 @@ fn main() {
             get_sleep_recovery_status,
             mark_sleep_suspended,
             recover_from_sleep,
-            simulate_sleep_resume
+            simulate_sleep_resume,
+            browse_vault,
+            get_vault_object
         ])
         .run(tauri::generate_context!())
         .expect("error while running NOOS Hub");

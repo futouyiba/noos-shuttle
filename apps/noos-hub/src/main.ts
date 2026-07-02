@@ -8,6 +8,7 @@ import { renderAdapters } from "./pages/adapters";
 import { renderConfig } from "./pages/config";
 import { renderDashboard } from "./pages/dashboard";
 import { renderVault } from "./pages/vault";
+import { createVaultBrowserState, renderVaultBrowser, type VaultBrowserState } from "./pages/vault-browser";
 import { sleepRecoveryDisplay } from "./status";
 import "./styles.css";
 import type { HubHealth, SleepRecoveryStatus, UpdateCheckMode, UpdateStatus } from "./types";
@@ -62,6 +63,7 @@ let activeSection: SectionId = parseSectionId(window.location.hash.slice(1), "ho
 let healthLoadInFlight = false;
 let actionInFlight = false;
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
+let vaultBrowserState: VaultBrowserState = createVaultBrowserState();
 let updateStatus: UpdateStatus = "idle";
 let updateDialogVisible = false;
 let updateBannerVisible = false;
@@ -216,6 +218,158 @@ function bindRetryButton(root: ParentNode): void {
   });
 }
 
+async function loadVaultBrowse(): Promise<void> {
+  try {
+    const payload = await invoke<{
+      ok: boolean;
+      folder: string;
+      folders: VaultBrowserState["folders"];
+      objects: VaultBrowserState["objects"];
+    }>("browse_vault", {
+      folder: vaultBrowserState.folder,
+      query: vaultBrowserState.query || null
+    });
+
+    vaultBrowserState.folders = payload.folders || [];
+    vaultBrowserState.objects = payload.objects || [];
+    vaultBrowserState.expandedKey = null;
+    vaultBrowserState.expandedContent = null;
+  } catch {
+    if (!isTauriRuntime()) {
+      vaultBrowserState = mockVaultBrowse(vaultBrowserState.folder, vaultBrowserState.query);
+    }
+  }
+
+  renderVaultBrowserSection();
+}
+
+async function expandVaultObject(key: string): Promise<void> {
+  if (vaultBrowserState.expandedKey === key) {
+    vaultBrowserState.expandedKey = null;
+    vaultBrowserState.expandedContent = null;
+    renderVaultBrowserSection();
+    return;
+  }
+
+  vaultBrowserState.expandedKey = key;
+  vaultBrowserState.expandedContent = null;
+  renderVaultBrowserSection();
+
+  try {
+    const payload = await invoke<{
+      ok: boolean;
+      object: { content: string };
+    }>("get_vault_object", { key });
+
+    vaultBrowserState.expandedContent = payload.object?.content ?? "";
+  } catch {
+    vaultBrowserState.expandedContent = "(无法加载文件内容)";
+  }
+
+  if (vaultBrowserState.expandedKey === key) {
+    renderVaultBrowserSection();
+  }
+}
+
+function renderVaultBrowserSection(): void {
+  const container = document.querySelector<HTMLElement>("#vault-browser");
+  if (!container || !currentHealth) return;
+
+  container.innerHTML = renderVaultBrowser(vaultBrowserState, currentHealth.noos_home);
+  bindVaultBrowserEvents(container);
+  setVaultFileActionDataRuns(container, [
+    { id: "handoffs", files: vaultBrowserState.objects.filter((o) => o.object_type === "handoff") },
+    { id: "crystals", files: vaultBrowserState.objects.filter((o) => o.object_type === "crystal") },
+    { id: "results", files: vaultBrowserState.objects.filter((o) => o.object_type === "result") }
+  ]);
+  container.querySelectorAll<HTMLButtonElement>("[data-run]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      void runAction(button.dataset.run ?? "", event.currentTarget as HTMLButtonElement);
+    });
+  });
+}
+
+function bindVaultBrowserEvents(root: ParentNode): void {
+  root.querySelectorAll<HTMLButtonElement>("[data-vault-folder]").forEach((button) => {
+    button.addEventListener("click", () => {
+      vaultBrowserState.folder = button.dataset.vaultFolder ?? "latest";
+      vaultBrowserState.query = "";
+      void loadVaultBrowse();
+    });
+  });
+
+  const searchInput = root.querySelector<HTMLInputElement>("[data-vault-search]");
+  if (searchInput) {
+    let searchTimer: ReturnType<typeof setTimeout>;
+    searchInput.addEventListener("input", () => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => {
+        vaultBrowserState.query = searchInput.value.trim();
+        void loadVaultBrowse();
+      }, 300);
+    });
+  }
+
+  root.querySelectorAll<HTMLElement>("[data-vault-expand]").forEach((el) => {
+    el.addEventListener("click", () => {
+      const key = el.dataset.vaultExpand;
+      if (key) void expandVaultObject(key);
+    });
+  });
+}
+
+function mockVaultBrowse(folder: string, query: string): VaultBrowserState {
+  const allObjects: VaultBrowserState["objects"] = [
+    { object_type: "handoff", lookup_key: "noos-hub-vault", key: "noos-hub-vault", title: "NOOS Hub Vault 改版", name: "2026-05-20-noos-hub-vault.md", path: "/Users/you/.noos/vault/handoffs/active/2026-05-20-noos-hub-vault.md", modified_epoch: 1779290000, folder: "handoffs/active" },
+    { object_type: "crystal", lookup_key: "handoff-vs-crystal", key: "handoff-vs-crystal", title: "Handoff 与 Crystal 分工", name: "2026-05-20-handoff-vs-crystal.md", path: "/Users/you/.noos/vault/crystals/active/2026-05-20-handoff-vs-crystal.md", modified_epoch: 1779290000, folder: "crystals/active" },
+    { object_type: "handoff", lookup_key: "feishu-md-export", key: "feishu-md-export", title: "飞书 MD 导出到 LLM Wiki", name: "2026-06-15-feishu-md-export.md", path: "/Users/you/.noos/vault/handoffs/active/2026-06-15-feishu-md-export.md", modified_epoch: 1780000000, folder: "handoffs/active" },
+    { object_type: "crystal", lookup_key: "tauri-updater-signing", key: "tauri-updater-signing", title: "Tauri Updater 签名流程", name: "2026-06-10-tauri-updater-signing.md", path: "/Users/you/.noos/vault/crystals/active/2026-06-10-tauri-updater-signing.md", modified_epoch: 1779900000, folder: "crystals/active" },
+    { object_type: "handoff", lookup_key: "sleep-recovery", key: "sleep-recovery", title: "休眠恢复 handoff", name: "2026-06-01-sleep-recovery.md", path: "/Users/you/.noos/vault/handoffs/done/2026-06-01-sleep-recovery.md", modified_epoch: 1779000000, folder: "handoffs/done" },
+    { object_type: "result", lookup_key: "doctor-run-0628", key: "doctor-run-0628", title: "Doctor 检查结果 2026-06-28", name: "2026-06-28-doctor-result.md", path: "/Users/you/.noos/vault/results/inbox/2026-06-28-doctor-result.md", modified_epoch: 1780500000, folder: "results/inbox" }
+  ];
+
+  let objects = allObjects;
+  if (folder !== "latest") {
+    if (folder === "handoffs") {
+      objects = objects.filter((o) => o.object_type === "handoff");
+    } else if (folder === "crystals") {
+      objects = objects.filter((o) => o.object_type === "crystal");
+    } else if (folder === "results") {
+      objects = objects.filter((o) => o.object_type === "result");
+    } else {
+      objects = objects.filter((o) => o.folder === folder);
+    }
+  }
+
+  const q = query.toLowerCase().trim();
+  if (q) {
+    objects = objects.filter((o) =>
+      o.title?.toLowerCase().includes(q) ||
+      o.key?.toLowerCase().includes(q) ||
+      o.name?.toLowerCase().includes(q) ||
+      o.path?.toLowerCase().includes(q)
+    );
+  }
+
+  return {
+    folder,
+    query,
+    objects,
+    folders: [
+      { id: "latest", label: "最新", kind: "system" },
+      { id: "handoffs", label: "Handoff", kind: "group" },
+      { id: "handoffs/active", label: "活跃", kind: "folder" },
+      { id: "handoffs/done", label: "已完成", kind: "folder" },
+      { id: "crystals", label: "Crystal", kind: "group" },
+      { id: "crystals/active", label: "活跃", kind: "folder" },
+      { id: "results", label: "Result", kind: "group" },
+      { id: "results/inbox", label: "收件箱", kind: "folder" }
+    ],
+    expandedKey: vaultBrowserState.expandedKey,
+    expandedContent: vaultBrowserState.expandedContent
+  };
+}
+
 async function getHubHealth(): Promise<HubHealth> {
   try {
     return await invoke<HubHealth>("get_hub_health");
@@ -340,6 +494,7 @@ function renderCurrentSection(): void {
   switch (activeSection) {
     case "vault":
       content.innerHTML = renderVault(currentHealth);
+      void loadVaultBrowse();
       break;
     case "adapters":
       content.innerHTML = renderAdapters(currentHealth);
