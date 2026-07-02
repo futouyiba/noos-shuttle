@@ -60,6 +60,8 @@ let currentRecoveryStatus: SleepRecoveryStatus | null = null;
 let currentLog = "";
 let activeSection: SectionId = parseSectionId(window.location.hash.slice(1), "home");
 let healthLoadInFlight = false;
+let actionInFlight = false;
+let toastTimer: ReturnType<typeof setTimeout> | null = null;
 let updateStatus: UpdateStatus = "idle";
 let updateDialogVisible = false;
 let updateBannerVisible = false;
@@ -123,6 +125,7 @@ function renderShell(): void {
         <div class="loading">读取本机 NOOS 状态…</div>
       </section>
       <section id="update-dialog-root"></section>
+      <section id="toast" class="toast" hidden></section>
       <section class="log" id="log" hidden>
         <header>
           <strong>运行输出</strong>
@@ -137,8 +140,8 @@ function renderShell(): void {
   appElement.querySelector('[data-action="refresh"]')?.addEventListener("click", () => {
     void loadHealth({ force: true });
   });
-  appElement.querySelector('[data-action="doctor"]')?.addEventListener("click", () => {
-    void runAction("doctor");
+  appElement.querySelector('[data-action="doctor"]')?.addEventListener("click", (event) => {
+    void runAction("doctor", event.currentTarget as HTMLButtonElement);
   });
   appElement.querySelector('[data-action="clear-log"]')?.addEventListener("click", () => setLog(""));
 }
@@ -180,8 +183,7 @@ function restoreSectionFromLocation(): void {
 }
 
 async function loadHealth(options: { force?: boolean } = {}): Promise<void> {
-  void options;
-  if (healthLoadInFlight) {
+  if (healthLoadInFlight && !options.force) {
     return;
   }
   healthLoadInFlight = true;
@@ -190,16 +192,28 @@ async function loadHealth(options: { force?: boolean } = {}): Promise<void> {
     healthLoadInFlight = false;
     return;
   }
-  content.innerHTML = `<div class="loading">读取本机 NOOS 状态…</div>`;
+
+  if (!options.force && currentHealth) {
+    content.innerHTML = `<div class="loading">读取本机 NOOS 状态…</div>`;
+  } else {
+    content.innerHTML = `<div class="loading">${options.force ? "正在刷新…" : "读取本机 NOOS 状态…"}</div>`;
+  }
 
   try {
     currentHealth = await getHubHealth();
     renderCurrentSection();
   } catch (error) {
-    content.innerHTML = `<div class="error">读取失败：${escapeHtml(String(error))}</div>`;
+    content.innerHTML = `<div class="error">读取失败：${escapeHtml(String(error))}<button type="button" data-action="retry-load">重试</button></div>`;
+    bindRetryButton(content);
   } finally {
     healthLoadInFlight = false;
   }
+}
+
+function bindRetryButton(root: ParentNode): void {
+  root.querySelector<HTMLButtonElement>('[data-action="retry-load"]')?.addEventListener("click", () => {
+    void loadHealth({ force: true });
+  });
 }
 
 async function getHubHealth(): Promise<HubHealth> {
@@ -346,8 +360,8 @@ function renderCurrentSection(): void {
   bindSectionButtons(content);
 
   content.querySelectorAll<HTMLButtonElement>("[data-run]").forEach((button) => {
-    button.addEventListener("click", () => {
-      void runAction(button.dataset.run ?? "");
+    button.addEventListener("click", (event) => {
+      void runAction(button.dataset.run ?? "", event.currentTarget as HTMLButtonElement);
     });
   });
   content.querySelector('[data-action="check-update"]')?.addEventListener("click", () => {
@@ -372,19 +386,37 @@ function renderShellContext(): void {
   }
 }
 
-async function runAction(action: string): Promise<void> {
-  if (!action) return;
+async function runAction(action: string, sourceButton?: HTMLButtonElement): Promise<void> {
+  if (!action || actionInFlight) return;
+
+  actionInFlight = true;
+  const originalLabel = sourceButton?.textContent ?? "";
+  if (sourceButton) {
+    sourceButton.disabled = true;
+    sourceButton.textContent = "⏳ …";
+  }
+
   setLog(`运行：${action}\n`);
+
   try {
     const output = await invoke<string>("run_hub_action", { action });
     setLog(output || "完成。");
+    showToast("✅ 完成", "success");
     await loadHealth({ force: true });
   } catch (error) {
     if (!isTauriRuntime()) {
       setLog(`浏览器预览模式不会执行本机动作：${action}`);
-      return;
+      showToast("浏览器预览模式不执行本机动作", "info");
+    } else {
+      setLog(`失败：${String(error)}`);
+      showToast("❌ 操作失败", "error");
     }
-    setLog(`失败：${String(error)}`);
+  } finally {
+    actionInFlight = false;
+    if (sourceButton) {
+      sourceButton.disabled = false;
+      sourceButton.textContent = originalLabel;
+    }
   }
 }
 
@@ -560,6 +592,24 @@ function closeUpdateDialog(): void {
   renderUpdateSurfaces();
 }
 
+function showToast(message: string, kind: "success" | "error" | "info" = "info"): void {
+  const toast = appElement.querySelector<HTMLElement>("#toast");
+  if (!toast) return;
+
+  if (toastTimer) {
+    clearTimeout(toastTimer);
+  }
+
+  toast.className = `toast toast--${kind}`;
+  toast.textContent = message;
+  toast.hidden = false;
+
+  toastTimer = setTimeout(() => {
+    toast.hidden = true;
+    toastTimer = null;
+  }, 3000);
+}
+
 function setLog(value: string): void {
   currentLog = value;
   const panel = appElement.querySelector<HTMLElement>("#log");
@@ -567,6 +617,9 @@ function setLog(value: string): void {
   if (!panel || !pre) return;
   pre.textContent = value;
   panel.hidden = value.length === 0;
+  if (!panel.hidden) {
+    panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
 }
 
 function isTauriRuntime(): boolean {

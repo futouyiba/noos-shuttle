@@ -160,7 +160,7 @@ function renderRecentGroup(
       ${
         files.length
           ? `<div class="db-recent-list">${files.slice(0, 4).map((file, index) => renderRecentFile(groupId, file, index, noosHome)).join("")}</div>`
-          : `<div class="recent-empty">还没有 ${label}。</div>`
+          : `<div class="recent-empty">还没有 ${label}。从浏览器插件保存一次对话即可生成。</div>`
       }
     </article>
   `;
