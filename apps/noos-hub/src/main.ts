@@ -6,11 +6,9 @@ import noosLogoUrl from "./assets/noos-logo.png";
 import { mockHealth, mockSleepRecoveryStatus } from "./mock";
 import { renderAdapters } from "./pages/adapters";
 import { renderConfig } from "./pages/config";
-import { renderGuide } from "./pages/guide";
-import { renderLogs } from "./pages/logs";
-import { renderNoosIntro } from "./pages/noos-intro";
-import { renderOverview } from "./pages/overview";
+import { renderDashboard } from "./pages/dashboard";
 import { renderVault } from "./pages/vault";
+import { createVaultBrowserState, renderVaultBrowser, type VaultBrowserState } from "./pages/vault-browser";
 import { sleepRecoveryDisplay } from "./status";
 import "./styles.css";
 import type { HubHealth, SleepRecoveryStatus, UpdateCheckMode, UpdateStatus } from "./types";
@@ -18,7 +16,7 @@ import { renderUpdateBannerHtml, renderUpdateDialogHtml } from "./update/render"
 import { escapeHtml } from "./ui/html";
 import { setVaultFileActionDataRuns } from "./vault-file-actions";
 
-type SectionId = "noos" | "overview" | "guide" | "adapters" | "vault" | "config" | "logs";
+type SectionId = "home" | "vault" | "adapters" | "config";
 
 const silentUpdateCheckDelayMs = 2500;
 const navItems: Array<{
@@ -29,32 +27,11 @@ const navItems: Array<{
   summary: string;
 }> = [
   {
-    id: "noos",
-    label: "工作台",
-    eyebrow: "NOOS Hub Desktop",
+    id: "home",
+    label: "首页",
+    eyebrow: "NOOS Hub",
     title: "本机上下文中枢",
-    summary: "把浏览器、Vault、Agent 和项目之间的上下文收进来、放稳、交出去。"
-  },
-  {
-    id: "overview",
-    label: "状态",
-    eyebrow: "System Health",
-    title: "当前是否可用",
-    summary: "先看阻塞点，再判断捕获、存储、解析和消费链路是否完整。"
-  },
-  {
-    id: "guide",
-    label: "修复",
-    eyebrow: "Guided Setup",
-    title: "下一步怎么处理",
-    summary: "把 Doctor 和连接器状态压缩成少量可确认动作。"
-  },
-  {
-    id: "adapters",
-    label: "连接器",
-    eyebrow: "Adapters",
-    title: "连接器安装状态",
-    summary: "检查浏览器、Git、工作区和下游 agent 的可用性。"
+    summary: "连接器状态、建议操作和最近文件一览。"
   },
   {
     id: "vault",
@@ -64,27 +41,29 @@ const navItems: Array<{
     summary: "管理 Handoff、Crystal、Browser Mirror 和 Agent Projection。"
   },
   {
+    id: "adapters",
+    label: "连接器",
+    eyebrow: "Adapters",
+    title: "连接器安装状态",
+    summary: "检查浏览器、Git、工作区和下游 agent 的可用性。"
+  },
+  {
     id: "config",
-    label: "配置",
+    label: "设置",
     eyebrow: "Settings",
     title: "本机配置与更新",
     summary: "查看路径、更新入口和内置 Shuttle 扩展。"
-  },
-  {
-    id: "logs",
-    label: "输出",
-    eyebrow: "Run Output",
-    title: "最近一次动作输出",
-    summary: "Doctor、安装和修复动作的 stdout 会保留在这里。"
   }
 ];
 
 let currentHealth: HubHealth | null = null;
 let currentRecoveryStatus: SleepRecoveryStatus | null = null;
 let currentLog = "";
-let activeHubAction: string | null = null;
-let activeSection: SectionId = parseSectionId(window.location.hash.slice(1), "noos");
+let activeSection: SectionId = parseSectionId(window.location.hash.slice(1), "home");
 let healthLoadInFlight = false;
+let actionInFlight = false;
+let toastTimer: ReturnType<typeof setTimeout> | null = null;
+let vaultBrowserState: VaultBrowserState = createVaultBrowserState();
 let updateStatus: UpdateStatus = "idle";
 let updateDialogVisible = false;
 let updateBannerVisible = false;
@@ -148,6 +127,7 @@ function renderShell(): void {
         <div class="loading">读取本机 NOOS 状态…</div>
       </section>
       <section id="update-dialog-root"></section>
+      <section id="toast" class="toast" hidden></section>
       <section class="log" id="log" hidden>
         <header>
           <strong>运行输出</strong>
@@ -158,16 +138,12 @@ function renderShell(): void {
     </main>
   `;
 
-  appElement.querySelectorAll<HTMLButtonElement>("[data-section]").forEach((button) => {
-    button.addEventListener("click", () => {
-      setActiveSection(parseSectionId(button.dataset.section, activeSection));
-    });
-  });
+  bindSectionButtons(appElement);
   appElement.querySelector('[data-action="refresh"]')?.addEventListener("click", () => {
     void loadHealth({ force: true });
   });
-  appElement.querySelector('[data-action="doctor"]')?.addEventListener("click", () => {
-    void runAction("doctor");
+  appElement.querySelector('[data-action="doctor"]')?.addEventListener("click", (event) => {
+    void runAction("doctor", event.currentTarget as HTMLButtonElement);
   });
   appElement.querySelector('[data-action="clear-log"]')?.addEventListener("click", () => setLog(""));
 }
@@ -177,7 +153,15 @@ function navButton(section: SectionId, label: string): string {
   return `<button type="button" data-section="${section}" class="${active ? "active" : ""}" ${active ? 'aria-current="page"' : ""}>${label}</button>`;
 }
 
-function parseSectionId(value: string | undefined, fallback: SectionId = "overview"): SectionId {
+function bindSectionButtons(root: ParentNode): void {
+  root.querySelectorAll<HTMLButtonElement>("[data-section]").forEach((button) => {
+    button.addEventListener("click", () => {
+      setActiveSection(parseSectionId(button.dataset.section, activeSection));
+    });
+  });
+}
+
+function parseSectionId(value: string | undefined, fallback: SectionId = "home"): SectionId {
   return navItems.some((item) => item.id === value) ? (value as SectionId) : fallback;
 }
 
@@ -194,15 +178,14 @@ function setActiveSection(section: SectionId, options: { updateHistory?: boolean
 }
 
 function restoreSectionFromLocation(): void {
-  const nextSection = parseSectionId(window.location.hash.slice(1), "noos");
+  const nextSection = parseSectionId(window.location.hash.slice(1), "home");
   if (nextSection !== activeSection) {
     setActiveSection(nextSection, { updateHistory: false });
   }
 }
 
 async function loadHealth(options: { force?: boolean } = {}): Promise<void> {
-  void options;
-  if (healthLoadInFlight) {
+  if (healthLoadInFlight && !options.force) {
     return;
   }
   healthLoadInFlight = true;
@@ -211,16 +194,180 @@ async function loadHealth(options: { force?: boolean } = {}): Promise<void> {
     healthLoadInFlight = false;
     return;
   }
-  content.innerHTML = `<div class="loading">读取本机 NOOS 状态…</div>`;
+
+  if (!options.force && currentHealth) {
+    content.innerHTML = `<div class="loading">读取本机 NOOS 状态…</div>`;
+  } else {
+    content.innerHTML = `<div class="loading">${options.force ? "正在刷新…" : "读取本机 NOOS 状态…"}</div>`;
+  }
 
   try {
     currentHealth = await getHubHealth();
     renderCurrentSection();
   } catch (error) {
-    content.innerHTML = `<div class="error">读取失败：${escapeHtml(String(error))}</div>`;
+    content.innerHTML = `<div class="error">读取失败：${escapeHtml(String(error))}<button type="button" data-action="retry-load">重试</button></div>`;
+    bindRetryButton(content);
   } finally {
     healthLoadInFlight = false;
   }
+}
+
+function bindRetryButton(root: ParentNode): void {
+  root.querySelector<HTMLButtonElement>('[data-action="retry-load"]')?.addEventListener("click", () => {
+    void loadHealth({ force: true });
+  });
+}
+
+async function loadVaultBrowse(): Promise<void> {
+  try {
+    const payload = await invoke<{
+      ok: boolean;
+      folder: string;
+      folders: VaultBrowserState["folders"];
+      objects: VaultBrowserState["objects"];
+    }>("browse_vault", {
+      folder: vaultBrowserState.folder,
+      query: vaultBrowserState.query || null
+    });
+
+    vaultBrowserState.folders = payload.folders || [];
+    vaultBrowserState.objects = payload.objects || [];
+    vaultBrowserState.expandedKey = null;
+    vaultBrowserState.expandedContent = null;
+  } catch {
+    if (!isTauriRuntime()) {
+      vaultBrowserState = mockVaultBrowse(vaultBrowserState.folder, vaultBrowserState.query);
+    }
+  }
+
+  renderVaultBrowserSection();
+}
+
+async function expandVaultObject(key: string): Promise<void> {
+  if (vaultBrowserState.expandedKey === key) {
+    vaultBrowserState.expandedKey = null;
+    vaultBrowserState.expandedContent = null;
+    renderVaultBrowserSection();
+    return;
+  }
+
+  vaultBrowserState.expandedKey = key;
+  vaultBrowserState.expandedContent = null;
+  renderVaultBrowserSection();
+
+  try {
+    const payload = await invoke<{
+      ok: boolean;
+      object: { content: string };
+    }>("get_vault_object", { key });
+
+    vaultBrowserState.expandedContent = payload.object?.content ?? "";
+  } catch {
+    vaultBrowserState.expandedContent = "(无法加载文件内容)";
+  }
+
+  if (vaultBrowserState.expandedKey === key) {
+    renderVaultBrowserSection();
+  }
+}
+
+function renderVaultBrowserSection(): void {
+  const container = document.querySelector<HTMLElement>("#vault-browser");
+  if (!container || !currentHealth) return;
+
+  container.innerHTML = renderVaultBrowser(vaultBrowserState, currentHealth.noos_home);
+  bindVaultBrowserEvents(container);
+  setVaultFileActionDataRuns(container, [
+    { id: "handoffs", files: vaultBrowserState.objects.filter((o) => o.object_type === "handoff") },
+    { id: "crystals", files: vaultBrowserState.objects.filter((o) => o.object_type === "crystal") },
+    { id: "results", files: vaultBrowserState.objects.filter((o) => o.object_type === "result") }
+  ]);
+  container.querySelectorAll<HTMLButtonElement>("[data-run]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      void runAction(button.dataset.run ?? "", event.currentTarget as HTMLButtonElement);
+    });
+  });
+}
+
+function bindVaultBrowserEvents(root: ParentNode): void {
+  root.querySelectorAll<HTMLButtonElement>("[data-vault-folder]").forEach((button) => {
+    button.addEventListener("click", () => {
+      vaultBrowserState.folder = button.dataset.vaultFolder ?? "latest";
+      vaultBrowserState.query = "";
+      void loadVaultBrowse();
+    });
+  });
+
+  const searchInput = root.querySelector<HTMLInputElement>("[data-vault-search]");
+  if (searchInput) {
+    let searchTimer: ReturnType<typeof setTimeout>;
+    searchInput.addEventListener("input", () => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => {
+        vaultBrowserState.query = searchInput.value.trim();
+        void loadVaultBrowse();
+      }, 300);
+    });
+  }
+
+  root.querySelectorAll<HTMLElement>("[data-vault-expand]").forEach((el) => {
+    el.addEventListener("click", () => {
+      const key = el.dataset.vaultExpand;
+      if (key) void expandVaultObject(key);
+    });
+  });
+}
+
+function mockVaultBrowse(folder: string, query: string): VaultBrowserState {
+  const allObjects: VaultBrowserState["objects"] = [
+    { object_type: "handoff", lookup_key: "noos-hub-vault", key: "noos-hub-vault", title: "NOOS Hub Vault 改版", name: "2026-05-20-noos-hub-vault.md", path: "/Users/you/.noos/vault/handoffs/active/2026-05-20-noos-hub-vault.md", modified_epoch: 1779290000, folder: "handoffs/active" },
+    { object_type: "crystal", lookup_key: "handoff-vs-crystal", key: "handoff-vs-crystal", title: "Handoff 与 Crystal 分工", name: "2026-05-20-handoff-vs-crystal.md", path: "/Users/you/.noos/vault/crystals/active/2026-05-20-handoff-vs-crystal.md", modified_epoch: 1779290000, folder: "crystals/active" },
+    { object_type: "handoff", lookup_key: "feishu-md-export", key: "feishu-md-export", title: "飞书 MD 导出到 LLM Wiki", name: "2026-06-15-feishu-md-export.md", path: "/Users/you/.noos/vault/handoffs/active/2026-06-15-feishu-md-export.md", modified_epoch: 1780000000, folder: "handoffs/active" },
+    { object_type: "crystal", lookup_key: "tauri-updater-signing", key: "tauri-updater-signing", title: "Tauri Updater 签名流程", name: "2026-06-10-tauri-updater-signing.md", path: "/Users/you/.noos/vault/crystals/active/2026-06-10-tauri-updater-signing.md", modified_epoch: 1779900000, folder: "crystals/active" },
+    { object_type: "handoff", lookup_key: "sleep-recovery", key: "sleep-recovery", title: "休眠恢复 handoff", name: "2026-06-01-sleep-recovery.md", path: "/Users/you/.noos/vault/handoffs/done/2026-06-01-sleep-recovery.md", modified_epoch: 1779000000, folder: "handoffs/done" },
+    { object_type: "result", lookup_key: "doctor-run-0628", key: "doctor-run-0628", title: "Doctor 检查结果 2026-06-28", name: "2026-06-28-doctor-result.md", path: "/Users/you/.noos/vault/results/inbox/2026-06-28-doctor-result.md", modified_epoch: 1780500000, folder: "results/inbox" }
+  ];
+
+  let objects = allObjects;
+  if (folder !== "latest") {
+    if (folder === "handoffs") {
+      objects = objects.filter((o) => o.object_type === "handoff");
+    } else if (folder === "crystals") {
+      objects = objects.filter((o) => o.object_type === "crystal");
+    } else if (folder === "results") {
+      objects = objects.filter((o) => o.object_type === "result");
+    } else {
+      objects = objects.filter((o) => o.folder === folder);
+    }
+  }
+
+  const q = query.toLowerCase().trim();
+  if (q) {
+    objects = objects.filter((o) =>
+      o.title?.toLowerCase().includes(q) ||
+      o.key?.toLowerCase().includes(q) ||
+      o.name?.toLowerCase().includes(q) ||
+      o.path?.toLowerCase().includes(q)
+    );
+  }
+
+  return {
+    folder,
+    query,
+    objects,
+    folders: [
+      { id: "latest", label: "最新", kind: "system" },
+      { id: "handoffs", label: "Handoff", kind: "group" },
+      { id: "handoffs/active", label: "活跃", kind: "folder" },
+      { id: "handoffs/done", label: "已完成", kind: "folder" },
+      { id: "crystals", label: "Crystal", kind: "group" },
+      { id: "crystals/active", label: "活跃", kind: "folder" },
+      { id: "results", label: "Result", kind: "group" },
+      { id: "results/inbox", label: "收件箱", kind: "folder" }
+    ],
+    expandedKey: vaultBrowserState.expandedKey,
+    expandedContent: vaultBrowserState.expandedContent
+  };
 }
 
 async function getHubHealth(): Promise<HubHealth> {
@@ -345,27 +492,19 @@ function renderCurrentSection(): void {
   });
 
   switch (activeSection) {
-    case "noos":
-      content.innerHTML = renderNoosIntro(currentHealth);
-      break;
-    case "guide":
-      content.innerHTML = renderGuide(currentHealth);
+    case "vault":
+      content.innerHTML = renderVault(currentHealth);
+      void loadVaultBrowse();
       break;
     case "adapters":
       content.innerHTML = renderAdapters(currentHealth);
       break;
-    case "vault":
-      content.innerHTML = renderVault(currentHealth);
-      break;
     case "config":
       content.innerHTML = renderConfig(currentHealth);
       break;
-    case "logs":
-      content.innerHTML = renderLogs(currentLog);
-      break;
-    case "overview":
+    case "home":
     default:
-      content.innerHTML = renderOverview(currentHealth);
+      content.innerHTML = renderDashboard(currentHealth);
       break;
   }
 
@@ -373,13 +512,13 @@ function renderCurrentSection(): void {
     { id: "handoffs", files: currentHealth.recent_files.handoffs },
     { id: "crystals", files: currentHealth.recent_files.crystals }
   ]);
+  bindSectionButtons(content);
 
   content.querySelectorAll<HTMLButtonElement>("[data-run]").forEach((button) => {
-    button.addEventListener("click", () => {
-      void runAction(button.dataset.run ?? "");
+    button.addEventListener("click", (event) => {
+      void runAction(button.dataset.run ?? "", event.currentTarget as HTMLButtonElement);
     });
   });
-  syncRunActionButtons();
   content.querySelector('[data-action="check-update"]')?.addEventListener("click", () => {
     void checkForHubUpdate({ mode: "manual" });
   });
@@ -402,55 +541,38 @@ function renderShellContext(): void {
   }
 }
 
-async function runAction(action: string): Promise<void> {
-  if (!action) return;
-  if (activeHubAction) return;
+async function runAction(action: string, sourceButton?: HTMLButtonElement): Promise<void> {
+  if (!action || actionInFlight) return;
 
-  activeHubAction = action;
-  syncRunActionButtons();
-  setLog(actionStartMessage(action));
+  actionInFlight = true;
+  const originalLabel = sourceButton?.textContent ?? "";
+  if (sourceButton) {
+    sourceButton.disabled = true;
+    sourceButton.textContent = "⏳ …";
+  }
+
+  setLog(`运行：${action}\n`);
+
   try {
     const output = await invoke<string>("run_hub_action", { action });
     setLog(output || "完成。");
+    showToast("✅ 完成", "success");
     await loadHealth({ force: true });
   } catch (error) {
     if (!isTauriRuntime()) {
       setLog(`浏览器预览模式不会执行本机动作：${action}`);
-      return;
+      showToast("浏览器预览模式不执行本机动作", "info");
+    } else {
+      setLog(`失败：${String(error)}`);
+      showToast("❌ 操作失败", "error");
     }
-    setLog(`失败：${String(error)}`);
   } finally {
-    activeHubAction = null;
-    syncRunActionButtons();
-  }
-}
-
-function actionStartMessage(action: string): string {
-  if (action === "browser-manual-unpacked") {
-    return "正在打开日常 Chrome 安装向导…\n如果 Chrome 要求确认，请按向导加载 dist 目录。";
-  }
-  if (action === "browser-dev-profile") {
-    return "正在启动带 NOOS Shuttle 的专用 Chrome profile…";
-  }
-  return `运行：${action}\n`;
-}
-
-function syncRunActionButtons(): void {
-  const running = activeHubAction !== null;
-  appElement.querySelectorAll<HTMLButtonElement>("[data-run]").forEach((button) => {
-    const isCurrentAction = button.dataset.run === activeHubAction;
-    button.disabled = running;
-    button.toggleAttribute("aria-busy", running && isCurrentAction);
-    if (running && isCurrentAction) {
-      if (!button.dataset.idleLabel) {
-        button.dataset.idleLabel = button.textContent ?? "";
-      }
-      button.textContent = "正在运行…";
-    } else if (button.dataset.idleLabel) {
-      button.textContent = button.dataset.idleLabel;
-      delete button.dataset.idleLabel;
+    actionInFlight = false;
+    if (sourceButton) {
+      sourceButton.disabled = false;
+      sourceButton.textContent = originalLabel;
     }
-  });
+  }
 }
 
 async function checkForHubUpdate({ mode }: { mode: UpdateCheckMode }): Promise<void> {
@@ -625,6 +747,24 @@ function closeUpdateDialog(): void {
   renderUpdateSurfaces();
 }
 
+function showToast(message: string, kind: "success" | "error" | "info" = "info"): void {
+  const toast = appElement.querySelector<HTMLElement>("#toast");
+  if (!toast) return;
+
+  if (toastTimer) {
+    clearTimeout(toastTimer);
+  }
+
+  toast.className = `toast toast--${kind}`;
+  toast.textContent = message;
+  toast.hidden = false;
+
+  toastTimer = setTimeout(() => {
+    toast.hidden = true;
+    toastTimer = null;
+  }, 3000);
+}
+
 function setLog(value: string): void {
   currentLog = value;
   const panel = appElement.querySelector<HTMLElement>("#log");
@@ -632,18 +772,8 @@ function setLog(value: string): void {
   if (!panel || !pre) return;
   pre.textContent = value;
   panel.hidden = value.length === 0;
-  syncLogPage();
-}
-
-function syncLogPage(): void {
-  const output = appElement.querySelector<HTMLElement>(".log-page-output");
-  if (!output) return;
-
-  const hasOutput = currentLog.trim().length > 0;
-  const title = appElement.querySelector<HTMLElement>("[data-log-title]");
-  output.textContent = hasOutput ? currentLog : "运行 Doctor 或其他动作后，这里会显示输出。";
-  if (title) {
-    title.textContent = hasOutput ? "最近输出" : "还没有输出";
+  if (!panel.hidden) {
+    panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 }
 

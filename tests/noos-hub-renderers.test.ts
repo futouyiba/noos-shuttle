@@ -1,21 +1,37 @@
 import { describe, expect, it } from "vitest";
+import { renderDashboard } from "../apps/noos-hub/src/pages/dashboard";
 import { renderLogs } from "../apps/noos-hub/src/pages/logs";
-import { renderOverview } from "../apps/noos-hub/src/pages/overview";
 import { renderVault } from "../apps/noos-hub/src/pages/vault";
 import type { AdapterHealth, HubHealth } from "../apps/noos-hub/src/types";
 
 describe("NOOS Hub page renderers", () => {
-  it("keeps the overview focused on summary instead of duplicating adapter cards", () => {
-    const html = renderOverview(
+  it("renders dashboard with status cards, not old card-grid layout", () => {
+    const html = renderDashboard(
       healthFixture({
-        adapters: [readyAdapter("Browser Shuttle"), readyAdapter("NOOS Vault")]
+        adapters: [
+          readyAdapter("Browser Shuttle"),
+          { ...readyAdapter("NOOS Vault"), kind: "transport" }
+        ]
       })
     );
 
-    expect(html).toContain("待处理");
-    expect(html).toContain("核心链路可以使用");
-    expect(html).not.toContain('class="card');
-    expect(html).not.toContain("安装状态");
+    expect(html).toContain("一切就绪");
+    expect(html).toContain("个连接器就绪");
+    expect(html).toContain("db-card");
+    expect(html).not.toContain('class="card"');
+    expect(html).not.toContain("card-grid");
+  });
+
+  it("does not call partial adapters fully ready on the dashboard", () => {
+    const html = renderDashboard(
+      healthFixture({
+        adapters: [{ ...readyAdapter("Codex"), status: "partial", summary: "Skill installed, manual setup remains" }]
+      })
+    );
+
+    expect(html).toContain("1 项待处理");
+    expect(html).toContain("Codex");
+    expect(html).not.toContain("一切就绪");
   });
 
   it("shows a first-use Vault state when all Vault and Mirror counts are zero", () => {
