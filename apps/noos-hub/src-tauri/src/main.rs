@@ -2922,7 +2922,7 @@ fn workspace_adapter(repo_root: &Path) -> AdapterHealth {
         "workspace",
         "项目级 .noos 工作区和 agent 入口文件。",
         checks,
-        vec![action("install-workspace", "初始化 Workspace", false)],
+        vec![action("install-workspace", "补齐 Workspace 目录", false)],
     )
 }
 
@@ -3987,6 +3987,14 @@ mod tests {
             vec!["browser-manual-unpacked", "browser-dev-profile"]
         );
         assert!(adapter.actions[0].requires_user_action);
+    }
+
+    #[test]
+    fn workspace_adapter_action_uses_non_destructive_label() {
+        let adapter = workspace_adapter(Path::new("/tmp/noos-repo"));
+
+        assert_eq!(adapter.actions[0].id, "install-workspace");
+        assert_eq!(adapter.actions[0].label, "补齐 Workspace 目录");
     }
 
     #[test]
