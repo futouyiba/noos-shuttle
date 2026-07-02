@@ -88,17 +88,26 @@ function dashboardSummary({
   vaultCount: number;
   mirrorCount: number;
 }): string {
-  const parts: string[] = [];
+  const total = summary.ready + summary.partial + summary.error + summary.needsAction;
+  if (total === 0) return "还没有检测到任何连接器。——运行 Doctor 开始配置。";
 
-  if (summary.ready > 0) parts.push(`${summary.ready} 个连接器就绪`);
-  if (vaultCount > 0) parts.push(`${vaultCount} 个本机对象`);
-  if (mirrorCount > 0) parts.push(`${mirrorCount} 个文件待从 Mirror 导入`);
-  if (summary.error > 0) parts.push(`${summary.error} 个连接器异常`);
-  if (summary.needsAction > 0) parts.push(`${summary.needsAction} 个连接器需要安装或确认`);
-  if (summary.partial > 0) parts.push(`${summary.partial} 个连接器部分就绪`);
+  const lines: string[] = [];
+  lines.push(`${summary.ready}/${total} 个连接器就绪`);
 
-  if (parts.length === 0) return "还没有检测到任何连接器。运行 Doctor 开始配置。";
-  return `${parts.join("，")}。`;
+  if (vaultCount > 0 || mirrorCount > 0) {
+    const fileParts: string[] = [];
+    if (vaultCount > 0) fileParts.push(`${vaultCount} 个本机文件`);
+    if (mirrorCount > 0) fileParts.push(`${mirrorCount} 个待导入`);
+    lines.push(fileParts.join("，"));
+  }
+
+  const issues: string[] = [];
+  if (summary.error > 0) issues.push(`${summary.error} 异常`);
+  if (summary.needsAction > 0) issues.push(`${summary.needsAction} 未安装`);
+  if (summary.partial > 0) issues.push(`${summary.partial} 待完善`);
+  if (issues.length > 0) lines.push(`${issues.join("、")}`);
+
+  return lines.join("  ·  ");
 }
 
 function renderStatusCard(adapters: AdapterHealth[], kind: AdapterKind): string {

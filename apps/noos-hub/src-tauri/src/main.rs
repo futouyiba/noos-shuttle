@@ -407,6 +407,53 @@ fn get_vault_object(key: String) -> Result<serde_json::Value, String> {
     }
 }
 
+#[tauri::command]
+fn read_config() -> Result<serde_json::Value, String> {
+    let config_path = noos_home().join("config.json");
+    if config_path.exists() {
+        let text =
+            fs::read_to_string(&config_path).map_err(|e| format!("无法读取配置: {e}"))?;
+        serde_json::from_str(&text).map_err(|e| format!("配置 JSON 无效: {e}"))
+    } else {
+        Ok(serde_json::json!({}))
+    }
+}
+
+#[tauri::command]
+fn write_config(key: String, value: serde_json::Value) -> Result<(), String> {
+    let config_path = noos_home().join("config.json");
+    let mut config: serde_json::Value = if config_path.exists() {
+        let text =
+            fs::read_to_string(&config_path).map_err(|e| format!("无法读取配置: {e}"))?;
+        serde_json::from_str(&text).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    // Write nested keys like "github.default_account"
+    let parts: Vec<&str> = key.split('.').collect();
+    let mut cursor = &mut config;
+    for (i, part) in parts.iter().enumerate() {
+        if i == parts.len() - 1 {
+            cursor[part] = value.clone();
+        } else {
+            if cursor.get(part).is_none() || !cursor[part].is_object() {
+                cursor[part] = serde_json::json!({});
+            }
+            cursor = cursor.get_mut(part).unwrap();
+        }
+    }
+
+    let parent = config_path.parent().ok_or("Invalid config path")?;
+    fs::create_dir_all(parent).map_err(|e| format!("无法创建目录: {e}"))?;
+    let json =
+        serde_json::to_string_pretty(&config).map_err(|e| format!("无法序列化配置: {e}"))?;
+    fs::write(&config_path, json).map_err(|e| format!("无法写入配置: {e}"))?;
+
+    invalidate_hub_health_cache();
+    Ok(())
+}
+
 fn main() {
     start_local_write_server();
     start_sleep_resume_guard();
@@ -430,7 +477,9 @@ fn main() {
             recover_from_sleep,
             simulate_sleep_resume,
             browse_vault,
-            get_vault_object
+            get_vault_object,
+            read_config,
+            write_config
         ])
         .run(tauri::generate_context!())
         .expect("error while running NOOS Hub");

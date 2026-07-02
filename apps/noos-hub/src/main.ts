@@ -5,7 +5,7 @@ import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updat
 import noosLogoUrl from "./assets/noos-logo.png";
 import { mockHealth, mockSleepRecoveryStatus } from "./mock";
 import { renderAdapters } from "./pages/adapters";
-import { renderConfig } from "./pages/config";
+import { renderConfig, type ConfigData } from "./pages/config";
 import { renderDashboard } from "./pages/dashboard";
 import { renderVault } from "./pages/vault";
 import { createVaultBrowserState, renderVaultBrowser, type VaultBrowserState } from "./pages/vault-browser";
@@ -64,6 +64,7 @@ let healthLoadInFlight = false;
 let actionInFlight = false;
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
 let vaultBrowserState: VaultBrowserState = createVaultBrowserState();
+let currentConfig: ConfigData | null = null;
 let updateStatus: UpdateStatus = "idle";
 let updateDialogVisible = false;
 let updateBannerVisible = false;
@@ -500,7 +501,8 @@ function renderCurrentSection(): void {
       content.innerHTML = renderAdapters(currentHealth);
       break;
     case "config":
-      content.innerHTML = renderConfig(currentHealth);
+      content.innerHTML = renderConfig(currentHealth, currentConfig);
+      void loadConfig();
       break;
     case "home":
     default:
@@ -522,6 +524,10 @@ function renderCurrentSection(): void {
   content.querySelector('[data-action="check-update"]')?.addEventListener("click", () => {
     void checkForHubUpdate({ mode: "manual" });
   });
+
+  if (activeSection === "config") {
+    bindConfigEditEvents(content);
+  }
 }
 
 function renderShellContext(): void {
@@ -775,6 +781,102 @@ function setLog(value: string): void {
   if (!panel.hidden) {
     panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
+}
+
+async function loadConfig(): Promise<void> {
+  try {
+    currentConfig = await invoke<ConfigData>("read_config");
+  } catch {
+    if (isTauriRuntime()) {
+      showToast("无法读取配置", "error");
+    }
+    currentConfig = {};
+  }
+
+  const content = appElement.querySelector<HTMLDivElement>("#content");
+  if (!content || !currentHealth) return;
+  if (activeSection === "config") {
+    content.innerHTML = renderConfig(currentHealth, currentConfig);
+    bindConfigEditEvents(content);
+    bindRunButtons(content);
+  }
+}
+
+function bindConfigEditEvents(root: ParentNode): void {
+  root.querySelectorAll<HTMLButtonElement>("[data-config-edit]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const key = button.dataset.configEdit;
+      if (!key) return;
+      const row = root.querySelector<HTMLElement>(`[data-config-key="${key}"]`);
+      if (!row) return;
+      row.querySelector<HTMLElement>(".cfg-value-text")!.hidden = true;
+      row.querySelector<HTMLElement>(".cfg-edit-btn")!.hidden = true;
+      row.querySelector<HTMLElement>(".cfg-edit-form")!.hidden = false;
+      const input = row.querySelector<HTMLInputElement>(`[data-config-input="${key}"]`);
+      if (input) input.focus();
+    });
+  });
+
+  root.querySelectorAll<HTMLButtonElement>("[data-config-save]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const key = button.dataset.configSave;
+      if (!key) return;
+      const row = root.querySelector<HTMLElement>(`[data-config-key="${key}"]`);
+      if (!row) return;
+      const input = row.querySelector<HTMLInputElement>(`[data-config-input="${key}"]`);
+      const select = row.querySelector<HTMLSelectElement>(`[data-config-select="${key}"]`);
+      const newValue = input?.value.trim() ?? select?.value ?? "";
+      void saveConfigValue(key, newValue, row);
+    });
+  });
+
+  root.querySelectorAll<HTMLButtonElement>("[data-config-cancel]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const key = button.dataset.configCancel;
+      if (!key) return;
+      const row = root.querySelector<HTMLElement>(`[data-config-key="${key}"]`);
+      if (!row) return;
+      row.querySelector<HTMLElement>(".cfg-edit-form")!.hidden = true;
+      row.querySelector<HTMLElement>(".cfg-value-text")!.hidden = false;
+      row.querySelector<HTMLElement>(".cfg-edit-btn")!.hidden = false;
+    });
+  });
+}
+
+async function saveConfigValue(key: string, value: string, row: HTMLElement): Promise<void> {
+  try {
+    const jsonValue = key === "github.default_account"
+      ? (value || null)
+      : value;
+    await invoke("write_config", { key, value: jsonValue });
+    showToast("已保存", "success");
+
+    row.querySelector<HTMLElement>(".cfg-edit-form")!.hidden = true;
+    const display = row.querySelector<HTMLElement>(".cfg-value-text")!;
+    display.textContent = value || "—";
+    display.hidden = false;
+    row.querySelector<HTMLElement>(".cfg-edit-btn")!.hidden = false;
+
+    if (currentConfig) {
+      const parts = key.split(".");
+      if (parts.length === 1) {
+        (currentConfig as Record<string, unknown>)[key] = value;
+      } else if (parts.length === 2 && parts[0] === "github") {
+        currentConfig.github = { ...currentConfig.github, [parts[1]]: value };
+      }
+    }
+    await loadHealth({ force: true });
+  } catch (error) {
+    showToast(`保存失败：${String(error)}`, "error");
+  }
+}
+
+function bindRunButtons(root: ParentNode): void {
+  root.querySelectorAll<HTMLButtonElement>("[data-run]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      void runAction(button.dataset.run ?? "", event.currentTarget as HTMLButtonElement);
+    });
+  });
 }
 
 function isTauriRuntime(): boolean {
