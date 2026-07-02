@@ -37,6 +37,7 @@ run(
     "--exclude=apps/noos-hub/node_modules",
     "--exclude=apps/noos-hub/dist",
     "--exclude=apps/noos-hub/src-tauri/target",
+    "--exclude=apps/noos-hub/src-tauri/target-*",
     "--exclude=apps/noos-hub/src-tauri/gen",
     "-czf",
     hubPath,
