@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NOOS_HOME="${NOOS_HOME:-$HOME/.noos}"
+NOOS_UNAME="$(uname -s 2>/dev/null || printf unknown)"
 
 usage() {
   cat <<'EOF'
@@ -116,15 +117,87 @@ build_extension() {
   (cd "$ROOT_DIR" && npm install --no-audit --no-fund && npm run build)
 }
 
+is_macos() {
+  [[ "$NOOS_UNAME" == Darwin* ]]
+}
+
+is_windows() {
+  [[ "$NOOS_UNAME" == MINGW* || "$NOOS_UNAME" == MSYS* || "$NOOS_UNAME" == CYGWIN* ]]
+}
+
+windows_native_path() {
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -w "$1"
+  else
+    printf "%s\n" "$1"
+  fi
+}
+
+windows_mixed_path() {
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -m "$1"
+  else
+    printf "%s\n" "$1"
+  fi
+}
+
+file_url() {
+  if is_windows; then
+    printf "file:///%s\n" "$(windows_mixed_path "$1")"
+  else
+    printf "file://%s\n" "$1"
+  fi
+}
+
+open_file_or_dir() {
+  local target="$1"
+
+  if is_macos; then
+    open "$target"
+  elif is_windows; then
+    explorer.exe "$(windows_native_path "$target")"
+  elif command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$target"
+  else
+    echo "Open manually: $target" >&2
+    return 1
+  fi
+}
+
 chrome_app() {
-  local candidates=(
-    "/Applications/Google Chrome.app"
-    "/Applications/Google Chrome for Testing.app"
-    "$HOME/Library/Caches/ms-playwright/chromium-1217/chrome-mac-arm64/Google Chrome for Testing.app"
-  )
+  local candidates=()
+
+  if is_windows; then
+    candidates+=(
+      "/c/Program Files/Google/Chrome/Application/chrome.exe"
+      "/c/Program Files (x86)/Google/Chrome/Application/chrome.exe"
+    )
+    if [[ -n "${LOCALAPPDATA:-}" ]] && command -v cygpath >/dev/null 2>&1; then
+      candidates+=("$(cygpath -u "$LOCALAPPDATA")/Google/Chrome/Application/chrome.exe")
+    fi
+    if command -v chrome.exe >/dev/null 2>&1; then
+      candidates+=("$(command -v chrome.exe)")
+    fi
+    if command -v chrome >/dev/null 2>&1; then
+      candidates+=("$(command -v chrome)")
+    fi
+  elif is_macos; then
+    candidates+=(
+      "/Applications/Google Chrome.app"
+      "/Applications/Google Chrome for Testing.app"
+      "$HOME/Library/Caches/ms-playwright/chromium-1217/chrome-mac-arm64/Google Chrome for Testing.app"
+    )
+  else
+    local command_name
+    for command_name in google-chrome google-chrome-stable chromium chromium-browser; do
+      if command -v "$command_name" >/dev/null 2>&1; then
+        candidates+=("$(command -v "$command_name")")
+      fi
+    done
+  fi
 
   for candidate in "${candidates[@]}"; do
-    if [[ -d "$candidate" ]]; then
+    if [[ -d "$candidate" || -f "$candidate" || -x "$candidate" ]]; then
       printf "%s\n" "$candidate"
       return 0
     fi
@@ -141,9 +214,14 @@ chrome_app_name() {
 open_chrome_url() {
   local app_path="$1"
   local url="$2"
+
+  if ! is_macos; then
+    "$app_path" "$url" >/dev/null 2>&1 &
+    return 0
+  fi
+
   local app_name
   app_name="$(chrome_app_name "$app_path")"
-
   open -a "$app_path" || true
   sleep 1
   osascript <<OSA || open -a "$app_path" "$url" || true
@@ -160,10 +238,17 @@ OSA
 open_chrome_manual_install_tabs() {
   local app_path="$1"
   local guide_path="$2"
-  local app_name
   local guide_url
+  guide_url="$(file_url "$guide_path")"
+
+  if ! is_macos; then
+    open_chrome_url "$app_path" "$guide_url"
+    open_chrome_url "$app_path" "chrome://extensions/"
+    return 0
+  fi
+
+  local app_name
   app_name="$(chrome_app_name "$app_path")"
-  guide_url="file://$guide_path"
 
   open -a "$app_path" || true
   sleep 1
@@ -237,13 +322,29 @@ install_browser_dev_profile() {
 
   mkdir -p "$NOOS_HOME/chrome-profile"
   echo "Launching NOOS Shuttle browser profile..."
-  open -na "$app" --args \
-    "--user-data-dir=$NOOS_HOME/chrome-profile" \
-    "--disable-extensions-except=$ROOT_DIR/dist" \
-    "--load-extension=$ROOT_DIR/dist" \
-    --no-first-run \
-    --no-default-browser-check \
-    https://chatgpt.com/
+  if is_macos; then
+    open -na "$app" --args \
+      "--user-data-dir=$NOOS_HOME/chrome-profile" \
+      "--disable-extensions-except=$ROOT_DIR/dist" \
+      "--load-extension=$ROOT_DIR/dist" \
+      --no-first-run \
+      --no-default-browser-check \
+      https://chatgpt.com/
+  else
+    local profile_dir="$NOOS_HOME/chrome-profile"
+    local extension_dir="$ROOT_DIR/dist"
+    if is_windows; then
+      profile_dir="$(windows_mixed_path "$profile_dir")"
+      extension_dir="$(windows_mixed_path "$extension_dir")"
+    fi
+    "$app" \
+      "--user-data-dir=$profile_dir" \
+      "--disable-extensions-except=$extension_dir" \
+      "--load-extension=$extension_dir" \
+      --no-first-run \
+      --no-default-browser-check \
+      https://chatgpt.com/ >/dev/null 2>&1 &
+  fi
 }
 
 install_browser_manual_unpacked() {
@@ -255,11 +356,11 @@ install_browser_manual_unpacked() {
     open_chrome_manual_install_tabs "$app" "$guide"
   else
     echo "Chrome app was not found; open chrome://extensions manually."
-    open "$guide"
+    open_file_or_dir "$guide" || true
   fi
 
   build_extension
-  open "$ROOT_DIR/dist"
+  open_file_or_dir "$ROOT_DIR/dist" || true
   cat <<EOF
 
 Manual Chrome install:

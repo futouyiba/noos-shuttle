@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::env;
+use std::ffi::OsString;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -3375,21 +3376,13 @@ fn project_runtime_from_vault_file(
         ));
     }
 
-    let output = Command::new("bash")
-        .arg("scripts/noos-project-runtime.sh")
-        .arg(path.as_os_str())
-        .current_dir(repo_root)
-        .output()
-        .map_err(|error| error.to_string())?;
-
-    let mut text = String::new();
-    text.push_str(&String::from_utf8_lossy(&output.stdout));
-    text.push_str(&String::from_utf8_lossy(&output.stderr));
-    if output.status.success() {
-        Ok(text)
-    } else {
-        Err(text)
-    }
+    run_script_command(
+        repo_root,
+        vec![
+            OsString::from("scripts/noos-project-runtime.sh"),
+            path.as_os_str().to_os_string(),
+        ],
+    )
 }
 
 fn write_browser_token_response(stream: &mut TcpStream) -> Result<(), String> {
@@ -3863,11 +3856,25 @@ fn action(id: &str, label: &str, requires_user_action: bool) -> AdapterAction {
 }
 
 fn run_script(repo_root: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("bash")
+    run_script_command(repo_root, args.iter().map(OsString::from).collect())
+}
+
+fn run_script_command(repo_root: &Path, args: Vec<OsString>) -> Result<String, String> {
+    let script_label = args
+        .first()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "maintenance script".to_string());
+    let shell = script_shell().ok_or_else(script_shell_missing_message)?;
+    let output = Command::new(&shell)
         .args(args)
         .current_dir(repo_root)
         .output()
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| {
+            format!(
+                "无法启动维护脚本 {script_label}（{}）：{error}",
+                shell.display()
+            )
+        })?;
 
     let mut text = String::new();
     text.push_str(&String::from_utf8_lossy(&output.stdout));
@@ -3876,8 +3883,65 @@ fn run_script(repo_root: &Path, args: &[&str]) -> Result<String, String> {
     if output.status.success() {
         Ok(text)
     } else {
-        Err(text)
+        Err(enrich_script_failure(text))
     }
+}
+
+fn script_shell() -> Option<PathBuf> {
+    script_shell_candidates()
+        .into_iter()
+        .find(|candidate| script_shell_is_usable(candidate))
+}
+
+#[cfg(target_os = "windows")]
+fn script_shell_candidates() -> Vec<PathBuf> {
+    vec![
+        PathBuf::from(r"C:\Program Files\Git\bin\bash.exe"),
+        PathBuf::from(r"C:\Program Files\Git\usr\bin\bash.exe"),
+        PathBuf::from(r"C:\Program Files\Git\cmd\bash.exe"),
+        PathBuf::from(r"C:\Program Files (x86)\Git\bin\bash.exe"),
+        PathBuf::from(r"C:\Program Files (x86)\Git\usr\bin\bash.exe"),
+        PathBuf::from(r"C:\Program Files (x86)\Git\cmd\bash.exe"),
+        PathBuf::from("bash"),
+        PathBuf::from("bash.exe"),
+    ]
+}
+
+#[cfg(not(target_os = "windows"))]
+fn script_shell_candidates() -> Vec<PathBuf> {
+    vec![PathBuf::from("bash")]
+}
+
+fn script_shell_is_usable(command: &Path) -> bool {
+    Command::new(command)
+        .args(["--noprofile", "--norc", "-lc", "printf noos"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map(|output| output.status.success() && output.stdout == b"noos")
+        .unwrap_or(false)
+}
+
+fn script_shell_missing_message() -> String {
+    if cfg!(target_os = "windows") {
+        "NOOS Hub 需要可用的 Bash 来运行维护脚本，但没有找到可用环境。Windows 上请安装 Git for Windows，或将 Git Bash 加入 PATH 后重试。".to_string()
+    } else {
+        "NOOS Hub requires bash to run maintenance scripts, but bash was not found.".to_string()
+    }
+}
+
+fn enrich_script_failure(text: String) -> String {
+    if cfg!(target_os = "windows") && looks_like_wsl_bash_error(&text) {
+        format!(
+            "{text}\n\n检测到 Windows 的 bash 解析到了 WSL，但当前 WSL 不能启动 /bin/bash。NOOS Hub 在 Windows 上应使用 Git Bash 运行维护脚本；请安装 Git for Windows，或将 Git Bash 放在 PATH 中 WSL bash 之前。"
+        )
+    } else {
+        text
+    }
+}
+
+fn looks_like_wsl_bash_error(text: &str) -> bool {
+    text.contains("WSL") && text.contains("/bin/bash")
 }
 
 fn repo_root() -> PathBuf {
@@ -3904,6 +3968,26 @@ fn home_dir() -> PathBuf {
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn script_shell_candidates_prefer_git_bash_before_path_bash() {
+        let candidates = script_shell_candidates();
+
+        assert_eq!(
+            candidates.first(),
+            Some(&PathBuf::from(r"C:\Program Files\Git\bin\bash.exe"))
+        );
+        assert!(candidates.iter().any(|candidate| candidate == Path::new("bash")));
+    }
+
+    #[test]
+    fn wsl_bash_failures_are_identified_for_actionable_errors() {
+        assert!(looks_like_wsl_bash_error(
+            "<3>WSL ERROR: CreateProcessCommon:640: execvpe(/bin/bash) failed"
+        ));
+        assert!(!looks_like_wsl_bash_error("bash: npm: command not found"));
+    }
 
     #[test]
     fn sleep_recovery_cpu_gate_only_flags_values_above_limit() {
