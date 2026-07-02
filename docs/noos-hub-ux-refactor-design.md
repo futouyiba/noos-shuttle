@@ -1,8 +1,8 @@
 # NOOS Hub UX 重构设计文档
 
-> 版本: v0.1  
-> 日期: 2026-07-01  
-> 分支: hub-ux-refactor  
+> 版本: v0.1
+> 日期: 2026-07-01
+> 分支: hub-ux-refactor
 > 作者: Claude Code + Codex 联合
 
 ---

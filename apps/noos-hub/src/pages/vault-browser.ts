@@ -75,15 +75,22 @@ function renderBrowserRow(
   expandedKey: string | null,
   expandedContent: string | null
 ): string {
-  const isExpanded = expandedKey === obj.key;
+  const rowId = obj.path || obj.key;
+  const isExpanded = expandedKey === rowId;
   const title = obj.title || obj.name;
-  const typeLabel = obj.object_type === "crystal" ? "Crystal" : obj.object_type === "result" ? "Result" : "Handoff";
+  const typeLabel = obj.object_type === "crystal"
+    ? "Crystal"
+    : obj.object_type === "result"
+      ? "Result"
+      : obj.object_type === "artifact"
+        ? "Artifact"
+        : "Handoff";
 
   return `
     <article class="vb-row ${isExpanded ? "vb-row--expanded" : ""}">
-      <div class="vb-row-main" data-vault-expand="${escapeHtml(obj.key)}" data-vault-index="${index}">
+      <div class="vb-row-main" data-vault-expand="${escapeHtml(rowId)}" data-vault-key="${escapeHtml(obj.key)}" data-vault-path="${escapeHtml(obj.path)}" data-vault-object-folder="${escapeHtml(obj.folder)}" data-vault-index="${index}">
         <div class="vb-row-left">
-          <span class="vb-type-tag vb-type--${obj.object_type}">${typeLabel}</span>
+          <span class="vb-type-tag vb-type--${escapeHtml(obj.object_type)}">${typeLabel}</span>
           <div>
             <strong>${escapeHtml(title)}</strong>
             <span>${escapeHtml(obj.key)}</span>
@@ -92,12 +99,12 @@ function renderBrowserRow(
         </div>
         <div class="vb-row-right">
           <span class="vb-date">${escapeHtml(formatModifiedAt(obj.modified_epoch))}</span>
-          <button type="button" data-vault-group="${obj.object_type}s" data-vault-index="${index}" data-vault-file-action="open-vault-file" class="vb-action">打开</button>
+          <button type="button" data-vault-path="${escapeHtml(obj.path)}" data-vault-file-action="open-vault-file" class="vb-action">打开</button>
         </div>
       </div>
       ${isExpanded ? `
       <div class="vb-preview">
-        ${expandedContent
+        ${expandedContent !== null
           ? `<pre>${escapeHtml(truncatePreview(expandedContent, 600))}</pre>`
           : `<div class="vb-preview-loading">加载中…</div>`
         }

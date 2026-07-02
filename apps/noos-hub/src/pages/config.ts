@@ -157,6 +157,8 @@ interface SelectRowParams {
 }
 
 function selectRow(p: SelectRowParams): string {
+  const displayValue = p.options.find((o) => o.value === p.value)?.label ?? p.value;
+
   return `
     <article class="cfg-row">
       <div class="cfg-row-info">
@@ -164,7 +166,7 @@ function selectRow(p: SelectRowParams): string {
         <span>${escapeHtml(p.hint)}</span>
       </div>
       <div class="cfg-row-value" data-config-key="${escapeHtml(p.key)}">
-        <span class="cfg-value-text">${p.loaded ? p.options.find((o) => o.value === p.value)?.label ?? p.value : "加载中…"}</span>
+        <span class="cfg-value-text">${p.loaded ? escapeHtml(displayValue) : "加载中…"}</span>
         <button type="button" class="cfg-edit-btn" data-config-edit="${escapeHtml(p.key)}" title="编辑">✎</button>
         <div class="cfg-edit-form" hidden>
           <select data-config-select="${escapeHtml(p.key)}">

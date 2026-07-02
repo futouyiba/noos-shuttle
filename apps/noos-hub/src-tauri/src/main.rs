@@ -240,7 +240,10 @@ struct SleepRecoveryStatus {
 }
 
 #[tauri::command]
-fn get_hub_health() -> Result<HubHealth, String> {
+fn get_hub_health(force: Option<bool>) -> Result<HubHealth, String> {
+    if force.unwrap_or(false) {
+        invalidate_hub_health_cache();
+    }
     cached_hub_health()
 }
 
@@ -385,7 +388,10 @@ fn run_hub_action(app: tauri::AppHandle, action: String) -> Result<String, Strin
 }
 
 #[tauri::command]
-fn browse_vault(folder: Option<String>, query: Option<String>) -> Result<serde_json::Value, String> {
+fn browse_vault(
+    folder: Option<String>,
+    query: Option<String>,
+) -> Result<serde_json::Value, String> {
     Ok(vault_browse_payload(
         &noos_home(),
         folder.as_deref(),
@@ -394,8 +400,12 @@ fn browse_vault(folder: Option<String>, query: Option<String>) -> Result<serde_j
 }
 
 #[tauri::command]
-fn get_vault_object(key: String) -> Result<serde_json::Value, String> {
-    let payload = vault_object_payload(&noos_home(), &key);
+fn get_vault_object(
+    key: String,
+    path: Option<String>,
+    folder: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let payload = vault_object_payload(&noos_home(), &key, path.as_deref(), folder.as_deref());
     if payload.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
         Ok(payload)
     } else {
@@ -411,8 +421,7 @@ fn get_vault_object(key: String) -> Result<serde_json::Value, String> {
 fn read_config() -> Result<serde_json::Value, String> {
     let config_path = noos_home().join("config.json");
     if config_path.exists() {
-        let text =
-            fs::read_to_string(&config_path).map_err(|e| format!("无法读取配置: {e}"))?;
+        let text = fs::read_to_string(&config_path).map_err(|e| format!("无法读取配置: {e}"))?;
         serde_json::from_str(&text).map_err(|e| format!("配置 JSON 无效: {e}"))
     } else {
         Ok(serde_json::json!({}))
@@ -422,13 +431,7 @@ fn read_config() -> Result<serde_json::Value, String> {
 #[tauri::command]
 fn write_config(key: String, value: serde_json::Value) -> Result<(), String> {
     let config_path = noos_home().join("config.json");
-    let mut config: serde_json::Value = if config_path.exists() {
-        let text =
-            fs::read_to_string(&config_path).map_err(|e| format!("无法读取配置: {e}"))?;
-        serde_json::from_str(&text).unwrap_or_else(|_| serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
+    let mut config = read_config_for_write(&config_path)?;
 
     // Write nested keys like "github.default_account"
     let parts: Vec<&str> = key.split('.').collect();
@@ -444,14 +447,23 @@ fn write_config(key: String, value: serde_json::Value) -> Result<(), String> {
         }
     }
 
-    let parent = config_path.parent().ok_or("Invalid config path")?;
-    fs::create_dir_all(parent).map_err(|e| format!("无法创建目录: {e}"))?;
-    let json =
-        serde_json::to_string_pretty(&config).map_err(|e| format!("无法序列化配置: {e}"))?;
-    fs::write(&config_path, json).map_err(|e| format!("无法写入配置: {e}"))?;
+    write_json_file(&config_path, &config).map_err(|e| format!("无法写入配置: {e}"))?;
 
     invalidate_hub_health_cache();
     Ok(())
+}
+
+fn read_config_for_write(config_path: &Path) -> Result<Value, String> {
+    if !config_path.exists() {
+        return Ok(json!({}));
+    }
+
+    let text = fs::read_to_string(config_path).map_err(|e| format!("无法读取配置: {e}"))?;
+    let value: Value = serde_json::from_str(&text).map_err(|e| format!("配置 JSON 无效: {e}"))?;
+    if !value.is_object() {
+        return Err("配置 JSON 必须是对象。".to_string());
+    }
+    Ok(value)
 }
 
 fn main() {
@@ -920,7 +932,7 @@ fn handle_local_write_request(mut stream: TcpStream) -> Result<(), String> {
         let key = query_value(raw_path, "key").or_else(|| query_value(raw_path, "lookup_key"));
         let response = key
             .as_deref()
-            .map(|lookup_key| vault_object_payload(&noos_home(), lookup_key))
+            .map(|lookup_key| vault_object_payload(&noos_home(), lookup_key, None, None))
             .unwrap_or_else(|| json!({ "ok": false, "error_code": "missing_lookup_key", "message": "Missing key query parameter." }));
         let status = if response.get("ok").and_then(Value::as_bool).unwrap_or(false) {
             200
@@ -2578,7 +2590,16 @@ fn vault_file_summary_json(object_type: &str, file: VaultFileSummary) -> Value {
     })
 }
 
-fn vault_object_payload(noos_home: &Path, lookup_key: &str) -> Value {
+fn vault_object_payload(
+    noos_home: &Path,
+    lookup_key: &str,
+    path: Option<&str>,
+    folder: Option<&str>,
+) -> Value {
+    if let Some(path) = path.filter(|value| !value.trim().is_empty()) {
+        return vault_object_payload_from_path(noos_home, lookup_key, path, folder);
+    }
+
     let Some(indexed) = find_indexed_object_by_key(noos_home, lookup_key)
         .or_else(|| find_unindexed_vault_object_by_key(noos_home, lookup_key))
     else {
@@ -2628,6 +2649,95 @@ fn vault_object_payload(noos_home: &Path, lookup_key: &str) -> Value {
             "media_type": "text/markdown"
         }
     })
+}
+
+fn vault_object_payload_from_path(
+    noos_home: &Path,
+    lookup_key: &str,
+    raw_path: &str,
+    folder: Option<&str>,
+) -> Value {
+    let path = PathBuf::from(raw_path);
+    if !is_inside_path(&path, &noos_home.join("vault")) {
+        return json!({
+            "ok": false,
+            "error_code": "path_not_allowed",
+            "message": "NOOS object path is outside the local Vault."
+        });
+    }
+    if !path.is_file() {
+        return json!({
+            "ok": false,
+            "error_code": "not_found",
+            "message": "NOOS object was not found."
+        });
+    }
+    let Ok(content) = fs::read_to_string(&path) else {
+        return json!({
+            "ok": false,
+            "error_code": "read_failed",
+            "message": "NOOS object content could not be read."
+        });
+    };
+
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let fallback_key = name.strip_suffix(".md").unwrap_or(&name);
+    let key = if lookup_key.trim().is_empty() {
+        fallback_key
+    } else {
+        lookup_key
+    };
+    let object_type = object_type_from_vault_location(folder, &path);
+
+    json!({
+        "ok": true,
+        "object": {
+            "object_id": format!("path:{}", path.display()),
+            "lookup_key": key,
+            "key": key,
+            "type": object_type,
+            "object_type": object_type,
+            "title": extract_frontmatter_value(&content, "title").or_else(|| extract_heading_title(&content)),
+            "path": path.display().to_string(),
+            "source": null,
+            "source_url": extract_frontmatter_value(&content, "source_url"),
+            "created_at": null,
+            "content": content,
+            "media_type": "text/markdown"
+        }
+    })
+}
+
+fn object_type_from_vault_location(folder: Option<&str>, path: &Path) -> &'static str {
+    if let Some(folder) = folder {
+        if folder.starts_with("crystals") {
+            return "crystal";
+        }
+        if folder.starts_with("results") {
+            return "result";
+        }
+        if folder.starts_with("artifacts") {
+            return "artifact";
+        }
+        if folder.starts_with("handoffs") {
+            return "handoff";
+        }
+    }
+
+    let path_text = path.to_string_lossy();
+    if path_text.contains("/vault/crystals/") {
+        "crystal"
+    } else if path_text.contains("/vault/results/") {
+        "result"
+    } else if path_text.contains("/vault/artifacts/") {
+        "artifact"
+    } else {
+        "handoff"
+    }
 }
 
 fn find_unindexed_vault_object_by_key(noos_home: &Path, lookup_key: &str) -> Option<Value> {
@@ -3872,7 +3982,10 @@ mod tests {
             .map(|action| action.id.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(action_ids, vec!["browser-manual-unpacked", "browser-dev-profile"]);
+        assert_eq!(
+            action_ids,
+            vec!["browser-manual-unpacked", "browser-dev-profile"]
+        );
         assert!(adapter.actions[0].requires_user_action);
     }
 
@@ -4012,6 +4125,47 @@ mod tests {
 
         assert!(error.contains("Invalid JSON object"));
         assert_eq!(fs::read_to_string(objects_path).unwrap(), "{}");
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn read_config_for_write_rejects_invalid_existing_config() {
+        let root = unique_test_dir("config-invalid-json");
+        let path = root.join("config.json");
+        fs::write(&path, "{not-json").unwrap();
+
+        let error = read_config_for_write(&path).unwrap_err();
+
+        assert!(error.contains("配置 JSON 无效"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{not-json");
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn vault_object_payload_reads_unindexed_archive_path() {
+        let root = unique_test_dir("vault-object-path");
+        let noos_home = root.join("home");
+        let object_path = noos_home.join("vault/handoffs/done/archive.md");
+        fs::create_dir_all(object_path.parent().unwrap()).unwrap();
+        fs::write(&object_path, "---\ntitle: Archived Handoff\n---\n\n# Body").unwrap();
+        let path_string = object_path.display().to_string();
+
+        let payload = vault_object_payload(
+            &noos_home,
+            "archive-key",
+            Some(path_string.as_str()),
+            Some("handoffs/done"),
+        );
+
+        assert_eq!(payload["ok"], true);
+        assert_eq!(payload["object"]["object_type"], "handoff");
+        assert_eq!(payload["object"]["title"], "Archived Handoff");
+        assert!(payload["object"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("# Body"));
 
         fs::remove_dir_all(root).unwrap();
     }

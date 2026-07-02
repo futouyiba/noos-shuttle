@@ -18,7 +18,12 @@ export function setVaultFileActionDataRuns(root: ParentNode, groups: VaultFileAc
     const groupId = button.dataset.vaultGroup ?? "";
     const fileIndex = Number(button.dataset.vaultIndex);
     const action = button.dataset.vaultFileAction;
-    const file = Number.isInteger(fileIndex) ? filesByGroup.get(groupId)?.[fileIndex] : undefined;
+    const directPath = button.dataset.vaultPath;
+    const file = directPath
+      ? { path: directPath }
+      : Number.isInteger(fileIndex)
+        ? filesByGroup.get(groupId)?.[fileIndex]
+        : undefined;
 
     if (!isVaultFileAction(action) || !file) {
       button.disabled = true;

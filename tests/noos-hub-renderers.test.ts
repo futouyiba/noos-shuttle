@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { renderConfig } from "../apps/noos-hub/src/pages/config";
 import { renderDashboard } from "../apps/noos-hub/src/pages/dashboard";
 import { renderHelp } from "../apps/noos-hub/src/pages/help";
 import { renderLogs } from "../apps/noos-hub/src/pages/logs";
@@ -89,6 +90,15 @@ describe("NOOS Hub page renderers", () => {
     expect(html).toContain("Browser Mirror");
     expect(html).toContain("Hub 默认是本机优先");
     expect(html).toContain("~/.noos/vault/handoffs/active");
+  });
+
+  it("escapes non-standard config select values", () => {
+    const html = renderConfig(healthFixture(), {
+      default_agent: `<img src=x onerror="alert(1)">`
+    });
+
+    expect(html).toContain("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;");
+    expect(html).not.toContain(`<img src=x onerror="alert(1)">`);
   });
 });
 

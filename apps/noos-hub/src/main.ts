@@ -224,7 +224,7 @@ async function loadHealth(options: { force?: boolean } = {}): Promise<void> {
   }
 
   try {
-    currentHealth = await getHubHealth();
+    currentHealth = await getHubHealth(Boolean(options.force));
     renderCurrentSection();
   } catch (error) {
     content.innerHTML = `<div class="error">读取失败：${escapeHtml(String(error))}<button type="button" data-action="retry-load">重试</button></div>`;
@@ -265,15 +265,22 @@ async function loadVaultBrowse(): Promise<void> {
   renderVaultBrowserSection();
 }
 
-async function expandVaultObject(key: string): Promise<void> {
-  if (vaultBrowserState.expandedKey === key) {
+interface VaultObjectTarget {
+  rowId: string;
+  key: string;
+  path?: string;
+  folder?: string;
+}
+
+async function expandVaultObject(target: VaultObjectTarget): Promise<void> {
+  if (vaultBrowserState.expandedKey === target.rowId) {
     vaultBrowserState.expandedKey = null;
     vaultBrowserState.expandedContent = null;
     renderVaultBrowserSection();
     return;
   }
 
-  vaultBrowserState.expandedKey = key;
+  vaultBrowserState.expandedKey = target.rowId;
   vaultBrowserState.expandedContent = null;
   renderVaultBrowserSection();
 
@@ -281,14 +288,18 @@ async function expandVaultObject(key: string): Promise<void> {
     const payload = await invoke<{
       ok: boolean;
       object: { content: string };
-    }>("get_vault_object", { key });
+    }>("get_vault_object", {
+      key: target.key,
+      path: target.path ?? null,
+      folder: target.folder ?? null
+    });
 
     vaultBrowserState.expandedContent = payload.object?.content ?? "";
   } catch {
     vaultBrowserState.expandedContent = "(无法加载文件内容)";
   }
 
-  if (vaultBrowserState.expandedKey === key) {
+  if (vaultBrowserState.expandedKey === target.rowId) {
     renderVaultBrowserSection();
   }
 }
@@ -299,13 +310,10 @@ function renderVaultBrowserSection(): void {
 
   container.innerHTML = renderVaultBrowser(vaultBrowserState, currentHealth.noos_home);
   bindVaultBrowserEvents(container);
-  setVaultFileActionDataRuns(container, [
-    { id: "handoffs", files: vaultBrowserState.objects.filter((o) => o.object_type === "handoff") },
-    { id: "crystals", files: vaultBrowserState.objects.filter((o) => o.object_type === "crystal") },
-    { id: "results", files: vaultBrowserState.objects.filter((o) => o.object_type === "result") }
-  ]);
+  setVaultFileActionDataRuns(container, []);
   container.querySelectorAll<HTMLButtonElement>("[data-run]").forEach((button) => {
     button.addEventListener("click", (event) => {
+      event.stopPropagation();
       void runAction(button.dataset.run ?? "", event.currentTarget as HTMLButtonElement);
     });
   });
@@ -334,8 +342,15 @@ function bindVaultBrowserEvents(root: ParentNode): void {
 
   root.querySelectorAll<HTMLElement>("[data-vault-expand]").forEach((el) => {
     el.addEventListener("click", () => {
-      const key = el.dataset.vaultExpand;
-      if (key) void expandVaultObject(key);
+      const rowId = el.dataset.vaultExpand;
+      const key = el.dataset.vaultKey;
+      if (!rowId || !key) return;
+      void expandVaultObject({
+        rowId,
+        key,
+        path: el.dataset.vaultPath,
+        folder: el.dataset.vaultObjectFolder
+      });
     });
   });
 }
@@ -392,9 +407,9 @@ function mockVaultBrowse(folder: string, query: string): VaultBrowserState {
   };
 }
 
-async function getHubHealth(): Promise<HubHealth> {
+async function getHubHealth(force = false): Promise<HubHealth> {
   try {
-    return await invoke<HubHealth>("get_hub_health");
+    return await invoke<HubHealth>("get_hub_health", { force });
   } catch (error) {
     if (isTauriRuntime()) {
       throw error;

@@ -34,4 +34,25 @@ describe("NOOS Hub vault file action binding", () => {
     expect(button?.dataset.run).toBeUndefined();
     expect(button?.disabled).toBe(true);
   });
+
+  it("uses direct vault paths without resolving mixed-list indexes", () => {
+    const directPath = "/Users/me/.noos/vault/crystals/archived/right.md";
+    const dom = new JSDOM(`
+      <button
+        type="button"
+        data-vault-path="${directPath}"
+        data-vault-group="crystals"
+        data-vault-index="4"
+        data-vault-file-action="open-vault-file"
+      >
+        Open
+      </button>
+    `);
+    const button = dom.window.document.querySelector<HTMLButtonElement>("button");
+
+    setVaultFileActionDataRuns(dom.window.document, [{ id: "crystals", files: [{ path: "/wrong.md" }] }]);
+
+    expect(button?.dataset.run).toBe(`open-vault-file:${directPath}`);
+    expect(button?.disabled).toBe(false);
+  });
 });
