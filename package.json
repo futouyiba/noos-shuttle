@@ -1,6 +1,6 @@
 {
   "name": "noos-shuttle",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "description": "NOOS Shuttle packages AI conversations into agent-ready handoff threads.",
   "author": "FuTou 2026",
