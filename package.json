@@ -10,6 +10,7 @@
     "dev": "vite build --watch",
     "package:extension": "node scripts/package-extension.mjs",
     "package:release": "node scripts/package-release-artifacts.mjs",
+    "review:intake": "node scripts/review-intake.mjs",
     "sleep:acceptance": "scripts/noos-sleep-resume-acceptance.sh",
     "sleep:acceptance:self-test": "scripts/noos-sleep-resume-acceptance-self-test.sh",
     "sleep:audit": "scripts/noos-sleep-resume-audit.sh",
