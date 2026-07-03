@@ -5,7 +5,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -1692,7 +1692,14 @@ fn configured_default_wiki_project_path_from(noos_home: &Path) -> Option<PathBuf
 }
 
 fn wiki_category_state(wiki_project_path: &Path) -> (Option<String>, Vec<String>) {
-    let config = read_json_object(&noos_home().join("config.json"));
+    wiki_category_state_from(&noos_home(), wiki_project_path)
+}
+
+fn wiki_category_state_from(
+    noos_home: &Path,
+    wiki_project_path: &Path,
+) -> (Option<String>, Vec<String>) {
+    let config = read_json_object(&noos_home.join("config.json"));
     let key = wiki_project_key(wiki_project_path);
     let project_state = config
         .get("wiki")
@@ -1701,26 +1708,36 @@ fn wiki_category_state(wiki_project_path: &Path) -> (Option<String>, Vec<String>
     let current = project_state
         .and_then(|state| state.get("last_category_path"))
         .and_then(Value::as_str)
-        .map(str::to_string)
+        .and_then(sanitize_config_category_path)
         .or_else(|| {
             config
                 .get("feishu")
                 .and_then(|feishu| feishu.get("last_category_path"))
                 .and_then(Value::as_str)
-                .map(str::to_string)
+                .and_then(sanitize_config_category_path)
         });
     let recent = project_state
         .and_then(|state| state.get("recent_category_paths"))
         .and_then(Value::as_array)
         .map(|items| {
-            items
+            let mut recent = Vec::new();
+            for path in items
                 .iter()
                 .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect::<Vec<_>>()
+                .filter_map(sanitize_config_category_path)
+            {
+                if !recent.contains(&path) {
+                    recent.push(path);
+                }
+            }
+            recent
         })
         .unwrap_or_default();
     (current, recent)
+}
+
+fn sanitize_config_category_path(path: &str) -> Option<String> {
+    sanitize_category_path(Some(path)).ok()
 }
 
 fn remember_wiki_category_path(
@@ -2272,7 +2289,53 @@ fn source_path_from_source_map(wiki_project_path: &Path, source_id: &str) -> Opt
             .unwrap_or(false)
     })?;
     let source_path = source.get("source_path")?.as_str()?;
-    Some(wiki_project_path.join(source_path))
+    let relative_path = sanitize_source_map_source_path(source_path)?;
+    let path = wiki_project_path.join(relative_path);
+    if library_source_path_allowed_for_wiki(&path, wiki_project_path) {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+fn sanitize_source_map_source_path(source_path: &str) -> Option<PathBuf> {
+    let source_path = source_path.trim();
+    if source_path.is_empty() {
+        return None;
+    }
+    let path = Path::new(source_path);
+    if path.is_absolute() {
+        return None;
+    }
+
+    let mut relative = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(segment) => {
+                let segment_text = segment.to_str()?;
+                if segment_text
+                    .chars()
+                    .any(|character| character.is_control() || character == ':')
+                {
+                    return None;
+                }
+                relative.push(segment);
+            }
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+
+    let raw_sources = Path::new("raw").join("sources");
+    let is_markdown = relative
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.eq_ignore_ascii_case("md"))
+        .unwrap_or(false);
+    if !relative.starts_with(&raw_sources) || !is_markdown {
+        return None;
+    }
+    Some(relative)
 }
 
 fn update_knowledge_library(
@@ -5328,6 +5391,80 @@ mod tests {
 
         let found = source_path_from_source_map(&wiki, "feishu_docx_abc123");
         assert_eq!(found.as_deref(), Some(source.as_path()));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_map_lookup_rejects_unsafe_source_paths() {
+        let root = unique_test_dir("source-map-unsafe-paths");
+        let wiki = root.join("wiki");
+        let outside = root.join("outside.md");
+        let canon = wiki.join("knowledge-library").join("canon").join("doc.md");
+        let map = wiki.join("knowledge-library").join("source-map.json");
+        fs::create_dir_all(canon.parent().unwrap()).unwrap();
+        fs::write(&outside, "# Outside").unwrap();
+        fs::write(&canon, "# Canon").unwrap();
+
+        let cases = [
+            ("parent", "raw/sources/../../outside.md".to_string()),
+            ("absolute", outside.display().to_string()),
+            ("wrong-root", "knowledge-library/canon/doc.md".to_string()),
+        ];
+
+        for (source_id, source_path) in cases {
+            fs::write(
+                &map,
+                serde_json::to_string(&json!({
+                    "sources": [{
+                        "source_id": source_id,
+                        "source_path": source_path
+                    }]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+            assert_eq!(source_path_from_source_map(&wiki, source_id), None);
+        }
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn wiki_category_state_discards_unsafe_config_paths() {
+        let root = unique_test_dir("wiki-category-state-sanitize");
+        let noos_home = root.join("home");
+        let wiki = root.join("wiki");
+        let key = wiki_project_key(&wiki);
+        fs::create_dir_all(&noos_home).unwrap();
+        write_json_file(
+            &noos_home.join("config.json"),
+            &json!({
+                "wiki": {
+                    "category_paths": {
+                        key: {
+                            "last_category_path": "../outside",
+                            "recent_category_paths": [
+                                "Projects / Good",
+                                "/absolute",
+                                "projects/.hidden",
+                                "projects/good"
+                            ]
+                        }
+                    }
+                },
+                "feishu": {
+                    "last_category_path": "Fallback / Good"
+                }
+            }),
+        )
+        .unwrap();
+
+        let (current, recent) = wiki_category_state_from(&noos_home, &wiki);
+
+        assert_eq!(current.as_deref(), Some("fallback/good"));
+        assert_eq!(recent, vec!["projects/good".to_string()]);
 
         fs::remove_dir_all(root).unwrap();
     }
