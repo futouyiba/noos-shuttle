@@ -1,6 +1,8 @@
 import { readFile, listDirectory } from "@/commands/fs"
 import type { FileNode } from "@/types/wiki"
 import { normalizePath, getFileStem } from "@/lib/path-utils"
+import { useWikiStore } from "@/stores/wiki-store"
+import { searchByEmbedding } from "@/lib/embedding"
 
 /**
  * One image reference extracted from a matched page's markdown.
@@ -277,12 +279,10 @@ export async function searchWiki(
   let vectorRank = new Map<string, number>()
   let vectorCount = 0
   try {
-    const { useWikiStore } = await import("@/stores/wiki-store")
     const embCfg = useWikiStore.getState().embeddingConfig
     console.log(`[Vector Search] Config: enabled=${embCfg.enabled}, model="${embCfg.model}"`)
     if (embCfg.enabled && embCfg.model) {
       const t0 = performance.now()
-      const { searchByEmbedding } = await import("@/lib/embedding")
       const vectorResults = await searchByEmbedding(pp, query, embCfg, 10)
       const vectorMs = Math.round(performance.now() - t0)
       vectorCount = vectorResults.length

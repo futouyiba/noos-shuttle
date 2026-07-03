@@ -5,6 +5,8 @@ import { useReviewStore } from "@/stores/review-store"
 import { useActivityStore } from "@/stores/activity-store"
 import { useResearchStore } from "@/stores/research-store"
 import { getQueue, pauseQueue } from "./ingest-queue"
+import { stopProjectFileSync } from "./project-file-sync"
+import { stopScheduledImport } from "./scheduled-import"
 
 // Dynamic-import mocks: resetProjectState uses `import("@/lib/ingest-queue")`
 // and `import("@/lib/graph-relevance")` at runtime. vi.mock hoists these
@@ -21,15 +23,28 @@ vi.mock("./graph-relevance", () => ({
   clearGraphCache: vi.fn(),
 }))
 
+vi.mock("./project-file-sync", () => ({
+  stopProjectFileSync: vi.fn(async () => {}),
+}))
+
+vi.mock("./scheduled-import", () => ({
+  stopScheduledImport: vi.fn(),
+}))
+
 import { clearGraphCache } from "./graph-relevance"
 
 const mockPauseQueue = vi.mocked(pauseQueue)
 const mockClearGraphCache = vi.mocked(clearGraphCache)
+const mockStopProjectFileSync = vi.mocked(stopProjectFileSync)
+const mockStopScheduledImport = vi.mocked(stopScheduledImport)
 
 beforeEach(() => {
   mockPauseQueue.mockReset()
   mockPauseQueue.mockImplementation(async () => {})
   mockClearGraphCache.mockReset()
+  mockStopProjectFileSync.mockReset()
+  mockStopProjectFileSync.mockImplementation(async () => {})
+  mockStopScheduledImport.mockReset()
 })
 
 describe("resetProjectState — Zustand stores", () => {
@@ -128,12 +143,20 @@ describe("resetProjectState — module-level caches are awaited", () => {
     expect(mockClearGraphCache).toHaveBeenCalledOnce()
   })
 
+  it("stops project file sync and scheduled imports before the returned promise resolves", async () => {
+    await resetProjectState()
+    expect(mockStopProjectFileSync).toHaveBeenCalledOnce()
+    expect(mockStopScheduledImport).toHaveBeenCalledOnce()
+  })
+
   it("ordering: when resolve() fires, BOTH module caches are already cleared", async () => {
     // This is the regression guard against fire-and-forget resets.
     // By the time the outer await returns, BOTH clears must be done.
     await resetProjectState()
     expect(mockPauseQueue).toHaveBeenCalledOnce()
     expect(mockClearGraphCache).toHaveBeenCalledOnce()
+    expect(mockStopProjectFileSync).toHaveBeenCalledOnce()
+    expect(mockStopScheduledImport).toHaveBeenCalledOnce()
   })
 
   it("does not throw when pauseQueue itself throws — logs and continues", async () => {

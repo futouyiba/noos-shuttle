@@ -1,62 +1,26 @@
-import { useCallback, useEffect, useRef, useState, useMemo } from "react"
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, useMemo } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import remarkMath from "remark-math"
 import rehypeKatex from "rehype-katex"
 import "katex/dist/katex.min.css"
 import {
-  Bot, User, FileText, BookmarkPlus, ChevronDown, ChevronRight, RefreshCw, Copy, Check,
-  Users, Lightbulb, BookOpen, HelpCircle, GitMerge, BarChart3, Layout, Globe,
-  Image as ImageIcon,
+  Bot, User, FileText, BookmarkPlus, RefreshCw, Copy, Check,
 } from "lucide-react"
 import { useWikiStore } from "@/stores/wiki-store"
-import { readFile, writeFile, listDirectory } from "@/commands/fs"
-import { lastQueryPages } from "@/components/chat/chat-panel"
+import { readFile } from "@/commands/fs"
 import type { DisplayMessage } from "@/stores/chat-store"
-import type { FileNode } from "@/types/wiki"
 
 import { convertLatexToUnicode } from "@/lib/latex-to-unicode"
-import { normalizePath, getFileName } from "@/lib/path-utils"
-import { makeQueryFileName } from "@/lib/wiki-filename"
-import { hasUsableLlm } from "@/lib/has-usable-llm"
+import { normalizePath } from "@/lib/path-utils"
 import { resolveMarkdownImageSrc } from "@/lib/markdown-image-resolver"
-import { findRawSourceForImage, imageUrlToAbsolute } from "@/lib/raw-source-resolver"
 import { detectLanguage } from "@/lib/detect-language"
 import { getHtmlLang, getTextDirection } from "@/lib/language-metadata"
 import { MermaidDiagram, unwrapMermaidPre } from "@/components/mermaid-diagram"
 
-// Module-level cache of source file names
-let cachedSourceFiles: string[] = []
-
-export function useSourceFiles() {
-  const project = useWikiStore((s) => s.project)
-
-  useEffect(() => {
-    if (!project) return
-    const pp = normalizePath(project.path)
-    listDirectory(`${pp}/raw/sources`)
-      .then((tree) => {
-        cachedSourceFiles = flattenNames(tree)
-      })
-      .catch(() => {
-        cachedSourceFiles = []
-      })
-  }, [project])
-
-  return cachedSourceFiles
-}
-
-function flattenNames(nodes: FileNode[]): string[] {
-  const names: string[] = []
-  for (const node of nodes) {
-    if (node.is_dir && node.children) {
-      names.push(...flattenNames(node.children))
-    } else if (!node.is_dir) {
-      names.push(node.name)
-    }
-  }
-  return names
-}
+const CitedReferencesPanel = lazy(() =>
+  import("./chat-cited-references").then((mod) => ({ default: mod.CitedReferencesPanel }))
+)
 
 interface ChatMessageProps {
   message: DisplayMessage
@@ -101,7 +65,11 @@ export function ChatMessage({ message, isLastAssistant, onRegenerate }: ChatMess
             <MarkdownContent content={message.content} />
           )}
         </div>
-        {isAssistant && <CitedReferencesPanel content={message.content} savedReferences={message.references} />}
+        {isAssistant && (
+          <Suspense fallback={null}>
+            <CitedReferencesPanel content={message.content} savedReferences={message.references} />
+          </Suspense>
+        )}
         {isAssistant && hovered && (
           <div className="flex items-center gap-1">
             <CopyButton content={message.content} />
@@ -154,99 +122,23 @@ function CopyButton({ content }: { content: string }) {
 
 function SaveToWikiButton({ content, visible }: { content: string; visible: boolean }) {
   const project = useWikiStore((s) => s.project)
-  const setFileTree = useWikiStore((s) => s.setFileTree)
   const [saved, setSaved] = useState(false)
   const [saving, setSaving] = useState(false)
 
   const handleSave = useCallback(async () => {
     if (!project || saving) return
-    const pp = normalizePath(project.path)
     setSaving(true)
     try {
-      // Generate a unique filename for this save.
-      // See `src/lib/wiki-filename.ts` — the slug is Unicode-aware
-      // (so CJK titles don't collapse to empty) and the HHMMSS
-      // timestamp suffix guarantees same-day saves stay distinct.
-      const firstLine = content.split("\n")[0].replace(/^#+\s*/, "").trim()
-      const title = firstLine.slice(0, 60) || "Saved Query"
-      const { date, fileName } = makeQueryFileName(title)
-      const filePath = `${pp}/wiki/queries/${fileName}`
-
-      // Strip hidden sources comment and thinking blocks from content
-      const cleanContent = content
-        .replace(/<!--\s*sources:.*?-->/g, "")
-        .replace(/<think(?:ing)?>\s*[\s\S]*?<\/think(?:ing)?>\s*/gi, "")
-        .replace(/<think(?:ing)?>\s*[\s\S]*$/gi, "")
-        .trimEnd()
-
-      const frontmatter = [
-        "---",
-        `type: query`,
-        `title: "${title.replace(/"/g, '\\"')}"`,
-        `created: ${date}`,
-        `tags: []`,
-        "---",
-        "",
-      ].join("\n")
-
-      await writeFile(filePath, frontmatter + cleanContent)
-
-      // Update index.md — append under ## Queries section
-      const indexPath = `${pp}/wiki/index.md`
-      let indexContent = ""
-      try {
-        indexContent = await readFile(indexPath)
-      } catch {
-        indexContent = "# Wiki Index\n\n## Queries\n"
-      }
-      // The wikilink target is the filename WITHOUT the `.md`
-      // extension — must match `fileName` exactly (including the
-      // time suffix) or the link lands on a 404.
-      const linkTarget = fileName.replace(/\.md$/, "")
-      const entry = `- [[queries/${linkTarget}|${title}]]`
-      if (indexContent.includes("## Queries")) {
-        indexContent = indexContent.replace(
-          /(## Queries\n)/,
-          `$1${entry}\n`
-        )
-      } else {
-        indexContent = indexContent.trimEnd() + "\n\n## Queries\n" + entry + "\n"
-      }
-      await writeFile(indexPath, indexContent)
-
-      // Append to log.md
-      const logPath = `${pp}/wiki/log.md`
-      let logContent = ""
-      try {
-        logContent = await readFile(logPath)
-      } catch {
-        logContent = "# Wiki Log\n\n"
-      }
-      const logEntry = `- ${date}: Saved query page \`${fileName}\`\n`
-      await writeFile(logPath, logContent.trimEnd() + "\n" + logEntry)
-
-      // Refresh file tree and update graph
-      const tree = await listDirectory(pp)
-      setFileTree(tree)
-      useWikiStore.getState().bumpDataVersion()
-
+      const { saveQueryToWiki } = await import("./save-query-to-wiki")
+      await saveQueryToWiki(project, content)
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
-
-      // Full auto-ingest: extract entities, concepts, cross-references from saved content
-      const llmConfig = useWikiStore.getState().llmConfig
-      if (hasUsableLlm(llmConfig)) {
-        const { autoIngest } = await import("@/lib/ingest")
-        autoIngest(pp, filePath, llmConfig).catch((err) =>
-          console.error("Failed to auto-ingest saved query:", err)
-        )
-      }
     } catch (err) {
       console.error("Failed to save to wiki:", err)
     } finally {
       setSaving(false)
     }
-  }, [project, content, saving, setFileTree])
+  }, [project, content, saving])
 
   if (!visible && !saved) return null
 
@@ -262,357 +154,6 @@ function SaveToWikiButton({ content, visible }: { content: string; visible: bool
       {saved ? "Saved!" : saving ? "Saving..." : "Save to Wiki"}
     </button>
   )
-}
-
-interface CitedPage {
-  title: string
-  path: string
-}
-
-const REF_TYPE_CONFIG: Record<string, { icon: typeof FileText; color: string }> = {
-  entity: { icon: Users, color: "text-blue-500" },
-  concept: { icon: Lightbulb, color: "text-purple-500" },
-  source: { icon: BookOpen, color: "text-orange-500" },
-  query: { icon: HelpCircle, color: "text-green-500" },
-  synthesis: { icon: GitMerge, color: "text-red-500" },
-  comparison: { icon: BarChart3, color: "text-teal-500" },
-  overview: { icon: Layout, color: "text-yellow-500" },
-  clip: { icon: Globe, color: "text-blue-400" },
-}
-
-function getRefType(path: string): string {
-  if (path.includes("/entities/")) return "entity"
-  if (path.includes("/concepts/")) return "concept"
-  if (path.includes("/sources/")) return "source"
-  if (path.includes("/queries/")) return "query"
-  if (path.includes("/synthesis/")) return "synthesis"
-  if (path.includes("/comparisons/")) return "comparison"
-  if (path.includes("overview")) return "overview"
-  if (path.includes("raw/sources/")) return "clip"
-  return "source"
-}
-
-/**
- * Markdown image-reference regex used to count `![](url)` occurrences
- * in cited pages AND extract the first URL (so the image-badge
- * jump button knows where to send the user). Same shape as the
- * search/pipeline regex elsewhere (kept duplicated to avoid
- * coupling — this module never wants to pull caption-pipeline
- * imports for a 3-character count).
- *
- * Group 1 captures the URL (everything inside `(...)` of the
- * markdown image syntax, no whitespace).
- */
-const CITED_IMAGE_RE = /!\[[^\]]*\]\(([^)\s]+)\)/g
-
-interface CitedImageInfo {
-  count: number
-  /** First image URL on the page — used as the scroll target when
-   *  the badge button opens the raw source. Null when count===0. */
-  firstUrl: string | null
-}
-
-function CitedReferencesPanel({ content, savedReferences }: { content: string; savedReferences?: CitedPage[] }) {
-  const project = useWikiStore((s) => s.project)
-  const setSelectedFile = useWikiStore((s) => s.setSelectedFile)
-  const setFileContent = useWikiStore((s) => s.setFileContent)
-  const setPendingScrollImageSrc = useWikiStore((s) => s.setPendingScrollImageSrc)
-  const [expanded, setExpanded] = useState(false)
-  /**
-   * Per-cited-page image info: count + first image URL. We can't
-   * hang this off `CitedPage` directly because `extractCitedPages`
-   * is sync and works on the AI's text response, never seeing the
-   * underlying page. So we fetch the page contents lazily here.
-   * Same path → same info, so a tiny in-component map keyed by
-   * path is plenty.
-   */
-  const [imageInfos, setImageInfos] = useState<Record<string, CitedImageInfo>>({})
-
-  // Use saved references first (persisted with message), fall back to dynamic extraction
-  const citedPages = useMemo(() => {
-    if (savedReferences && savedReferences.length > 0) return savedReferences
-    return extractCitedPages(content)
-  }, [content, savedReferences])
-
-  // Async-fetch each cited page's content once and extract image
-  // info: count + first URL. Done in parallel; failures are
-  // silently treated as { count: 0, firstUrl: null } (page may
-  // not exist on disk yet, e.g. a citation the LLM hallucinated).
-  useEffect(() => {
-    if (!project || citedPages.length === 0) return
-    const pp = normalizePath(project.path)
-    let cancelled = false
-    Promise.all(
-      citedPages.map(async (page) => {
-        // Try the path verbatim first, then the same fallback set
-        // the click-handler uses below — keeps "is the file on
-        // disk" check consistent across the panel.
-        const id = getFileName(page.path.replace(/^wiki\//, "").replace(/\.md$/, ""))
-        const candidates = [
-          `${pp}/${page.path}`,
-          `${pp}/wiki/entities/${id}.md`,
-          `${pp}/wiki/concepts/${id}.md`,
-          `${pp}/wiki/sources/${id}.md`,
-          `${pp}/wiki/queries/${id}.md`,
-          `${pp}/wiki/synthesis/${id}.md`,
-          `${pp}/wiki/comparisons/${id}.md`,
-          `${pp}/wiki/${id}.md`,
-        ]
-        for (const candidate of candidates) {
-          try {
-            const text = await readFile(candidate)
-            // Reset stateful regex.lastIndex by `new RegExp(...)` —
-            // module-level `g` regexes carry state across calls
-            // and would skip matches on the second invocation.
-            const re = new RegExp(CITED_IMAGE_RE.source, CITED_IMAGE_RE.flags)
-            const matches = [...text.matchAll(re)]
-            const info: CitedImageInfo = {
-              count: matches.length,
-              firstUrl: matches.length > 0 ? matches[0][1] : null,
-            }
-            return [page.path, info] as const
-          } catch {
-            // try next candidate
-          }
-        }
-        return [page.path, { count: 0, firstUrl: null }] as const
-      }),
-    ).then((entries) => {
-      if (cancelled) return
-      const next: Record<string, CitedImageInfo> = {}
-      for (const [path, info] of entries) next[path] = info
-      setImageInfos(next)
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [project, citedPages])
-
-  /**
-   * Open the raw source file for a page's first image and stage a
-   * scroll target so the markdown preview lands on that image.
-   * Mirrors the lightbox "Jump to source document" path in
-   * search-view — same `findRawSourceForImage` resolver, same
-   * `pendingScrollImageSrc` store handoff, same fallback to
-   * opening the wiki page when no raw source is found.
-   */
-  const handleJumpToImageSource = useCallback(
-    async (firstUrl: string, fallbackPath: string) => {
-      if (!project) return
-      const pp = normalizePath(project.path)
-      const rawPath = await findRawSourceForImage(firstUrl, pp)
-      if (rawPath) {
-        try {
-          const content = await readFile(rawPath)
-          setPendingScrollImageSrc(imageUrlToAbsolute(firstUrl, pp))
-          setSelectedFile(rawPath)
-          setFileContent(content)
-          console.log(`[refs:image-jump] ${firstUrl} → raw source ${rawPath}`)
-          return
-        } catch (err) {
-          console.warn(`[refs:image-jump] failed to read ${rawPath}:`, err)
-        }
-      }
-      // Fallback: open the wiki summary itself with same scroll
-      // target — at least the safety-net section will scroll into
-      // view there.
-      try {
-        const content = await readFile(`${pp}/${fallbackPath}`)
-        setPendingScrollImageSrc(firstUrl)
-        setSelectedFile(`${pp}/${fallbackPath}`)
-        setFileContent(content)
-      } catch (err) {
-        console.warn(`[refs:image-jump] fallback also failed:`, err)
-      }
-    },
-    [project, setPendingScrollImageSrc, setSelectedFile, setFileContent],
-  )
-
-  if (citedPages.length === 0) return null
-
-  const MAX_COLLAPSED = 3
-  const visiblePages = expanded ? citedPages : citedPages.slice(0, MAX_COLLAPSED)
-  const hasMore = citedPages.length > MAX_COLLAPSED
-
-  return (
-    <div className="rounded-md border border-border/60 bg-muted/30 text-xs mb-1">
-      <button
-        type="button"
-        onClick={() => hasMore && setExpanded(!expanded)}
-        className="flex w-full items-center gap-1.5 px-2 py-1 text-muted-foreground hover:text-foreground transition-colors"
-      >
-        <FileText className="h-3 w-3 shrink-0" />
-        <span className="font-medium">References ({citedPages.length})</span>
-        {hasMore && (
-          expanded
-            ? <ChevronDown className="h-3 w-3 ml-auto" />
-            : <ChevronRight className="h-3 w-3 ml-auto" />
-        )}
-      </button>
-      <div className="px-2 pb-1.5">
-        {visiblePages.map((page, i) => {
-          const refType = getRefType(page.path)
-          const config = REF_TYPE_CONFIG[refType] ?? REF_TYPE_CONFIG.source
-          const Icon = config.icon
-          const info = imageInfos[page.path]
-          const hasImages = (info?.count ?? 0) > 0
-          const openCitedPage = async () => {
-            if (!project) return
-            const pp = normalizePath(project.path)
-            const id = getFileName(page.path.replace(/^wiki\//, "").replace(/\.md$/, ""))
-            const candidates = [
-              `${pp}/${page.path}`,
-              `${pp}/wiki/entities/${id}.md`,
-              `${pp}/wiki/concepts/${id}.md`,
-              `${pp}/wiki/sources/${id}.md`,
-              `${pp}/wiki/queries/${id}.md`,
-              `${pp}/wiki/synthesis/${id}.md`,
-              `${pp}/wiki/comparisons/${id}.md`,
-              `${pp}/wiki/${id}.md`,
-            ]
-            for (const candidate of candidates) {
-              try {
-                await readFile(candidate)
-                setSelectedFile(candidate)
-                return
-              } catch {
-                // try next
-              }
-            }
-            setSelectedFile(`${pp}/${page.path}`)
-          }
-          return (
-            // Outer is a div, NOT a button — we have two click
-            // targets inside (image badge + main row) and nesting
-            // a button inside a button is invalid HTML and breaks
-            // event delegation. Hover effect shifts to the inner
-            // buttons individually so each gives feedback.
-            <div
-              key={page.path}
-              className="flex w-full items-center gap-1.5 rounded text-left"
-              title={page.path}
-            >
-              <span className="text-[10px] text-muted-foreground/60 w-4 shrink-0 text-right">[{i + 1}]</span>
-              {/*
-               * Image badge — clickable, separately from the page
-               * row. Click → resolve the FIRST image's raw source
-               * (`raw/sources/<slug>.<ext>`) and open the FULL
-               * combined-extraction preview, scrolled to that
-               * image. This mirrors the search-view lightbox
-               * "Jump to source document" behavior so the two
-               * surfaces feel consistent.
-               *
-               * Icon: lucide `Image` (picture-frame outline with
-               * mountain + sun) — direct visual cue for "image",
-               * NOT `Camera` which reads as "take a photo".
-               */}
-              {hasImages && info?.firstUrl && (
-                <button
-                  type="button"
-                  onClick={() => handleJumpToImageSource(info.firstUrl!, page.path)}
-                  className="flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-[10px] text-blue-600 hover:bg-blue-100/40 dark:text-blue-400 dark:hover:bg-blue-900/30 transition-colors"
-                  title={`Open original document at first image (${info.count} image${info.count === 1 ? "" : "s"} on this page)`}
-                >
-                  <ImageIcon className="h-3 w-3" />
-                  {info.count}
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={openCitedPage}
-                className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-1 py-0.5 text-left hover:bg-accent/50 transition-colors"
-              >
-                <Icon className={`h-3 w-3 shrink-0 ${config.color}`} />
-                <span className="truncate text-foreground/80">{page.title}</span>
-              </button>
-            </div>
-          )
-        })}
-        {hasMore && !expanded && (
-          <button
-            type="button"
-            onClick={() => setExpanded(true)}
-            className="w-full text-center text-[10px] text-muted-foreground hover:text-primary pt-0.5"
-          >
-            +{citedPages.length - MAX_COLLAPSED} more...
-          </button>
-        )}
-      </div>
-    </div>
-  )
-}
-
-
-/**
- * Extract cited wiki pages from the hidden <!-- cited: 1, 3, 5 --> comment.
- * Maps page numbers back to the pages that were sent to the LLM.
- */
-function extractCitedPages(text: string): CitedPage[] {
-  const citedMatch = text.match(/<!--\s*cited:\s*(.+?)\s*-->/)
-  if (citedMatch && lastQueryPages.length > 0) {
-    const numbers = citedMatch[1]
-      .split(",")
-      .map((s) => parseInt(s.trim(), 10))
-      .filter((n) => !isNaN(n) && n >= 1 && n <= lastQueryPages.length)
-
-    const pages = numbers.map((n) => lastQueryPages[n - 1])
-    if (pages.length > 0) return pages
-  }
-
-  // Fallback: if LLM used [1], [2] notation in text, try to match those
-  if (lastQueryPages.length > 0) {
-    const numberRefs = text.match(/\[(\d+)\]/g)
-    if (numberRefs) {
-      const numbers = [...new Set(numberRefs.map((r) => parseInt(r.slice(1, -1), 10)))]
-        .filter((n) => n >= 1 && n <= lastQueryPages.length)
-      if (numbers.length > 0) {
-        return numbers.map((n) => lastQueryPages[n - 1])
-      }
-    }
-  }
-
-  // Fallback for persisted messages: extract [[wikilinks]] from the text
-  // Try to resolve each wikilink to a real file path by checking common wiki subdirectories
-  const wikilinks = text.match(/\[\[([^\]|]+?)(?:\|[^\]]+?)?\]\]/g)
-  if (wikilinks) {
-    const seen = new Set<string>()
-    const pages: CitedPage[] = []
-    const WIKI_DIRS = ["entities", "concepts", "sources", "queries", "synthesis", "comparisons"]
-
-    for (const link of wikilinks) {
-      const nameMatch = link.match(/\[\[([^\]|]+?)(?:\|([^\]]+?))?\]\]/)
-      if (nameMatch) {
-        const id = nameMatch[1].trim()
-        const display = nameMatch[2]?.trim() || id
-
-        // Skip if id contains path separators (already a path like queries/xxx)
-        if (seen.has(id)) continue
-        seen.add(id)
-
-        // Try to find the file in known wiki subdirectories
-        let resolvedPath = ""
-        if (id.includes("/")) {
-          // Already has directory like "queries/my-query"
-          resolvedPath = `wiki/${id}.md`
-        } else {
-          // Search in common directories
-          for (const dir of WIKI_DIRS) {
-            resolvedPath = `wiki/${dir}/${id}.md`
-            // We can't do async file checking here, so try all known patterns
-            // The click handler will try multiple paths
-            break // Use first candidate, click handler resolves the rest
-          }
-          if (!resolvedPath) resolvedPath = `wiki/${id}.md`
-        }
-
-        pages.push({ title: display, path: resolvedPath })
-      }
-    }
-    if (pages.length > 0) return pages
-  }
-
-  // No citations found
-  return []
 }
 
 interface StreamingMessageProps {

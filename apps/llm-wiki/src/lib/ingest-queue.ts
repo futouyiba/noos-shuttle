@@ -4,6 +4,7 @@ import { useWikiStore } from "@/stores/wiki-store"
 import { normalizePath, isAbsolutePath } from "@/lib/path-utils"
 import { getProjectPathById } from "@/lib/project-identity"
 import { hasUsableLlm } from "@/lib/has-usable-llm"
+import { cascadeDeleteWikiPage } from "@/lib/wiki-page-delete"
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -158,7 +159,6 @@ export async function cleanupWrittenFiles(
   projectPath: string,
   filePaths: string[],
 ): Promise<void> {
-  const { cascadeDeleteWikiPage } = await import("@/lib/wiki-page-delete")
   for (const filePath of filePaths) {
     const fullPath = isAbsolutePath(filePath)
       ? normalizePath(filePath)

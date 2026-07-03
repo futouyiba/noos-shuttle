@@ -4,6 +4,7 @@ import { buildRetrievalGraph, calculateRelevance } from "./graph-relevance"
 import { normalizePath } from "@/lib/path-utils"
 import Graph from "graphology"
 import louvain from "graphology-communities-louvain"
+import { useWikiStore } from "@/stores/wiki-store"
 
 export interface GraphNode {
   id: string
@@ -245,7 +246,6 @@ export async function buildWikiGraph(
   // Calculate relevance weights using the retrieval graph
   let retrievalGraph: Awaited<ReturnType<typeof buildRetrievalGraph>> | null = null
   try {
-    const { useWikiStore } = await import("@/stores/wiki-store")
     const dv = useWikiStore.getState().dataVersion
     retrievalGraph = await buildRetrievalGraph(normalizePath(projectPath), dv)
   } catch {

@@ -5,7 +5,7 @@ export function renderHelp(health: HubHealth): string {
   const vaultPath = formatDisplayPath(`${health.noos_home}/vault`, health.noos_home);
   const handoffPath = formatDisplayPath(`${health.noos_home}/vault/handoffs/active`, health.noos_home);
   const crystalPath = formatDisplayPath(`${health.noos_home}/vault/crystals/active`, health.noos_home);
-  const mirrorPath = formatDisplayPath(`${health.noos_home}/vault/browser-mirror`, health.noos_home);
+  const mirrorPath = "~/Downloads/NOOS/vault";
 
   return `
     <section class="help-hero">

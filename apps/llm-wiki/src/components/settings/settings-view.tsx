@@ -20,7 +20,19 @@ import { Button } from "@/components/ui/button"
 import { useWikiStore } from "@/stores/wiki-store"
 import { useChatStore } from "@/stores/chat-store"
 import { useUpdateStore, hasAvailableUpdate } from "@/stores/update-store"
-import { loadSourceWatchConfig, saveLanguage } from "@/lib/project-store"
+import {
+  loadSourceWatchConfig,
+  saveEmbeddingConfig,
+  saveLanguage,
+  saveLlmConfig,
+  saveMultimodalConfig,
+  saveOutputLanguage,
+  saveProxyConfig,
+  saveScheduledImportConfig,
+  saveSourceWatchConfig,
+} from "@/lib/project-store"
+import { startProjectFileSync, stopProjectFileSync } from "@/lib/project-file-sync"
+import { startScheduledImport, stopScheduledImport } from "@/lib/scheduled-import"
 import type { SettingsDraft, DraftSetter } from "./settings-types"
 import { normalizeSourceWatchConfig } from "@/lib/source-watch-config"
 import { LlmProviderSection } from "./sections/llm-provider-section"
@@ -239,16 +251,6 @@ export function SettingsView() {
   }, [])
 
   const handleSave = useCallback(async () => {
-    const {
-      saveLlmConfig,
-      saveEmbeddingConfig,
-      saveMultimodalConfig,
-      saveOutputLanguage,
-      saveProxyConfig,
-      saveScheduledImportConfig,
-      saveSourceWatchConfig,
-    } = await import("@/lib/project-store")
-
     const newLlm = {
       provider: draft.provider,
       apiKey: draft.apiKey,
@@ -306,7 +308,6 @@ export function SettingsView() {
     setSourceWatchConfig(newSourceWatch)
     await saveSourceWatchConfig(newSourceWatch, project?.id)
     if (project) {
-      const { startProjectFileSync, stopProjectFileSync } = await import("@/lib/project-file-sync")
       if (newSourceWatch.enabled) {
         await startProjectFileSync(project, newSourceWatch).catch((err) =>
           console.error("Failed to start project file sync:", err)
@@ -334,7 +335,6 @@ export function SettingsView() {
     setScheduledImportConfig(newScheduledImport)
     if (project) {
       await saveScheduledImportConfig(project.path, newScheduledImport)
-      const { startScheduledImport, stopScheduledImport } = await import("@/lib/scheduled-import")
       if (
         newScheduledImport.enabled &&
         newScheduledImport.path &&

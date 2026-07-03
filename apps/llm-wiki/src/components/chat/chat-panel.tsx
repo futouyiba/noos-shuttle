@@ -1,23 +1,27 @@
-import { useRef, useEffect, useCallback, useState } from "react"
+import { lazy, Suspense, useRef, useEffect, useCallback, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { BookOpen, Plus, Trash2, MessageSquare } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { ChatMessage, StreamingMessage, useSourceFiles } from "./chat-message"
+import { useSourceFiles } from "./chat-source-files"
 import { ChatInput } from "./chat-input"
 import { useChatStore, chatMessagesToLLM } from "@/stores/chat-store"
 import { useWikiStore } from "@/stores/wiki-store"
 import { streamChat, type ChatMessage as LLMMessage } from "@/lib/llm-client"
-import { executeIngestWrites } from "@/lib/ingest"
-import { listDirectory, readFile, deleteFile } from "@/commands/fs"
-import { searchWiki } from "@/lib/search"
+import { readFile, deleteFile } from "@/commands/fs"
+import { searchWiki, tokenizeQuery } from "@/lib/search"
 import { buildRetrievalGraph, getRelatedNodes } from "@/lib/graph-relevance"
 import { normalizePath, getFileName, getRelativePath } from "@/lib/path-utils"
 import { getOutputLanguage, buildLanguageReminder } from "@/lib/output-language"
 import { isGreeting } from "@/lib/greeting-detector"
 import { computeContextBudget } from "@/lib/context-budget"
+import { setLastQueryPages } from "./chat-query-pages"
 
-// Store the page mapping from the last query so SourceFilesBar can show which pages were cited
-export let lastQueryPages: { title: string; path: string }[] = []
+const ChatMessage = lazy(() =>
+  import("./chat-message").then((mod) => ({ default: mod.ChatMessage }))
+)
+const StreamingMessage = lazy(() =>
+  import("./chat-message").then((mod) => ({ default: mod.StreamingMessage }))
+)
 
 function formatDate(timestamp: number): string {
   const d = new Date(timestamp)
@@ -143,7 +147,6 @@ export function ChatPanel() {
 
   const project = useWikiStore((s) => s.project)
   const llmConfig = useWikiStore((s) => s.llmConfig)
-  const setFileTree = useWikiStore((s) => s.setFileTree)
 
   const abortRef = useRef<AbortController | null>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
@@ -216,7 +219,6 @@ export function ChatPanel() {
         // ── Trim index by relevance if over budget ─────────────
         let index = rawIndex
         if (rawIndex.length > INDEX_BUDGET) {
-          const { tokenizeQuery } = await import("@/lib/search")
           const tokens = tokenizeQuery(text)
           const lines = rawIndex.split("\n")
           const keptLines: string[] = []
@@ -347,8 +349,9 @@ export function ChatPanel() {
         // (after history so it's the last system instruction the LLM sees).
         langReminder = buildLanguageReminder(text)
 
-        lastQueryPages = relevantPages.map((p) => ({ title: p.title, path: p.path }))
-        queryRefs = [...lastQueryPages]
+        const latestQueryPages = relevantPages.map((p) => ({ title: p.title, path: p.path }))
+        setLastQueryPages(latestQueryPages)
+        queryRefs = [...latestQueryPages]
       }
 
       // ── Conversation history with count limit ────────────────
@@ -461,19 +464,13 @@ export function ChatPanel() {
 
   const handleWriteToWiki = useCallback(async () => {
     if (!project) return
-    const pp = normalizePath(project.path)
     try {
-      await executeIngestWrites(pp, llmConfig, undefined, undefined)
-      try {
-        const tree = await listDirectory(pp)
-        setFileTree(tree)
-      } catch {
-        // ignore
-      }
+      const { writeIngestConversationToWiki } = await import("./write-ingest-to-wiki")
+      await writeIngestConversationToWiki(project, llmConfig)
     } catch (err) {
       console.error("Failed to write to wiki:", err)
     }
-  }, [project, llmConfig, setFileTree])
+  }, [project, llmConfig])
 
   const hasAssistantMessages = activeMessages.some((m) => m.role === "assistant")
   const showWriteButton = mode === "ingest" && !isStreaming && hasAssistantMessages
@@ -498,20 +495,22 @@ export function ChatPanel() {
               className="flex-1 overflow-y-auto px-3 py-2"
             >
               <div className="flex flex-col gap-3">
-                {activeMessages.map((msg, idx) => {
-                  // Check if this is the last assistant message
-                  const isLastAssistant = msg.role === "assistant" &&
-                    !activeMessages.slice(idx + 1).some((m) => m.role === "assistant")
-                  return (
-                    <ChatMessage
-                      key={msg.id}
-                      message={msg}
-                      isLastAssistant={isLastAssistant && !isStreaming}
-                      onRegenerate={isLastAssistant ? handleRegenerate : undefined}
-                    />
-                  )
-                })}
-                {isStreaming && <StreamingMessage content={streamingContent} />}
+                <Suspense fallback={null}>
+                  {activeMessages.map((msg, idx) => {
+                    // Check if this is the last assistant message
+                    const isLastAssistant = msg.role === "assistant" &&
+                      !activeMessages.slice(idx + 1).some((m) => m.role === "assistant")
+                    return (
+                      <ChatMessage
+                        key={msg.id}
+                        message={msg}
+                        isLastAssistant={isLastAssistant && !isStreaming}
+                        onRegenerate={isLastAssistant ? handleRegenerate : undefined}
+                      />
+                    )
+                  })}
+                  {isStreaming && <StreamingMessage content={streamingContent} />}
+                </Suspense>
                 <div ref={bottomRef} />
               </div>
             </div>
