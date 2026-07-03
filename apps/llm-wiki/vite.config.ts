@@ -303,6 +303,15 @@ function manualChunks(id: string): string | undefined {
   return miscVendorChunk(normalizedId)
 }
 
+function resolveModulePreloadDependencies(
+  _filename: string,
+  deps: string[],
+  context: { hostId: string; hostType: "html" | "js" },
+): string[] {
+  if (context.hostType !== "html") return deps
+  return deps.filter((dep) => !dep.replace(/^\//, "").startsWith("assets/feature-"))
+}
+
 // https://vitejs.dev/config/
 export default defineConfig(async () => ({
   plugins: [react(), tailwindcss()],
@@ -339,6 +348,9 @@ export default defineConfig(async () => ({
 
   build: {
     chunkSizeWarningLimit: 650,
+    modulePreload: {
+      resolveDependencies: resolveModulePreloadDependencies,
+    },
     rolldownOptions: {
       output: {
         codeSplitting: true,

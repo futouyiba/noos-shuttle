@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { lazy, Suspense, useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { open } from "@tauri-apps/plugin-dialog"
@@ -6,19 +6,21 @@ import i18n from "@/i18n"
 import { useWikiStore } from "@/stores/wiki-store"
 import { useReviewStore } from "@/stores/review-store"
 import { useChatStore } from "@/stores/chat-store"
-import { useUpdateStore } from "@/stores/update-store"
 import { listDirectory, openProject } from "@/commands/fs"
-import { getLastProject, getRecentProjects, saveLastProject, loadLlmConfig, loadLanguage, loadSearchApiConfig, loadEmbeddingConfig, loadMultimodalConfig, loadOutputLanguage, loadProviderConfigs, loadActivePresetId, loadProxyConfig, loadScheduledImportConfig, saveScheduledImportConfig, loadSourceWatchConfig, loadUpdateCheckState, saveUpdateCheckState, saveLlmConfig } from "@/lib/project-store"
 import { loadReviewItems, loadChatHistory } from "@/lib/persist"
 import { setupAutoSave } from "@/lib/auto-save"
 import { startClipWatcher, stopClipWatcher } from "@/lib/clip-watcher"
-import { startProjectFileSync, stopProjectFileSync, rescanProjectFileSync } from "@/lib/project-file-sync"
-import { startScheduledImport, stopScheduledImport } from "@/lib/scheduled-import"
-import { checkForUpdates, UPDATE_CHECK_CACHE_MS } from "@/lib/update-check"
-import { AppLayout } from "@/components/layout/app-layout"
 import { WelcomeScreen } from "@/components/project/welcome-screen"
-import { CreateProjectDialog } from "@/components/project/create-project-dialog"
 import type { WikiProject } from "@/types/wiki"
+
+const AppLayout = lazy(() =>
+  import("@/components/layout/app-layout").then((mod) => ({ default: mod.AppLayout }))
+)
+const CreateProjectDialog = lazy(() =>
+  import("@/components/project/create-project-dialog").then((mod) => ({
+    default: mod.CreateProjectDialog,
+  }))
+)
 
 interface SleepRecoveryStatus {
   state: "running" | "suspended" | "resumed" | "recovering" | "degraded" | "relaunching" | "healthy"
@@ -104,6 +106,12 @@ function App() {
       }
 
       try {
+        const { loadSourceWatchConfig } = await import("@/lib/project-store")
+        const {
+          startProjectFileSync,
+          stopProjectFileSync,
+          rescanProjectFileSync,
+        } = await import("@/lib/project-file-sync")
         const config = await loadSourceWatchConfig(current.id)
         useWikiStore.getState().setSourceWatchConfig(config)
         if (config.enabled) {
@@ -118,6 +126,8 @@ function App() {
       }
 
       try {
+        const { loadScheduledImportConfig } = await import("@/lib/project-store")
+        const { startScheduledImport, stopScheduledImport } = await import("@/lib/scheduled-import")
         const savedScheduledImport = await loadScheduledImportConfig(current.path)
         const scheduledConfig = savedScheduledImport ?? useWikiStore.getState().scheduledImportConfig
         useWikiStore.getState().setScheduledImportConfig(scheduledConfig)
@@ -161,42 +171,49 @@ function App() {
   // ships in production builds.
   useEffect(() => {
     if (!import.meta.env.DEV) return
-    // Expose the live store getter on window so you can inspect
-    // state from devtools when debugging banner behavior.
-    ;(window as unknown as { __llmwiki_updateStore?: typeof useUpdateStore }).__llmwiki_updateStore = useUpdateStore
-    ;(window as unknown as { __llmwiki_testUpdateBanner?: (clear?: boolean) => void }).__llmwiki_testUpdateBanner = (clear = false) => {
-      if (clear) {
+    let cancelled = false
+    import("@/stores/update-store").then(({ useUpdateStore }) => {
+      if (cancelled) return
+      // Expose the live store getter on window so you can inspect
+      // state from devtools when debugging banner behavior.
+      ;(window as unknown as { __llmwiki_updateStore?: unknown }).__llmwiki_updateStore = useUpdateStore
+      ;(window as unknown as { __llmwiki_testUpdateBanner?: (clear?: boolean) => void }).__llmwiki_testUpdateBanner = (clear = false) => {
+        if (clear) {
+          useUpdateStore.getState().setResult(
+            { kind: "up-to-date", local: __APP_VERSION__, remote: __APP_VERSION__ },
+            Date.now(),
+          )
+          useUpdateStore.getState().setDismissed(null)
+          console.log("[test] update banner cleared")
+          return
+        }
         useUpdateStore.getState().setResult(
-          { kind: "up-to-date", local: __APP_VERSION__, remote: __APP_VERSION__ },
+          {
+            kind: "available",
+            local: __APP_VERSION__,
+            remote: "v999.0.0",
+            release: {
+              name: "v999.0.0 (test)",
+              tag_name: "v999.0.0",
+              body:
+                "Test release for banner-UX verification.\n\n" +
+                "- Bigger red dot on the Settings icon\n" +
+                "- Top banner with one-click dismiss\n" +
+                "- Once dismissed, won't reappear for this version",
+              html_url: "https://github.com/nashsu/llm_wiki/releases",
+              published_at: new Date().toISOString(),
+            },
+          },
           Date.now(),
         )
         useUpdateStore.getState().setDismissed(null)
-        console.log("[test] update banner cleared")
-        return
+        console.log(
+          "[test] update banner injected. Run __llmwiki_testUpdateBanner(true) to clear.",
+        )
       }
-      useUpdateStore.getState().setResult(
-        {
-          kind: "available",
-          local: __APP_VERSION__,
-          remote: "v999.0.0",
-          release: {
-            name: "v999.0.0 (test)",
-            tag_name: "v999.0.0",
-            body:
-              "Test release for banner-UX verification.\n\n" +
-              "- Bigger red dot on the Settings icon\n" +
-              "- Top banner with one-click dismiss\n" +
-              "- Once dismissed, won't reappear for this version",
-            html_url: "https://github.com/nashsu/llm_wiki/releases",
-            published_at: new Date().toISOString(),
-          },
-        },
-        Date.now(),
-      )
-      useUpdateStore.getState().setDismissed(null)
-      console.log(
-        "[test] update banner injected. Run __llmwiki_testUpdateBanner(true) to clear.",
-      )
+    }).catch((err) => console.warn("[test] failed to load update store:", err))
+    return () => {
+      cancelled = true
     }
   }, [])
 
@@ -212,6 +229,15 @@ function App() {
     const timer = setTimeout(async () => {
       if (cancelled) return
       try {
+        const [
+          { loadUpdateCheckState, saveUpdateCheckState },
+          { useUpdateStore },
+          { checkForUpdates, UPDATE_CHECK_CACHE_MS },
+        ] = await Promise.all([
+          import("@/lib/project-store"),
+          import("@/stores/update-store"),
+          import("@/lib/update-check"),
+        ])
         const persisted = await loadUpdateCheckState()
         if (persisted) useUpdateStore.getState().hydrate(persisted)
 
@@ -286,6 +312,18 @@ function App() {
   useEffect(() => {
     async function init() {
       try {
+        const {
+          getLastProject,
+          loadLlmConfig,
+          loadProviderConfigs,
+          loadActivePresetId,
+          saveLlmConfig,
+          loadSearchApiConfig,
+          loadEmbeddingConfig,
+          loadMultimodalConfig,
+          loadProxyConfig,
+          loadLanguage,
+        } = await import("@/lib/project-store")
         const savedConfig = await loadLlmConfig()
         if (savedConfig) {
           useWikiStore.getState().setLlmConfig(savedConfig)
@@ -354,6 +392,13 @@ function App() {
   }, [])
 
   async function handleProjectOpened(proj: WikiProject) {
+    const {
+      getRecentProjects,
+      loadOutputLanguage,
+      loadScheduledImportConfig,
+      loadSourceWatchConfig,
+      saveLastProject,
+    } = await import("@/lib/project-store")
     // Clear all per-project state BEFORE loading new project data
     // to prevent cross-project contamination. MUST be awaited so the
     // ingest queue / graph cache are actually cleared before the new
@@ -416,6 +461,7 @@ function App() {
     const scheduledImportConfig = useWikiStore.getState().scheduledImportConfig
     if (scheduledImportConfig.enabled && scheduledImportConfig.path && scheduledImportConfig.interval > 0) {
       try {
+        const { startScheduledImport } = await import("@/lib/scheduled-import")
         startScheduledImport(proj, scheduledImportConfig)
       } catch (err) {
         console.error("Failed to start scheduled import:", err)
@@ -427,10 +473,12 @@ function App() {
       const config = await loadSourceWatchConfig(proj.id)
       useWikiStore.getState().setSourceWatchConfig(config)
       if (config.enabled) {
+        const { startProjectFileSync } = await import("@/lib/project-file-sync")
         startProjectFileSync(proj, config).catch((err) =>
           console.error("Failed to start project file sync:", err)
         )
       } else {
+        const { stopProjectFileSync } = await import("@/lib/project-file-sync")
         stopProjectFileSync().catch(() => {})
       }
     } catch (err) {
@@ -510,11 +558,13 @@ function App() {
 
   async function handleSwitchProject() {
     // Stop scheduled import before switching projects
+    const { stopScheduledImport } = await import("@/lib/scheduled-import")
     stopScheduledImport()
 
     // Save current project's scheduled import config before clearing
     const currentProject = useWikiStore.getState().project
     if (currentProject) {
+      const { saveScheduledImportConfig } = await import("@/lib/project-store")
       const currentConfig = useWikiStore.getState().scheduledImportConfig
       saveScheduledImportConfig(currentProject.path, currentConfig).catch(() => {})
     }
@@ -544,23 +594,31 @@ function App() {
           onOpenProject={handleOpenProject}
           onSelectProject={handleSelectRecent}
         />
-        <CreateProjectDialog
-          open={showCreateDialog}
-          onOpenChange={setShowCreateDialog}
-          onCreated={handleProjectOpened}
-        />
+        {showCreateDialog && (
+          <Suspense fallback={null}>
+            <CreateProjectDialog
+              open={showCreateDialog}
+              onOpenChange={setShowCreateDialog}
+              onCreated={handleProjectOpened}
+            />
+          </Suspense>
+        )}
       </>
     )
   }
 
   return (
     <>
-      <AppLayout onSwitchProject={handleSwitchProject} />
-      <CreateProjectDialog
-        open={showCreateDialog}
-        onOpenChange={setShowCreateDialog}
-        onCreated={handleProjectOpened}
-      />
+      <Suspense fallback={null}>
+        <AppLayout onSwitchProject={handleSwitchProject} />
+        {showCreateDialog && (
+          <CreateProjectDialog
+            open={showCreateDialog}
+            onOpenChange={setShowCreateDialog}
+            onCreated={handleProjectOpened}
+          />
+        )}
+      </Suspense>
     </>
   )
 }
