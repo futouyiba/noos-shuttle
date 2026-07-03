@@ -3718,7 +3718,8 @@ fn collect_library_source_objects(noos_home: &Path) -> Vec<Value> {
 
 fn library_source_object_from_map_entry(wiki_project_path: &Path, source: &Value) -> Option<Value> {
     let source_path = source.get("source_path")?.as_str()?;
-    let path = wiki_project_path.join(source_path);
+    let relative_path = sanitize_source_map_source_path(source_path)?;
+    let path = wiki_project_path.join(relative_path);
     let is_markdown = path
         .extension()
         .and_then(|extension| extension.to_str())

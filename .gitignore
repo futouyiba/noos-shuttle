@@ -1,8 +1,6 @@
 node_modules/
 dist/
-release/*.zip
-release/*.tar.gz
-release/*.dmg
+release/
 .DS_Store
 coverage/
 .tmp/
@@ -13,5 +11,6 @@ output/
 __pycache__/
 *.pyc
 target/
+apps/noos-hub/src-tauri/target-codex-*/
 apps/noos-hub/src-tauri/gen/
 apps/noos-hub/src-tauri/resources/noos-shuttle-extension/
