@@ -39,6 +39,7 @@
     ".svn",
     ".hg",
     ".obsidian",
+    ".assets",
     ".idea",
     ".vscode",
     "node_modules",

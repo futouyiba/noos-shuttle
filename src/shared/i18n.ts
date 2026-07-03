@@ -89,6 +89,18 @@ export interface ShuttleCopy {
   feishuExportMdAndOrganize: string;
   feishuExportMd: string;
   feishuOrganizeWiki: string;
+  feishuLibraryCategory: string;
+  feishuCategoryInput: string;
+  feishuCategoryUnset: string;
+  feishuChangeCategory: string;
+  feishuCategoryRequired: string;
+  feishuCategoryDialogTitle: string;
+  feishuCategoryDialogHint: string;
+  feishuRecentCategories: string;
+  feishuUseCategory: string;
+  feishuCategoryChanged: (category: string) => string;
+  feishuExportSuccessTitle: string;
+  feishuExportSuccessMessage: (location: string, organized: boolean) => string;
   feishuOpenMarkdownFolder: string;
   feishuOpenWikiFolder: string;
   feishuMarkdownHint: string;
@@ -106,6 +118,9 @@ export interface ShuttleCopy {
   feishuOverwriteConfirmMessage: string;
   feishuPublishHint: string;
   feishuPublishNeedsSource: string;
+  feishuPublishSuccessTitle: string;
+  feishuPublishSuccessMessage: (status: string, documentUrl?: string) => string;
+  feishuOpenFeishuDocument: string;
   feishuPublishFinished: (status: string, message: string) => string;
   feishuPublishNeedsAuth: string;
   feishuPublishFailed: string;
@@ -187,7 +202,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     latestResults: "Latest Results",
     latestVaultObjects: "Newest",
     browseVaultObjects: "Browse Vault",
-    browseVaultObjectsHint: "Select one or more Handoffs, Crystals, or Results.",
+    browseVaultObjectsHint: "Select Handoffs, Crystals, Results, or Library Sources.",
     searchVaultObjects: "Search Vault",
     vaultFolders: "Folders",
     allVaultObjects: "All matching objects",
@@ -240,12 +255,25 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     feishuRootFolder: "Main folder",
     feishuCurrentFolder: "Current folder",
     feishuExportSectionTitle: "Feishu to NOOS",
-    feishuExportMdAndOrganize: "Export MD & Organize Wiki",
-    feishuExportMd: "Export MD Only",
+    feishuExportMdAndOrganize: "Export & Organize Wiki",
+    feishuExportMd: "Export to Library",
     feishuOrganizeWiki: "Organize Wiki",
-    feishuOpenMarkdownFolder: "Open MD Sources",
+    feishuLibraryCategory: "Library category",
+    feishuCategoryInput: "Category path",
+    feishuCategoryUnset: "Choose a category",
+    feishuChangeCategory: "Change Directory",
+    feishuCategoryRequired: "Choose a document library category first.",
+    feishuCategoryDialogTitle: "Change Library Directory",
+    feishuCategoryDialogHint: "Use a relative category path inside the document library.",
+    feishuRecentCategories: "Recent directories",
+    feishuUseCategory: "Use Directory",
+    feishuCategoryChanged: (category) => `Document library category: ${category}`,
+    feishuExportSuccessTitle: "Export Complete",
+    feishuExportSuccessMessage: (location, organized) =>
+      `Written to the document library: ${location}.${organized ? " Wiki organization was also queued." : ""}`,
+    feishuOpenMarkdownFolder: "Open Library Directory",
     feishuOpenWikiFolder: "Open Wiki Project",
-    feishuMarkdownHint: "Export MD overwrites the stable .md source. Organize Wiki queues that source for Wiki organization.",
+    feishuMarkdownHint: "Export writes a Feishu package into the document library and refreshes progressive-reading indexes. Organize Wiki is explicit.",
     feishuPublishSectionTitle: "NOOS to Feishu",
     feishuPublishSectionHint: "Choose one NOOS Markdown source and publish it as a Feishu document.",
     feishuSelectMarkdown: "Choose NOOS Markdown",
@@ -260,6 +288,10 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     feishuOverwriteConfirmMessage: "This will replace the entire current Feishu document with the selected NOOS Markdown content.",
     feishuPublishHint: "Publish converts the Markdown body into Feishu document content, not an attachment.",
     feishuPublishNeedsSource: "Choose a NOOS Markdown source first.",
+    feishuPublishSuccessTitle: "Import Complete",
+    feishuPublishSuccessMessage: (status, documentUrl) =>
+      `Written to Feishu. ${status}${documentUrl ? ` Document: ${documentUrl}` : ""}`,
+    feishuOpenFeishuDocument: "Open Feishu Document",
     feishuPublishFinished: (status, message) => `${status}: ${message}`,
     feishuPublishNeedsAuth: "Feishu authorization is required in NOOS Hub.",
     feishuPublishFailed: "Feishu publish failed.",
@@ -330,7 +362,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     latestResults: "最近 Result",
     latestVaultObjects: "最新对象",
     browseVaultObjects: "浏览文件库",
-    browseVaultObjectsHint: "可多选 Handoff、Crystal 或 Result。",
+    browseVaultObjectsHint: "可选择 Handoff、Crystal、Result 或文档库源。",
     searchVaultObjects: "搜索 Vault",
     vaultFolders: "文件夹",
     allVaultObjects: "匹配对象",
@@ -382,12 +414,25 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     feishuRootFolder: "主文件夹",
     feishuCurrentFolder: "当前文件夹",
     feishuExportSectionTitle: "飞书到 NOOS",
-    feishuExportMdAndOrganize: "导出 MD 并整理 Wiki",
-    feishuExportMd: "仅导出 MD",
+    feishuExportMdAndOrganize: "导出并整理 Wiki",
+    feishuExportMd: "导出到文档库",
     feishuOrganizeWiki: "整理 Wiki",
-    feishuOpenMarkdownFolder: "打开 MD 源目录",
+    feishuLibraryCategory: "文档库分类",
+    feishuCategoryInput: "分类路径",
+    feishuCategoryUnset: "请选择分类",
+    feishuChangeCategory: "更改目录",
+    feishuCategoryRequired: "请先选择一个文档库分类目录。",
+    feishuCategoryDialogTitle: "更改文档库目录",
+    feishuCategoryDialogHint: "填写文档库内的相对分类路径。",
+    feishuRecentCategories: "最近目录",
+    feishuUseCategory: "使用此目录",
+    feishuCategoryChanged: (category) => `文档库分类目录：${category}`,
+    feishuExportSuccessTitle: "导出完成",
+    feishuExportSuccessMessage: (location, organized) =>
+      `已写入文档库：${location}。${organized ? "Wiki 整理也已加入队列。" : ""}`,
+    feishuOpenMarkdownFolder: "打开文档库目录",
     feishuOpenWikiFolder: "打开 Wiki 项目目录",
-    feishuMarkdownHint: "导出 MD 会覆盖当前飞书文档对应的稳定 .md source；整理 Wiki 会将该 source 加入整理队列。",
+    feishuMarkdownHint: "导出会把飞书 package 写入文档库，并刷新渐进式读取索引；整理 Wiki 需要显式触发。",
     feishuPublishSectionTitle: "NOOS 到飞书",
     feishuPublishSectionHint: "选择一个 NOOS Markdown 源，并发布为飞书文档正文。",
     feishuSelectMarkdown: "选择 NOOS Markdown",
@@ -402,6 +447,10 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     feishuOverwriteConfirmMessage: "这会用选中的 NOOS Markdown 全文替换当前飞书文档内容。",
     feishuPublishHint: "发布会把 Markdown 正文转换成飞书文档内容，不是上传附件。",
     feishuPublishNeedsSource: "请先选择一个 NOOS Markdown 源。",
+    feishuPublishSuccessTitle: "导入完成",
+    feishuPublishSuccessMessage: (status, documentUrl) =>
+      `已写入飞书文档。${status}${documentUrl ? ` 文档：${documentUrl}` : ""}`,
+    feishuOpenFeishuDocument: "打开飞书文档",
     feishuPublishFinished: (status, message) => `${status}：${message}`,
     feishuPublishNeedsAuth: "需要先在 NOOS Hub 完成飞书授权。",
     feishuPublishFailed: "飞书发布失败。",

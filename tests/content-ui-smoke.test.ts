@@ -325,16 +325,35 @@ describe("content script smoke flow", () => {
 
     await clickShuttle(page, ".surface-fab");
     await waitForShuttleText(page, "飞书文档");
-    await waitForShuttleText(page, "导出 MD 并整理 Wiki");
-    await waitForShuttleText(page, "仅导出 MD");
-    await waitForShuttleText(page, "打开 MD 源目录");
+    await waitForShuttleText(page, "导出并整理 Wiki");
+    await waitForShuttleText(page, "导出到文档库");
+    await waitForShuttleText(page, "打开文档库目录");
     await waitForShuttleText(page, "打开 Wiki 项目目录");
     await waitForShuttleText(page, "NOOS 到飞书");
     await waitForShuttleText(page, "选择 NOOS Markdown");
     await waitForShuttleText(page, "/tmp/noos/wiki/work");
+    await waitForShuttleText(page, "projects/noos-shuttle/design");
+
+    await clickShuttle(page, "[data-action='feishu-change-category']");
+    await waitForShuttleText(page, "更改文档库目录");
+    await setShuttleInputValue(page, "[data-feishu-category-dialog-input='true']", "projects/noos-shuttle/product");
+    await clickShuttle(page, "[data-action='feishu-confirm-category']");
+    await waitForShuttleText(page, "category_changed");
+    await waitForShuttleText(page, "projects/noos-shuttle/product");
+    const changeCategoryRequest = await page.evaluate(() => (globalThis as unknown as { lastFeishuAction?: unknown }).lastFeishuAction);
+    expect(changeCategoryRequest).toMatchObject({
+      type: "NOOS_FEISHU_WIKI_ACTION",
+      action: "change_category",
+      categoryPath: "projects/noos-shuttle/product",
+      wikiProjectPath: "/tmp/noos/wiki/work"
+    });
 
     await clickShuttle(page, "[data-action='feishu-export-organize']");
     await waitForShuttleText(page, "queued");
+    await waitForShuttleText(page, "导出完成");
+    await waitForShuttleText(page, "已写入文档库");
+    await waitForShuttleText(page, "Wiki 整理也已加入队列");
+    await waitForShuttleText(page, "/tmp/noos/wiki/work/raw/sources/projects/noos-shuttle/product/quarterly-plan--abc123.md");
 
     const request = await page.evaluate(() => (globalThis as unknown as { lastFeishuAction?: unknown }).lastFeishuAction);
     expect(request).toMatchObject({
@@ -344,8 +363,9 @@ describe("content script smoke flow", () => {
     });
     expect(request).toHaveProperty("title", "Quarterly Plan");
     expect(request).toHaveProperty("wikiProjectPath", "/tmp/noos/wiki/work");
+    expect(request).toHaveProperty("categoryPath", "projects/noos-shuttle/product");
 
-    await clickShuttle(page, "[data-action='feishu-open-markdown-folder']");
+    await clickShuttle(page, "[data-modal-test-id='feishu-open-export-folder']");
     await waitForShuttleText(page, "opened");
     const openMarkdownRequest = await page.evaluate(() => (globalThis as unknown as { lastFeishuAction?: unknown }).lastFeishuAction);
     expect(openMarkdownRequest).toMatchObject({
@@ -364,6 +384,8 @@ describe("content script smoke flow", () => {
 
     await clickShuttle(page, "[data-action='feishu-select-markdown']");
     await waitForShuttleText(page, "用于发布到飞书");
+    await waitForShuttleText(page, "Quarterly Plan Export");
+    expect(await shuttleElementIsInViewport(page, ".modal--wide [data-action='feed-selected-vault-object']")).toBe(true);
     await clickShuttle(page, "[data-action='feed-selected-vault-object']");
     await waitForShuttleText(page, "已选 Markdown");
     await waitForShuttleText(page, "发布为新文档");
@@ -371,23 +393,30 @@ describe("content script smoke flow", () => {
 
     await clickShuttle(page, "[data-action='feishu-publish-new']");
     await waitForShuttleText(page, "published");
+    await waitForShuttleText(page, "导入完成");
+    await waitForShuttleText(page, "打开飞书文档");
+    const publishedHref = await page.evaluate(() =>
+      document.querySelector("#noos-shuttle-root")?.shadowRoot?.querySelector("[data-modal-test-id='feishu-open-published-doc']")?.getAttribute("href")
+    );
+    expect(publishedHref).toBe("https://team.feishu.cn/docx/PUBLISHED");
     const publishRequest = await page.evaluate(() => (globalThis as unknown as { lastFeishuPublish?: unknown }).lastFeishuPublish);
     expect(publishRequest).toMatchObject({
       type: "NOOS_FEISHU_PUBLISH_MARKDOWN",
       action: "publish_markdown",
-      sourceKey: "20260601-plan-md",
+      sourceKey: "feishu_docx_abc123",
       mode: "create",
       destinationKind: "current_doc",
       url: "https://team.feishu.cn/docx/ABC123"
     });
 
+    await clickShuttle(page, "[data-action='modal-close']");
     await clickShuttle(page, "[data-action='feishu-overwrite-current']");
     await waitForShuttleText(page, "确认覆盖当前飞书文档？");
     await clickShuttle(page, "[data-action='confirm-feishu-overwrite']");
     const overwriteRequest = await page.evaluate(() => (globalThis as unknown as { lastFeishuPublish?: unknown }).lastFeishuPublish);
     expect(overwriteRequest).toMatchObject({
       action: "publish_markdown",
-      sourceKey: "20260601-plan-md",
+      sourceKey: "feishu_docx_abc123",
       mode: "overwrite",
       destinationKind: "current_doc"
     });
@@ -657,6 +686,7 @@ async function newMockFeishuPage(
   const page = await browser.newPage();
   await page.addInitScript(() => {
     window.localStorage.setItem("noos-shuttle-locale", "zh");
+    let wikiCategoryPath = "projects/noos-shuttle/design";
     (globalThis as unknown as { chrome: unknown }).chrome = {
       runtime: {
         getURL: (path: string) => `chrome-extension://mock/${path}`,
@@ -665,12 +695,26 @@ async function newMockFeishuPage(
             return { ok: true, hubAvailable: true, paired: true };
           }
           if (message.type === "NOOS_GET_WIKI_TARGET") {
-            return { ok: true, projectPath: "/tmp/noos/wiki/work", message: "Default Wiki project loaded." };
+            return {
+              ok: true,
+              projectPath: "/tmp/noos/wiki/work",
+              currentCategoryPath: wikiCategoryPath,
+              recentCategoryPaths: [wikiCategoryPath, "projects/noos-shuttle/design"].filter((path, index, items) => items.indexOf(path) === index),
+              message: "Default Wiki project loaded."
+            };
           }
           if (message.type === "NOOS_GET_VAULT_RECENT" || message.type === "NOOS_BROWSE_VAULT") {
             return {
               ok: true,
               objects: [
+                {
+                  object_type: "library_source",
+                  lookup_key: "feishu_docx_abc123",
+                  key: "feishu_docx_abc123",
+                  title: "Quarterly Plan Export",
+                  path: "/tmp/noos/wiki/work/raw/sources/projects/noos-shuttle/product/quarterly-plan--abc123.md",
+                  category_path: "projects/noos-shuttle/product"
+                },
                 {
                   object_type: "result",
                   lookup_key: "20260601-plan-md",
@@ -679,10 +723,29 @@ async function newMockFeishuPage(
                   path: "/tmp/noos/vault/results/inbox/20260601-plan-md.md"
                 }
               ],
-              folders: [{ id: "latest", label: "Latest", kind: "system" }]
+              folders: [
+                { id: "latest", label: "Latest", kind: "system" },
+                { id: "library_sources", label: "Library Sources", kind: "folder" }
+              ]
             };
           }
           if (message.type === "NOOS_GET_VAULT_OBJECT") {
+            const lookupKey = (message as { lookupKey?: string }).lookupKey;
+            if (lookupKey === "feishu_docx_abc123") {
+              return {
+                ok: true,
+                object: {
+                  object_type: "library_source",
+                  lookup_key: "feishu_docx_abc123",
+                  key: "feishu_docx_abc123",
+                  title: "Quarterly Plan Export",
+                  path: "/tmp/noos/wiki/work/raw/sources/projects/noos-shuttle/product/quarterly-plan--abc123.md",
+                  source_url: "https://team.feishu.cn/docx/ABC123",
+                  content:
+                    "type: library_source source_id: feishu_docx_abc123 source_app: feishu title: Quarterly Plan Export\n\n# Quarterly Plan Export\n\nBody"
+                }
+              };
+            }
             return {
               ok: true,
               object: {
@@ -697,12 +760,21 @@ async function newMockFeishuPage(
           }
           if (message.type === "NOOS_FEISHU_WIKI_ACTION") {
             (globalThis as unknown as { lastFeishuAction?: unknown }).lastFeishuAction = message;
-            const action = (message as { action?: string }).action;
+            const action = (message as { action?: string; categoryPath?: string }).action;
+            const categoryPath = (message as { categoryPath?: string }).categoryPath;
+            if (action === "change_category" && categoryPath) {
+              wikiCategoryPath = categoryPath;
+            }
             return {
               ok: true,
-              status: action?.startsWith("open_") ? "opened" : "queued",
-              message: action?.startsWith("open_") ? "Opened folder." : "Feishu MD exported and Wiki organization queued.",
-              sourcePath: "/tmp/noos/wiki/work/raw/sources/feishu/feishu-abc123.md",
+              status: action === "change_category" ? "category_changed" : action?.startsWith("open_") ? "opened" : "queued",
+              message:
+                action === "change_category"
+                  ? `Document library category set to ${wikiCategoryPath}.`
+                  : action?.startsWith("open_")
+                    ? "Opened folder."
+                    : "Feishu package exported and Wiki organization queued.",
+              sourcePath: `/tmp/noos/wiki/work/raw/sources/${wikiCategoryPath}/quarterly-plan--abc123.md`,
               wikiProjectPath: "/tmp/noos/wiki/work"
             };
           }
@@ -889,6 +961,17 @@ async function waitForShuttleText(page: Page, text: string): Promise<void> {
 
 async function shuttleText(page: Page): Promise<string> {
   return page.evaluate(() => document.querySelector("#noos-shuttle-root")?.shadowRoot?.querySelector(".shuttle")?.textContent ?? "");
+}
+
+async function shuttleElementIsInViewport(page: Page, selector: string): Promise<boolean> {
+  return page.evaluate((targetSelector) => {
+    const element = document.querySelector("#noos-shuttle-root")?.shadowRoot?.querySelector<HTMLElement>(targetSelector);
+    if (!element) {
+      return false;
+    }
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 && rect.top >= 0 && rect.bottom <= window.innerHeight && rect.left >= 0 && rect.right <= window.innerWidth;
+  }, selector);
 }
 
 function escapeHtml(value: string): string {

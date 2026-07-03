@@ -139,6 +139,7 @@ struct HubActionRequest {
     url: Option<String>,
     title: Option<String>,
     wiki_project_path: Option<String>,
+    category_path: Option<String>,
     source_key: Option<String>,
     mode: Option<String>,
     destination_kind: Option<String>,
@@ -165,6 +166,34 @@ struct VaultMarkdownSource {
     title: Option<String>,
     path: PathBuf,
     content: String,
+}
+
+struct FeishuExportPackage {
+    markdown: String,
+    resources: Vec<ExportedResource>,
+    export_mode: String,
+    temp_root: Option<PathBuf>,
+}
+
+struct ExportedResource {
+    source_path: PathBuf,
+    original_relative_path: String,
+    relative_path: String,
+}
+
+struct LibrarySourceMetadata {
+    source_id: String,
+    source_app: String,
+    source_url: String,
+    title: String,
+    category_path: String,
+    source_path: PathBuf,
+    asset_root: String,
+    export_mode: String,
+    content_hash: String,
+    resource_count: usize,
+    last_exported_at: String,
+    wiki_status: String,
 }
 
 #[derive(Serialize)]
@@ -1011,9 +1040,15 @@ fn handle_local_write_request(mut stream: TcpStream) -> Result<(), String> {
 
 fn wiki_target_payload() -> Value {
     let project_path = configured_default_wiki_project_path();
+    let category_state = project_path
+        .as_ref()
+        .map(|path| wiki_category_state(path))
+        .unwrap_or_else(|| (None, Vec::new()));
     json!({
         "ok": true,
         "project_path": project_path.as_ref().map(|path| path.display().to_string()),
+        "current_category_path": category_state.0,
+        "recent_category_paths": category_state.1,
         "message": if project_path.is_some() { "Default Wiki project loaded." } else { "No default Wiki project configured." },
     })
 }
@@ -1025,6 +1060,7 @@ fn run_browser_hub_action(request: HubActionRequest) -> HubActionResponse {
             export_feishu_md(request, true)
         }
         "feishu.publishMarkdown" => publish_feishu_markdown(request),
+        "wiki.setFeishuCategory" => set_feishu_category(request),
         "wiki.organizeSource" => organize_wiki_source(request),
         "wiki.openFeishuSourceFolder" => open_feishu_source_folder(request),
         "wiki.openProjectFolder" => open_wiki_project_folder(request),
@@ -1034,6 +1070,50 @@ fn run_browser_hub_action(request: HubActionRequest) -> HubActionResponse {
             None,
             request.wiki_project_path,
         ),
+    }
+}
+
+fn set_feishu_category(request: HubActionRequest) -> HubActionResponse {
+    let Some(wiki_project_path) = resolve_wiki_project_path(request.wiki_project_path.as_deref())
+    else {
+        return hub_action_error(
+            "config_write_failed",
+            "No default Wiki project configured in NOOS Hub.",
+            None,
+            request.wiki_project_path,
+        );
+    };
+    let category_path = match sanitize_category_path(request.category_path.as_deref()) {
+        Ok(path) => path,
+        Err(error) => {
+            return hub_action_error(
+                "missing_category_path",
+                &error,
+                None,
+                Some(wiki_project_path.display().to_string()),
+            );
+        }
+    };
+
+    if let Err(error) = remember_wiki_category_path(&wiki_project_path, &category_path) {
+        return hub_action_error(
+            "config_write_failed",
+            &error,
+            None,
+            Some(wiki_project_path.display().to_string()),
+        );
+    }
+
+    HubActionResponse {
+        ok: true,
+        status: "category_changed".to_string(),
+        message: format!("Document library category set to {category_path}."),
+        error_code: None,
+        source_path: None,
+        wiki_project_path: Some(wiki_project_path.display().to_string()),
+        document_url: None,
+        folder_name: None,
+        changed: Some(true),
     }
 }
 
@@ -1055,17 +1135,35 @@ fn export_feishu_md(request: HubActionRequest, organize: bool) -> HubActionRespo
             request.wiki_project_path,
         );
     };
+    let category_path = match sanitize_category_path(request.category_path.as_deref()) {
+        Ok(path) => path,
+        Err(error) => {
+            return hub_action_error(
+                "missing_category_path",
+                &error,
+                None,
+                Some(wiki_project_path.display().to_string()),
+            );
+        }
+    };
 
     let token = feishu_token_from_url(url).unwrap_or_else(|| stable_hash_hex(url));
+    let source_id = feishu_source_id(&token);
     let title = request
         .title
         .as_deref()
         .unwrap_or("Untitled Feishu Document");
-    let source_path = feishu_source_path(&wiki_project_path, url, Some(title));
-    let existing_source_path = existing_feishu_source_path(&wiki_project_path, url, Some(title))
-        .unwrap_or_else(|| source_path.clone());
-    let exported = match export_feishu_markdown(url) {
-        Ok(markdown) => markdown,
+    let source_path = feishu_source_path(&wiki_project_path, &category_path, &token, Some(title));
+    let existing_source_path = existing_feishu_source_path(
+        &wiki_project_path,
+        &source_id,
+        url,
+        Some(title),
+        Some(&category_path),
+    )
+    .unwrap_or_else(|| source_path.clone());
+    let exported = match export_feishu_package(url, &source_id) {
+        Ok(package) => package,
         Err(error) => {
             let code = if looks_like_feishu_auth_error(&error) {
                 "needs_auth"
@@ -1080,11 +1178,53 @@ fn export_feishu_md(request: HubActionRequest, organize: bool) -> HubActionRespo
             );
         }
     };
+    let asset_root = format!(".assets/{source_id}");
+    let asset_target = source_path
+        .parent()
+        .unwrap_or_else(|| wiki_project_path.as_path())
+        .join(&asset_root);
+    let normalized_markdown =
+        normalize_exported_markdown_resources(&exported.markdown, &exported.resources, &asset_root);
 
     let previous = fs::read_to_string(&existing_source_path).unwrap_or_default();
-    let changed = feishu_source_body(&previous) != exported.trim();
+    let changed = feishu_source_body(&previous) != normalized_markdown.trim();
+    let last_exported_at = now_iso_utc();
+    let library_metadata = LibrarySourceMetadata {
+        source_id: source_id.clone(),
+        source_app: "feishu".to_string(),
+        source_url: url.to_string(),
+        title: title.to_string(),
+        category_path: category_path.clone(),
+        source_path: source_path.clone(),
+        asset_root: asset_root.clone(),
+        export_mode: exported.export_mode.clone(),
+        content_hash: format!("sha256ish:{}", stable_hash_hex(normalized_markdown.trim())),
+        resource_count: exported.resources.len(),
+        last_exported_at: last_exported_at.clone(),
+        wiki_status: if organize { "pending" } else { "not_ingested" }.to_string(),
+    };
+    let markdown = build_feishu_source_markdown(
+        &normalized_markdown,
+        url,
+        title,
+        &token,
+        &source_id,
+        &category_path,
+        &asset_root,
+        &exported.export_mode,
+        &last_exported_at,
+    );
+    let source_location_changed = existing_source_path != source_path;
+    let metadata_matches = feishu_source_metadata_matches(
+        &previous,
+        &source_id,
+        &category_path,
+        &asset_root,
+        &exported.export_mode,
+    );
     if !changed {
         if let Err(error) = migrate_feishu_source_path(&existing_source_path, &source_path) {
+            cleanup_feishu_export_package(&exported);
             return hub_action_error(
                 "export_failed",
                 &error,
@@ -1092,21 +1232,94 @@ fn export_feishu_md(request: HubActionRequest, organize: bool) -> HubActionRespo
                 Some(wiki_project_path.display().to_string()),
             );
         }
+        if let Err(error) = migrate_library_assets(&existing_source_path, &asset_target, &source_id)
+        {
+            cleanup_feishu_export_package(&exported);
+            return hub_action_error(
+                "export_failed",
+                &error,
+                Some(source_path.display().to_string()),
+                Some(wiki_project_path.display().to_string()),
+            );
+        }
+        if let Err(error) = write_exported_resources(&exported.resources, &asset_target) {
+            cleanup_feishu_export_package(&exported);
+            return hub_action_error(
+                "export_failed",
+                &error,
+                Some(source_path.display().to_string()),
+                Some(wiki_project_path.display().to_string()),
+            );
+        }
+        if source_location_changed || !metadata_matches {
+            if let Err(error) = write_feishu_source(&source_path, &markdown) {
+                cleanup_feishu_export_package(&exported);
+                return hub_action_error(
+                    "export_failed",
+                    &error,
+                    Some(source_path.display().to_string()),
+                    Some(wiki_project_path.display().to_string()),
+                );
+            }
+        }
+        if let Err(error) = update_knowledge_library(&wiki_project_path, &library_metadata) {
+            cleanup_feishu_export_package(&exported);
+            return hub_action_error(
+                "index_write_failed",
+                &error,
+                Some(source_path.display().to_string()),
+                Some(wiki_project_path.display().to_string()),
+            );
+        }
+        if let Err(error) = remember_wiki_category_path(&wiki_project_path, &category_path) {
+            cleanup_feishu_export_package(&exported);
+            return hub_action_error(
+                "config_write_failed",
+                &error,
+                Some(source_path.display().to_string()),
+                Some(wiki_project_path.display().to_string()),
+            );
+        }
+        if organize {
+            if let Err(error) = queue_wiki_organize_by_touch(&source_path) {
+                cleanup_feishu_export_package(&exported);
+                return hub_action_error(
+                    "organize_failed",
+                    &error,
+                    Some(source_path.display().to_string()),
+                    Some(wiki_project_path.display().to_string()),
+                );
+            }
+        }
+        cleanup_feishu_export_package(&exported);
         return HubActionResponse {
             ok: true,
-            status: "unchanged".to_string(),
-            message: "Feishu MD source is unchanged.".to_string(),
+            status: if organize { "queued" } else { "unchanged" }.to_string(),
+            message: if organize {
+                "Feishu package is unchanged and Wiki organization queued.".to_string()
+            } else {
+                "Feishu package source is unchanged.".to_string()
+            },
             error_code: None,
             source_path: Some(source_path.display().to_string()),
             wiki_project_path: Some(wiki_project_path.display().to_string()),
             document_url: None,
             folder_name: None,
-            changed: Some(false),
+            changed: Some(organize),
         };
     }
 
-    let markdown = build_feishu_source_markdown(&exported, url, title, &token, &wiki_project_path);
     if let Err(error) = migrate_feishu_source_path(&existing_source_path, &source_path) {
+        cleanup_feishu_export_package(&exported);
+        return hub_action_error(
+            "export_failed",
+            &error,
+            Some(source_path.display().to_string()),
+            Some(wiki_project_path.display().to_string()),
+        );
+    }
+    if let Err(error) = write_exported_resources(&exported.resources, &asset_target) {
+        cleanup_feishu_export_package(&exported);
         return hub_action_error(
             "export_failed",
             &error,
@@ -1115,8 +1328,27 @@ fn export_feishu_md(request: HubActionRequest, organize: bool) -> HubActionRespo
         );
     }
     if let Err(error) = write_feishu_source(&source_path, &markdown) {
+        cleanup_feishu_export_package(&exported);
         return hub_action_error(
             "export_failed",
+            &error,
+            Some(source_path.display().to_string()),
+            Some(wiki_project_path.display().to_string()),
+        );
+    }
+    if let Err(error) = update_knowledge_library(&wiki_project_path, &library_metadata) {
+        cleanup_feishu_export_package(&exported);
+        return hub_action_error(
+            "index_write_failed",
+            &error,
+            Some(source_path.display().to_string()),
+            Some(wiki_project_path.display().to_string()),
+        );
+    }
+    if let Err(error) = remember_wiki_category_path(&wiki_project_path, &category_path) {
+        cleanup_feishu_export_package(&exported);
+        return hub_action_error(
+            "config_write_failed",
             &error,
             Some(source_path.display().to_string()),
             Some(wiki_project_path.display().to_string()),
@@ -1125,6 +1357,7 @@ fn export_feishu_md(request: HubActionRequest, organize: bool) -> HubActionRespo
 
     if organize {
         if let Err(error) = queue_wiki_organize_by_touch(&source_path) {
+            cleanup_feishu_export_package(&exported);
             return hub_action_error(
                 "organize_failed",
                 &error,
@@ -1132,10 +1365,11 @@ fn export_feishu_md(request: HubActionRequest, organize: bool) -> HubActionRespo
                 Some(wiki_project_path.display().to_string()),
             );
         }
+        cleanup_feishu_export_package(&exported);
         return HubActionResponse {
             ok: true,
             status: "queued".to_string(),
-            message: "Feishu MD exported and Wiki organization queued.".to_string(),
+            message: "Feishu package exported and Wiki organization queued.".to_string(),
             error_code: None,
             source_path: Some(source_path.display().to_string()),
             wiki_project_path: Some(wiki_project_path.display().to_string()),
@@ -1145,10 +1379,11 @@ fn export_feishu_md(request: HubActionRequest, organize: bool) -> HubActionRespo
         };
     }
 
+    cleanup_feishu_export_package(&exported);
     HubActionResponse {
         ok: true,
         status: "exported".to_string(),
-        message: "Feishu MD exported to the Wiki source library.".to_string(),
+        message: "Feishu package exported to the document library.".to_string(),
         error_code: None,
         source_path: Some(source_path.display().to_string()),
         wiki_project_path: Some(wiki_project_path.display().to_string()),
@@ -1278,11 +1513,28 @@ fn organize_wiki_source(request: HubActionRequest) -> HubActionResponse {
             request.wiki_project_path,
         );
     };
-    let source_path =
-        existing_feishu_source_path(&wiki_project_path, url, request.title.as_deref())
-            .unwrap_or_else(|| {
-                feishu_source_path(&wiki_project_path, url, request.title.as_deref())
-            });
+    let token = feishu_token_from_url(url).unwrap_or_else(|| stable_hash_hex(url));
+    let source_id = feishu_source_id(&token);
+    let category_path = request
+        .category_path
+        .as_deref()
+        .and_then(|path| sanitize_category_path(Some(path)).ok())
+        .or_else(|| wiki_category_state(&wiki_project_path).0);
+    let source_path = existing_feishu_source_path(
+        &wiki_project_path,
+        &source_id,
+        url,
+        request.title.as_deref(),
+        category_path.as_deref(),
+    )
+    .unwrap_or_else(|| {
+        feishu_source_path(
+            &wiki_project_path,
+            category_path.as_deref().unwrap_or(""),
+            &token,
+            request.title.as_deref(),
+        )
+    });
     if !source_path.exists() {
         return hub_action_error(
             "export_failed",
@@ -1323,7 +1575,13 @@ fn open_feishu_source_folder(request: HubActionRequest) -> HubActionResponse {
             request.wiki_project_path,
         );
     };
-    let source_folder = wiki_project_path.join("raw").join("sources").join("feishu");
+    let category_path = request
+        .category_path
+        .as_deref()
+        .and_then(|path| sanitize_category_path(Some(path)).ok())
+        .or_else(|| wiki_category_state(&wiki_project_path).0)
+        .unwrap_or_default();
+    let source_folder = library_source_folder(&wiki_project_path, &category_path);
     if let Err(error) = fs::create_dir_all(&source_folder) {
         return hub_action_error(
             "open_failed",
@@ -1419,7 +1677,11 @@ fn resolve_wiki_project_path(explicit_path: Option<&str>) -> Option<PathBuf> {
 }
 
 fn configured_default_wiki_project_path() -> Option<PathBuf> {
-    let config = read_json_object(&noos_home().join("config.json"));
+    configured_default_wiki_project_path_from(&noos_home())
+}
+
+fn configured_default_wiki_project_path_from(noos_home: &Path) -> Option<PathBuf> {
+    let config = read_json_object(&noos_home.join("config.json"));
     string_config_value(&config, &["default_wiki_project"])
         .or_else(|| string_config_value(&config, &["defaultWikiProject"]))
         .or_else(|| string_config_value(&config, &["llm_wiki", "default_project"]))
@@ -1427,6 +1689,71 @@ fn configured_default_wiki_project_path() -> Option<PathBuf> {
         .or_else(|| string_config_value(&config, &["wiki", "default_project"]))
         .or_else(|| string_config_value(&config, &["wiki", "project_path"]))
         .map(|path| expand_user_path(&path))
+}
+
+fn wiki_category_state(wiki_project_path: &Path) -> (Option<String>, Vec<String>) {
+    let config = read_json_object(&noos_home().join("config.json"));
+    let key = wiki_project_key(wiki_project_path);
+    let project_state = config
+        .get("wiki")
+        .and_then(|wiki| wiki.get("category_paths"))
+        .and_then(|paths| paths.get(&key));
+    let current = project_state
+        .and_then(|state| state.get("last_category_path"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            config
+                .get("feishu")
+                .and_then(|feishu| feishu.get("last_category_path"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
+    let recent = project_state
+        .and_then(|state| state.get("recent_category_paths"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    (current, recent)
+}
+
+fn remember_wiki_category_path(
+    wiki_project_path: &Path,
+    category_path: &str,
+) -> Result<(), String> {
+    let config_path = noos_home().join("config.json");
+    let mut config = read_config_for_write(&config_path)?;
+    let key = wiki_project_key(wiki_project_path);
+    let mut recent = wiki_category_state(wiki_project_path).1;
+    recent.retain(|path| path != category_path);
+    recent.insert(0, category_path.to_string());
+    recent.truncate(10);
+
+    if !config.get("wiki").map(Value::is_object).unwrap_or(false) {
+        config["wiki"] = json!({});
+    }
+    if !config["wiki"]
+        .get("category_paths")
+        .map(Value::is_object)
+        .unwrap_or(false)
+    {
+        config["wiki"]["category_paths"] = json!({});
+    }
+    config["wiki"]["category_paths"][key.as_str()] = json!({
+        "last_category_path": category_path,
+        "recent_category_paths": recent,
+    });
+    write_json_file(&config_path, &config)
+}
+
+fn wiki_project_key(wiki_project_path: &Path) -> String {
+    stable_hash_hex(&wiki_project_path.display().to_string())
 }
 
 fn string_config_value(config: &Value, path: &[&str]) -> Option<String> {
@@ -1448,28 +1775,42 @@ fn expand_user_path(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-fn feishu_source_path(wiki_project_path: &Path, url: &str, title: Option<&str>) -> PathBuf {
-    let id = feishu_token_from_url(url).unwrap_or_else(|| stable_hash_hex(url));
+fn feishu_source_path(
+    wiki_project_path: &Path,
+    category_path: &str,
+    token: &str,
+    title: Option<&str>,
+) -> PathBuf {
     let filename = format!(
-        "feishu-{}--{}.md",
+        "{}--{}.md",
         source_title_slug(title.unwrap_or("untitled")),
-        source_id_short_slug(&id)
+        source_id_short_slug(token)
     );
-    feishu_source_folder(wiki_project_path).join(filename)
+    library_source_folder(wiki_project_path, category_path).join(filename)
 }
 
 fn existing_feishu_source_path(
     wiki_project_path: &Path,
+    source_id: &str,
     url: &str,
     title: Option<&str>,
+    category_path: Option<&str>,
 ) -> Option<PathBuf> {
-    let target = feishu_source_path(wiki_project_path, url, title);
-    if target.exists() {
-        return Some(target);
+    if let Some(path) = source_path_from_source_map(wiki_project_path, source_id) {
+        if path.exists() {
+            return Some(path);
+        }
     }
 
     let id = feishu_token_from_url(url).unwrap_or_else(|| stable_hash_hex(url));
-    let folder = feishu_source_folder(wiki_project_path);
+    if let Some(category_path) = category_path {
+        let target = feishu_source_path(wiki_project_path, category_path, &id, title);
+        if target.exists() {
+            return Some(target);
+        }
+    }
+
+    let folder = legacy_feishu_source_folder(wiki_project_path);
     let legacy = folder.join(format!("feishu-{}.md", source_id_slug(&id)));
     if legacy.exists() {
         return Some(legacy);
@@ -1488,6 +1829,15 @@ fn existing_feishu_source_path(
         })
 }
 
+fn library_source_folder(wiki_project_path: &Path, category_path: &str) -> PathBuf {
+    let base = wiki_project_path.join("raw").join("sources");
+    if category_path.trim().is_empty() {
+        base
+    } else {
+        base.join(category_path)
+    }
+}
+
 fn migrate_feishu_source_path(existing_path: &Path, target_path: &Path) -> Result<(), String> {
     if existing_path == target_path || !existing_path.exists() {
         return Ok(());
@@ -1502,8 +1852,67 @@ fn migrate_feishu_source_path(existing_path: &Path, target_path: &Path) -> Resul
     fs::rename(existing_path, target_path).map_err(|error| error.to_string())
 }
 
-fn feishu_source_folder(wiki_project_path: &Path) -> PathBuf {
+fn migrate_library_assets(
+    existing_source_path: &Path,
+    target_asset_path: &Path,
+    source_id: &str,
+) -> Result<(), String> {
+    let Some(existing_parent) = existing_source_path.parent() else {
+        return Ok(());
+    };
+    let existing_asset_path = existing_parent.join(".assets").join(source_id);
+    if existing_asset_path == target_asset_path
+        || !existing_asset_path.exists()
+        || target_asset_path.exists()
+    {
+        return Ok(());
+    }
+    if let Some(parent) = target_asset_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    fs::rename(existing_asset_path, target_asset_path).map_err(|error| error.to_string())
+}
+
+fn legacy_feishu_source_folder(wiki_project_path: &Path) -> PathBuf {
     wiki_project_path.join("raw").join("sources").join("feishu")
+}
+
+fn sanitize_category_path(path: Option<&str>) -> Result<String, String> {
+    let raw = path.unwrap_or("").trim();
+    if raw.is_empty() {
+        return Err("Choose a document library category before exporting.".to_string());
+    }
+    if raw.starts_with('/') || raw.starts_with('\\') || raw.contains(':') {
+        return Err("Category path must be relative.".to_string());
+    }
+
+    let mut parts = Vec::new();
+    for part in raw.split(['/', '\\']) {
+        let part = part.trim();
+        if part.is_empty() || part == "." || part == ".." {
+            return Err("Category path contains an invalid segment.".to_string());
+        }
+        if part.starts_with('.') {
+            return Err("Category path cannot contain hidden directory segments.".to_string());
+        }
+        if part
+            .chars()
+            .any(|character| character.is_control() || character == ':')
+        {
+            return Err("Category path contains unsupported characters.".to_string());
+        }
+        parts.push(source_title_slug(part));
+    }
+
+    if parts.is_empty() {
+        Err("Choose a document library category before exporting.".to_string())
+    } else {
+        Ok(parts.join("/"))
+    }
+}
+
+fn feishu_source_id(token: &str) -> String {
+    format!("feishu_docx_{}", source_id_slug(token))
 }
 
 fn feishu_token_from_url(url: &str) -> Option<String> {
@@ -1628,10 +2037,579 @@ fn export_feishu_markdown(url: &str) -> Result<String, String> {
     Err("Feishu MD export failed. Install/configure feishu-docx or complete Feishu authorization in NOOS Hub.".to_string())
 }
 
+fn export_feishu_package(url: &str, source_id: &str) -> Result<FeishuExportPackage, String> {
+    let temp_root = env::temp_dir().join(format!(
+        "noos-feishu-export-{}-{}",
+        std::process::id(),
+        TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let package_attempts = feishu_package_export_attempts(url, &temp_root, source_id);
+    let commands = feishu_docx_command_candidates();
+    let mut last_error = String::new();
+    for args in package_attempts {
+        for command in &commands {
+            if temp_root.exists() {
+                fs::remove_dir_all(&temp_root).map_err(|error| error.to_string())?;
+            }
+            fs::create_dir_all(&temp_root).map_err(|error| error.to_string())?;
+            let output = Command::new(command).args(&args).output();
+            let Ok(output) = output else {
+                continue;
+            };
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if output.status.success() {
+                match normalize_feishu_export_dir(&temp_root, source_id) {
+                    Ok(package) => {
+                        return Ok(package);
+                    }
+                    Err(error) => {
+                        last_error = error;
+                    }
+                }
+            } else if looks_like_feishu_auth_error(&stderr) {
+                let _ = fs::remove_dir_all(&temp_root);
+                return Err(stderr);
+            } else {
+                last_error = if stderr.is_empty() { stdout } else { stderr };
+            }
+        }
+    }
+    let _ = fs::remove_dir_all(&temp_root);
+
+    match export_feishu_markdown(url) {
+        Ok(markdown) => Ok(FeishuExportPackage {
+            markdown,
+            resources: Vec::new(),
+            export_mode: "stdout".to_string(),
+            temp_root: None,
+        }),
+        Err(error) => {
+            if last_error.is_empty() {
+                Err(error)
+            } else {
+                Err(format!("{last_error}\n{error}"))
+            }
+        }
+    }
+}
+
+fn feishu_package_export_attempts(
+    url: &str,
+    output_dir: &Path,
+    stable_name: &str,
+) -> Vec<Vec<String>> {
+    let base = vec![
+        "export".to_string(),
+        url.to_string(),
+        "-o".to_string(),
+        output_dir.display().to_string(),
+        "-n".to_string(),
+        stable_name.to_string(),
+        "--table".to_string(),
+        "md".to_string(),
+    ];
+    let mut with_board_metadata = base.clone();
+    with_board_metadata.push("--export-board-metadata".to_string());
+    vec![with_board_metadata, base]
+}
+
+fn normalize_feishu_export_dir(
+    root: &Path,
+    source_id: &str,
+) -> Result<FeishuExportPackage, String> {
+    let files = collect_files_recursive(root)?;
+    let main_markdown = select_main_markdown(root, &files, source_id)
+        .ok_or_else(|| "Feishu package export did not produce a Markdown file.".to_string())?;
+    let markdown = fs::read_to_string(&main_markdown).map_err(|error| error.to_string())?;
+    let resources = files
+        .into_iter()
+        .filter(|path| path != &main_markdown)
+        .filter_map(|source_path| {
+            let original_relative_path = source_path
+                .strip_prefix(root)
+                .ok()
+                .and_then(|path| normalize_path_for_markdown(path).ok())?;
+            let relative_path = original_relative_path
+                .strip_prefix(&format!("{source_id}/"))
+                .unwrap_or(original_relative_path.as_str())
+                .to_string();
+            Some(ExportedResource {
+                source_path,
+                original_relative_path,
+                relative_path,
+            })
+        })
+        .collect();
+    Ok(FeishuExportPackage {
+        markdown,
+        resources,
+        export_mode: "package".to_string(),
+        temp_root: Some(root.to_path_buf()),
+    })
+}
+
+fn collect_files_recursive(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut files = Vec::new();
+    if !root.exists() {
+        return Ok(files);
+    }
+    for entry in fs::read_dir(root).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path();
+        if path.is_dir() {
+            files.extend(collect_files_recursive(&path)?);
+        } else if path.is_file() {
+            files.push(path);
+        }
+    }
+    Ok(files)
+}
+
+fn select_main_markdown(root: &Path, files: &[PathBuf], source_id: &str) -> Option<PathBuf> {
+    let expected = root.join(format!("{source_id}.md"));
+    if expected.exists() {
+        return Some(expected);
+    }
+    let mut candidates: Vec<PathBuf> = files
+        .iter()
+        .filter(|path| {
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("md"))
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+    candidates.sort_by_key(|path| {
+        let depth = path
+            .strip_prefix(root)
+            .ok()
+            .map(|rel| rel.components().count())
+            .unwrap_or(usize::MAX);
+        let size = fs::metadata(path).ok().map(|meta| meta.len()).unwrap_or(0);
+        (depth, std::cmp::Reverse(size))
+    });
+    candidates.into_iter().next()
+}
+
+fn normalize_path_for_markdown(path: &Path) -> Result<String, String> {
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(part) => {
+                parts.push(part.to_string_lossy().replace('\\', "/"));
+            }
+            _ => return Err("Invalid exported resource path.".to_string()),
+        }
+    }
+    Ok(parts.join("/"))
+}
+
+fn normalize_exported_markdown_resources(
+    markdown: &str,
+    resources: &[ExportedResource],
+    asset_root: &str,
+) -> String {
+    let mut normalized = markdown.to_string();
+    for resource in resources {
+        for from in [
+            resource.original_relative_path.as_str(),
+            resource.relative_path.as_str(),
+        ] {
+            let to = format!(
+                "{}/{}",
+                asset_root.trim_end_matches('/'),
+                resource.relative_path
+            );
+            for prefix in ["", "./"] {
+                normalized = normalized.replace(&format!("]({prefix}{from})"), &format!("]({to})"));
+                normalized = normalized
+                    .replace(&format!("src=\"{prefix}{from}\""), &format!("src=\"{to}\""));
+                normalized =
+                    normalized.replace(&format!("src='{prefix}{from}'"), &format!("src='{to}'"));
+            }
+        }
+    }
+    normalized
+}
+
+fn write_exported_resources(
+    resources: &[ExportedResource],
+    asset_target: &Path,
+) -> Result<(), String> {
+    if asset_target.exists() {
+        fs::remove_dir_all(asset_target).map_err(|error| error.to_string())?;
+    }
+    if resources.is_empty() {
+        return Ok(());
+    }
+    for resource in resources {
+        let target = asset_target.join(&resource.relative_path);
+        let parent = target
+            .parent()
+            .ok_or_else(|| "Invalid asset target path.".to_string())?;
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        fs::copy(&resource.source_path, &target).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn cleanup_feishu_export_package(package: &FeishuExportPackage) {
+    if let Some(temp_root) = package.temp_root.as_ref() {
+        let _ = fs::remove_dir_all(temp_root);
+    }
+}
+
+fn source_path_from_source_map(wiki_project_path: &Path, source_id: &str) -> Option<PathBuf> {
+    let map = read_json_object(&knowledge_source_map_path(wiki_project_path));
+    let sources = map.get("sources")?.as_array()?;
+    let source = sources.iter().find(|source| {
+        source
+            .get("source_id")
+            .and_then(Value::as_str)
+            .map(|value| value == source_id)
+            .unwrap_or(false)
+    })?;
+    let source_path = source.get("source_path")?.as_str()?;
+    Some(wiki_project_path.join(source_path))
+}
+
+fn update_knowledge_library(
+    wiki_project_path: &Path,
+    metadata: &LibrarySourceMetadata,
+) -> Result<(), String> {
+    let library_dir = wiki_project_path.join("knowledge-library");
+    fs::create_dir_all(library_dir.join("canon")).map_err(|error| error.to_string())?;
+
+    let source_path = relative_path_string(wiki_project_path, &metadata.source_path);
+    let content = fs::read_to_string(&metadata.source_path).unwrap_or_default();
+    let body = feishu_source_body(&content);
+    let headings = extract_markdown_headings(body, 8);
+    let summary = summarize_markdown_body(body);
+    let resource_summary = resource_summary(metadata.resource_count, body);
+
+    let mut source_map = read_json_object(&knowledge_source_map_path(wiki_project_path));
+    let mut sources = source_map
+        .get("sources")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let existing = sources
+        .iter()
+        .find(|source| {
+            source
+                .get("source_id")
+                .and_then(Value::as_str)
+                .map(|value| value == metadata.source_id)
+                .unwrap_or(false)
+        })
+        .cloned();
+    sources.retain(|source| {
+        source
+            .get("source_id")
+            .and_then(Value::as_str)
+            .map(|value| value != metadata.source_id)
+            .unwrap_or(true)
+    });
+    let wiki_refs = existing
+        .as_ref()
+        .and_then(|source| source.get("wiki_refs"))
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let wiki_status = if wiki_refs
+        .as_array()
+        .map(|items| !items.is_empty())
+        .unwrap_or(false)
+    {
+        "ingested"
+    } else {
+        metadata.wiki_status.as_str()
+    };
+
+    sources.push(json!({
+        "source_id": metadata.source_id.clone(),
+        "source_app": metadata.source_app.clone(),
+        "source_url": metadata.source_url.clone(),
+        "category_path": metadata.category_path.clone(),
+        "title": metadata.title.clone(),
+        "source_path": source_path,
+        "asset_root": metadata.asset_root.clone(),
+        "content_hash": metadata.content_hash.clone(),
+        "resource_count": metadata.resource_count,
+        "resource_summary": resource_summary,
+        "summary": summary,
+        "headings": headings,
+        "open_when": open_when_for_source(&metadata.category_path, &metadata.title, metadata.resource_count),
+        "wiki_refs": wiki_refs,
+        "wiki_status": wiki_status,
+        "last_exported_at": metadata.last_exported_at.clone(),
+        "export_mode": metadata.export_mode.clone(),
+    }));
+    sources.sort_by(|a, b| {
+        let a_key = format!(
+            "{}\u{0}{}",
+            a.get("category_path").and_then(Value::as_str).unwrap_or(""),
+            a.get("title").and_then(Value::as_str).unwrap_or("")
+        );
+        let b_key = format!(
+            "{}\u{0}{}",
+            b.get("category_path").and_then(Value::as_str).unwrap_or(""),
+            b.get("title").and_then(Value::as_str).unwrap_or("")
+        );
+        a_key.cmp(&b_key)
+    });
+
+    source_map = json!({
+        "schema": "noos/knowledge-source-map@0.1",
+        "updated_at": metadata.last_exported_at,
+        "sources": sources,
+    });
+    write_json_file(&knowledge_source_map_path(wiki_project_path), &source_map)?;
+
+    let manifest = json!({
+        "schema": "noos/knowledge-library-manifest@0.1",
+        "updated_at": metadata.last_exported_at,
+        "source_count": source_map.get("sources").and_then(Value::as_array).map(Vec::len).unwrap_or(0),
+        "main": "index.md",
+        "abstracts": "abstracts.md",
+        "source_map": "source-map.json",
+        "sources": source_map.get("sources").cloned().unwrap_or_else(|| json!([])),
+    });
+    write_json_file(&library_dir.join("manifest.json"), &manifest)?;
+    write_bytes_atomic(
+        &library_dir.join("index.md"),
+        render_knowledge_index(&source_map).as_bytes(),
+    )?;
+    write_bytes_atomic(
+        &library_dir.join("abstracts.md"),
+        render_knowledge_abstracts(&source_map).as_bytes(),
+    )?;
+    Ok(())
+}
+
+fn knowledge_source_map_path(wiki_project_path: &Path) -> PathBuf {
+    wiki_project_path
+        .join("knowledge-library")
+        .join("source-map.json")
+}
+
+fn relative_path_string(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .ok()
+        .and_then(|path| normalize_path_for_markdown(path).ok())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+fn extract_markdown_headings(markdown: &str, limit: usize) -> Vec<String> {
+    markdown
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if !trimmed.starts_with('#') {
+                return None;
+            }
+            let level = trimmed
+                .chars()
+                .take_while(|character| *character == '#')
+                .count();
+            if !(1..=3).contains(&level)
+                || !trimmed
+                    .chars()
+                    .nth(level)
+                    .map(|c| c.is_whitespace())
+                    .unwrap_or(false)
+            {
+                return None;
+            }
+            Some(trimmed[level..].trim().to_string())
+        })
+        .filter(|heading| !heading.is_empty())
+        .take(limit)
+        .collect()
+}
+
+fn summarize_markdown_body(markdown: &str) -> String {
+    markdown
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            !line.is_empty()
+                && !line.starts_with('#')
+                && !line.starts_with("![")
+                && !line.starts_with('|')
+                && !line.starts_with("```")
+        })
+        .next()
+        .map(|line| truncate_chars(line, 180))
+        .unwrap_or_else(|| "No prose summary detected; open the source for details.".to_string())
+}
+
+fn resource_summary(resource_count: usize, markdown: &str) -> String {
+    let image_count = markdown.matches("![").count();
+    let table_lines = markdown
+        .lines()
+        .filter(|line| line.trim_start().starts_with('|'))
+        .count();
+    format!("{resource_count} exported files; {image_count} image references; {table_lines} table-like lines.")
+}
+
+fn open_when_for_source(category_path: &str, title: &str, resource_count: usize) -> Vec<String> {
+    let mut reasons = vec![
+        format!("Need details from `{title}`."),
+        format!("Working in category `{category_path}`."),
+    ];
+    if resource_count > 0 {
+        reasons.push("Need exact labels, diagrams, tables, or exported attachments.".to_string());
+    }
+    reasons
+}
+
+fn truncate_chars(value: &str, limit: usize) -> String {
+    let mut output = String::new();
+    for character in value.chars().take(limit) {
+        output.push(character);
+    }
+    if value.chars().count() > limit {
+        output.push('…');
+    }
+    output
+}
+
+fn render_knowledge_index(source_map: &Value) -> String {
+    let mut lines = vec![
+        "# Knowledge Library".to_string(),
+        String::new(),
+        "Start here before opening raw sources. Use categories to choose a narrow reading path, then open `abstracts.md` for source-level routing.".to_string(),
+        String::new(),
+        "## Categories".to_string(),
+        String::new(),
+    ];
+    let mut current_category = String::new();
+    let sources = source_map
+        .get("sources")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if sources.is_empty() {
+        lines.push("- No exported sources yet.".to_string());
+    }
+    for source in sources {
+        let category = source
+            .get("category_path")
+            .and_then(Value::as_str)
+            .unwrap_or("uncategorized");
+        if category != current_category {
+            if !current_category.is_empty() {
+                lines.push(String::new());
+            }
+            lines.push(format!("### {category}"));
+            current_category = category.to_string();
+        }
+        let title = source
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("Untitled");
+        let path = source
+            .get("source_path")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let source_id = source
+            .get("source_id")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        lines.push(format!("- [{title}](../{path}) — `{source_id}`"));
+    }
+    lines.push(String::new());
+    lines.push("## Reading Protocol".to_string());
+    lines.push(String::new());
+    lines.push("1. Read this index first.".to_string());
+    lines.push("2. Open `abstracts.md` only for matching categories or source ids.".to_string());
+    lines.push(
+        "3. Open raw source files only when the abstract says they are relevant.".to_string(),
+    );
+    lines.push("4. Open assets only when exact visual/table details matter.".to_string());
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn render_knowledge_abstracts(source_map: &Value) -> String {
+    let mut lines = vec![
+        "# Knowledge Abstracts".to_string(),
+        String::new(),
+        "Use this as the routing layer before opening long source documents.".to_string(),
+        String::new(),
+    ];
+    let sources = source_map
+        .get("sources")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if sources.is_empty() {
+        lines.push("No exported sources yet.".to_string());
+        lines.push(String::new());
+        return lines.join("\n");
+    }
+    for source in sources {
+        let title = source
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("Untitled");
+        lines.push(format!("## {title}"));
+        lines.push(String::new());
+        for key in [
+            "source_id",
+            "category_path",
+            "source_path",
+            "wiki_status",
+            "export_mode",
+        ] {
+            if let Some(value) = source.get(key).and_then(Value::as_str) {
+                lines.push(format!("- `{key}`: `{value}`"));
+            }
+        }
+        if let Some(summary) = source.get("summary").and_then(Value::as_str) {
+            lines.push(format!("- Summary: {summary}"));
+        }
+        if let Some(resource_summary) = source.get("resource_summary").and_then(Value::as_str) {
+            lines.push(format!("- Resources: {resource_summary}"));
+        }
+        if let Some(headings) = source.get("headings").and_then(Value::as_array) {
+            let heading_text = headings
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join("; ");
+            if !heading_text.is_empty() {
+                lines.push(format!("- Headings: {heading_text}"));
+            }
+        }
+        if let Some(open_when) = source.get("open_when").and_then(Value::as_array) {
+            let reasons = open_when
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join("; ");
+            if !reasons.is_empty() {
+                lines.push(format!("- Open when: {reasons}"));
+            }
+        }
+        lines.push(String::new());
+    }
+    lines.join("\n")
+}
+
 fn read_vault_markdown_source(lookup_key: &str) -> Result<VaultMarkdownSource, (String, String)> {
-    let noos_home = noos_home();
-    let Some(indexed) = find_indexed_object_by_key(&noos_home, lookup_key)
-        .or_else(|| find_unindexed_vault_object_by_key(&noos_home, lookup_key))
+    read_vault_markdown_source_from(&noos_home(), lookup_key)
+}
+
+fn read_vault_markdown_source_from(
+    noos_home: &Path,
+    lookup_key: &str,
+) -> Result<VaultMarkdownSource, (String, String)> {
+    let Some(indexed) = find_indexed_object_by_key(noos_home, lookup_key)
+        .or_else(|| find_unindexed_vault_object_by_key(noos_home, lookup_key))
+        .or_else(|| find_library_source_by_key(noos_home, lookup_key))
     else {
         return Err((
             "source_not_found".to_string(),
@@ -1645,10 +2623,10 @@ fn read_vault_markdown_source(lookup_key: &str) -> Result<VaultMarkdownSource, (
         ));
     };
     let path_buf = PathBuf::from(path);
-    if !is_inside_path(&path_buf, &noos_home.join("vault")) {
+    if !object_path_allowed(noos_home, &indexed, &path_buf) {
         return Err((
             "source_not_found".to_string(),
-            "NOOS Markdown source path is outside the local Vault.".to_string(),
+            "NOOS Markdown source path is outside the allowed source roots.".to_string(),
         ));
     }
     if path_buf
@@ -1682,7 +2660,7 @@ fn read_vault_markdown_source(lookup_key: &str) -> Result<VaultMarkdownSource, (
 }
 
 fn prepare_feishu_publish_markdown(content: &str, fallback_title: &str) -> Result<String, String> {
-    let body = strip_yaml_frontmatter(content).trim();
+    let body = strip_flattened_noos_frontmatter(strip_yaml_frontmatter(content)).trim();
     if body.is_empty() {
         return Err("NOOS Markdown source is empty.".to_string());
     }
@@ -1708,6 +2686,24 @@ fn strip_yaml_frontmatter(content: &str) -> &str {
         return &rest[index + 4..];
     }
     trimmed
+}
+
+fn strip_flattened_noos_frontmatter(content: &str) -> &str {
+    let trimmed = content.trim_start();
+    let first_line = trimmed.lines().next().unwrap_or_default().trim();
+    let normalized = first_line.trim_start_matches('#').trim_start();
+    let starts_with_noos_metadata =
+        normalized.starts_with("type: noos_") || normalized.starts_with("type: library_source");
+    if !starts_with_noos_metadata {
+        return trimmed;
+    }
+    if let Some(index) = trimmed.find("\r\n\r\n") {
+        return &trimmed[index + 4..];
+    }
+    if let Some(index) = trimmed.find("\n\n") {
+        return &trimmed[index + 2..];
+    }
+    ""
 }
 
 fn create_feishu_document(
@@ -1846,18 +2842,39 @@ fn build_feishu_source_markdown(
     url: &str,
     title: &str,
     token: &str,
-    wiki_project_path: &Path,
+    source_id: &str,
+    category_path: &str,
+    asset_root: &str,
+    export_mode: &str,
+    last_exported_at: &str,
 ) -> String {
     let body = exported_markdown.trim();
     format!(
-        "---\ntype: feishu_markdown_source\nsource_app: feishu\nsource_url: {}\nfeishu_token: {}\ntitle: {}\nlast_exported_at: {}\nexporter_version: noos-hub-v1\nwiki_project_path: {}\n---\n\n{}\n",
+        "---\ntype: library_source\nsource_id: {}\nsource_app: feishu\nsource_url: {}\nfeishu_token: {}\ntitle: {}\ncategory_path: {}\nasset_root: {}\nexport_mode: {}\nlast_exported_at: {}\nexporter_version: noos-hub-v2\n---\n\n{}\n",
+        json_string(source_id),
         json_string(url),
         json_string(token),
         json_string(title),
-        json_string(&now_iso_utc()),
-        json_string(&wiki_project_path.display().to_string()),
+        json_string(category_path),
+        json_string(asset_root),
+        json_string(export_mode),
+        json_string(last_exported_at),
         body
     )
+}
+
+fn feishu_source_metadata_matches(
+    markdown: &str,
+    source_id: &str,
+    category_path: &str,
+    asset_root: &str,
+    export_mode: &str,
+) -> bool {
+    markdown.contains("type: library_source")
+        && markdown.contains(&format!("source_id: {}", json_string(source_id)))
+        && markdown.contains(&format!("category_path: {}", json_string(category_path)))
+        && markdown.contains(&format!("asset_root: {}", json_string(asset_root)))
+        && markdown.contains(&format!("export_mode: {}", json_string(export_mode)))
 }
 
 fn feishu_source_body(markdown: &str) -> &str {
@@ -2343,6 +3360,7 @@ fn vault_recent_payload(noos_home: &Path) -> Value {
             .into_iter()
             .map(|file| vault_file_summary_json("result", file)),
     );
+    objects.extend(collect_library_source_objects(noos_home));
 
     objects.sort_by(|left, right| {
         let left_epoch = left
@@ -2412,6 +3430,7 @@ fn vault_virtual_folders() -> Value {
         { "id": "results/inbox", "label": "Result Inbox", "kind": "folder" },
         { "id": "results/accepted", "label": "Accepted Results", "kind": "folder" },
         { "id": "results/archived", "label": "Archived Results", "kind": "folder" },
+        { "id": "library_sources", "label": "Library Sources", "kind": "folder" },
         { "id": "artifacts", "label": "Artifacts", "kind": "folder" }
     ])
 }
@@ -2505,6 +3524,7 @@ fn collect_vault_folder_objects(noos_home: &Path, folder: &str) -> Vec<Value> {
             noos_home.join("vault/artifacts/sidecars"),
             "artifacts",
         )),
+        "library_sources" => return collect_library_source_objects(noos_home),
         "handoffs/active" => specs.push((
             "handoff",
             noos_home.join("vault/handoffs/active"),
@@ -2536,6 +3556,21 @@ fn collect_vault_folder_objects(noos_home: &Path, folder: &str) -> Vec<Value> {
                 noos_home.join("vault/results/inbox"),
                 "results/inbox",
             ));
+            return specs
+                .into_iter()
+                .flat_map(|(object_type, directory, virtual_folder)| {
+                    recent_markdown_files(&directory, usize::MAX)
+                        .into_iter()
+                        .map(move |file| {
+                            let mut value = vault_file_summary_json(object_type, file);
+                            if let Some(map) = value.as_object_mut() {
+                                map.insert("folder".to_string(), json!(virtual_folder));
+                            }
+                            value
+                        })
+                })
+                .chain(collect_library_source_objects(noos_home))
+                .collect();
         }
     }
 
@@ -2591,6 +3626,98 @@ fn vault_file_summary_json(object_type: &str, file: VaultFileSummary) -> Value {
     })
 }
 
+fn collect_library_source_objects(noos_home: &Path) -> Vec<Value> {
+    let Some(wiki_project_path) = configured_default_wiki_project_path_from(noos_home) else {
+        return Vec::new();
+    };
+    let source_map = read_json_object(&knowledge_source_map_path(&wiki_project_path));
+    let Some(sources) = source_map.get("sources").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+
+    let mut objects = sources
+        .iter()
+        .filter_map(|source| library_source_object_from_map_entry(&wiki_project_path, source))
+        .collect::<Vec<_>>();
+    objects.sort_by(|left, right| {
+        let left_epoch = left
+            .get("modified_epoch")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let right_epoch = right
+            .get("modified_epoch")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        right_epoch.cmp(&left_epoch)
+    });
+    objects
+}
+
+fn library_source_object_from_map_entry(wiki_project_path: &Path, source: &Value) -> Option<Value> {
+    let source_path = source.get("source_path")?.as_str()?;
+    let path = wiki_project_path.join(source_path);
+    let is_markdown = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.eq_ignore_ascii_case("md"))
+        .unwrap_or(false);
+    if !is_markdown
+        || !path.is_file()
+        || !library_source_path_allowed_for_wiki(&path, wiki_project_path)
+    {
+        return None;
+    }
+
+    let metadata = path.metadata().ok()?;
+    let modified_epoch = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let lookup_key = source
+        .get("source_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| name.strip_suffix(".md").unwrap_or(&name).to_string());
+    let title = source
+        .get("title")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| name.clone());
+
+    Some(json!({
+        "object_type": "library_source",
+        "type": "library_source",
+        "lookup_key": lookup_key,
+        "key": lookup_key,
+        "title": title,
+        "name": name,
+        "path": path.display().to_string(),
+        "source_url": source.get("source_url").cloned().unwrap_or(Value::Null),
+        "category_path": source.get("category_path").cloned().unwrap_or(Value::Null),
+        "source_id": source.get("source_id").cloned().unwrap_or(Value::Null),
+        "folder": "library_sources",
+        "modified_epoch": modified_epoch
+    }))
+}
+
+fn library_source_path_allowed(noos_home: &Path, path: &Path) -> bool {
+    configured_default_wiki_project_path_from(noos_home)
+        .map(|wiki_project_path| library_source_path_allowed_for_wiki(path, &wiki_project_path))
+        .unwrap_or(false)
+}
+
+fn library_source_path_allowed_for_wiki(path: &Path, wiki_project_path: &Path) -> bool {
+    is_inside_path(path, &wiki_project_path.join("raw").join("sources"))
+}
+
 fn vault_object_payload(
     noos_home: &Path,
     lookup_key: &str,
@@ -2603,6 +3730,7 @@ fn vault_object_payload(
 
     let Some(indexed) = find_indexed_object_by_key(noos_home, lookup_key)
         .or_else(|| find_unindexed_vault_object_by_key(noos_home, lookup_key))
+        .or_else(|| find_library_source_by_key(noos_home, lookup_key))
     else {
         return json!({
             "ok": false,
@@ -2618,7 +3746,7 @@ fn vault_object_payload(
         });
     };
     let path_buf = PathBuf::from(path);
-    if !is_inside_path(&path_buf, &noos_home.join("vault")) {
+    if !object_path_allowed(noos_home, &indexed, &path_buf) {
         return json!({
             "ok": false,
             "error_code": "path_not_allowed",
@@ -2659,7 +3787,13 @@ fn vault_object_payload_from_path(
     folder: Option<&str>,
 ) -> Value {
     let path = PathBuf::from(raw_path);
-    if !is_inside_path(&path, &noos_home.join("vault")) {
+    let object_type = object_type_from_vault_location(folder, &path);
+    let allowed = if object_type == "library_source" {
+        library_source_path_allowed(noos_home, &path)
+    } else {
+        is_inside_path(&path, &noos_home.join("vault"))
+    };
+    if !allowed {
         return json!({
             "ok": false,
             "error_code": "path_not_allowed",
@@ -2692,7 +3826,6 @@ fn vault_object_payload_from_path(
     } else {
         lookup_key
     };
-    let object_type = object_type_from_vault_location(folder, &path);
 
     json!({
         "ok": true,
@@ -2715,6 +3848,9 @@ fn vault_object_payload_from_path(
 
 fn object_type_from_vault_location(folder: Option<&str>, path: &Path) -> &'static str {
     if let Some(folder) = folder {
+        if folder == "library_sources" {
+            return "library_source";
+        }
         if folder.starts_with("crystals") {
             return "crystal";
         }
@@ -2736,6 +3872,8 @@ fn object_type_from_vault_location(folder: Option<&str>, path: &Path) -> &'stati
         "result"
     } else if path_text.contains("/vault/artifacts/") {
         "artifact"
+    } else if path_text.contains("/raw/sources/") {
+        "library_source"
     } else {
         "handoff"
     }
@@ -2773,6 +3911,23 @@ fn find_unindexed_vault_object_by_key(noos_home: &Path, lookup_key: &str) -> Opt
     })
 }
 
+fn find_library_source_by_key(noos_home: &Path, lookup_key: &str) -> Option<Value> {
+    collect_library_source_objects(noos_home)
+        .into_iter()
+        .find(|object| {
+            let key = object
+                .get("lookup_key")
+                .and_then(Value::as_str)
+                .or_else(|| object.get("key").and_then(Value::as_str));
+            let path_matches = object
+                .get("path")
+                .and_then(Value::as_str)
+                .map(|path| path == lookup_key)
+                .unwrap_or(false);
+            key.map(|value| value == lookup_key).unwrap_or(false) || path_matches
+        })
+}
+
 fn find_indexed_object_by_key(noos_home: &Path, lookup_key: &str) -> Option<Value> {
     let keys = read_json_object(&noos_home.join("vault/index/keys.json"));
     if let Some(entry) = keys.get(lookup_key) {
@@ -2799,6 +3954,19 @@ fn find_indexed_object_by_key(noos_home: &Path, lookup_key: &str) -> Option<Valu
             None
         }
     })
+}
+
+fn object_path_allowed(noos_home: &Path, object: &Value, path: &Path) -> bool {
+    let object_type = object
+        .get("object_type")
+        .and_then(Value::as_str)
+        .or_else(|| object.get("type").and_then(Value::as_str))
+        .unwrap_or_default();
+    if object_type == "library_source" {
+        library_source_path_allowed(noos_home, path)
+    } else {
+        is_inside_path(path, &noos_home.join("vault"))
+    }
 }
 
 fn is_inside_path(path: &Path, root: &Path) -> bool {
@@ -4085,15 +5253,17 @@ mod tests {
     fn feishu_source_path_includes_title_and_short_token() {
         let wiki = Path::new("/tmp/wiki");
         let url = "https://team.feishu.cn/docx/birldmo6vod3fnx8ajzcfa0hnef";
+        let token = feishu_token_from_url(url).unwrap();
         let title = "从博客 User Story 到机制、数值接口：P0 推导示例 v0.6";
 
-        let path = feishu_source_path(wiki, url, Some(title));
+        let path = feishu_source_path(wiki, "projects/noos-shuttle/design", &token, Some(title));
         let filename = path
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("");
 
-        assert!(filename.starts_with("feishu-从博客-user-story-到机制-数值接口-p0-推导示例-v0-6--"));
+        assert!(path.starts_with("/tmp/wiki/raw/sources/projects/noos-shuttle/design"));
+        assert!(filename.starts_with("从博客-user-story-到机制-数值接口-p0-推导示例-v0-6--"));
         assert!(filename.ends_with("--birldmo6vod3.md"));
     }
 
@@ -4110,10 +5280,160 @@ mod tests {
         fs::create_dir_all(legacy.parent().unwrap()).unwrap();
         fs::write(&legacy, "# legacy").unwrap();
 
-        let found = existing_feishu_source_path(&wiki, url, Some("Readable Title"));
+        let token = feishu_token_from_url(url).unwrap();
+        let source_id = feishu_source_id(&token);
+        let found =
+            existing_feishu_source_path(&wiki, &source_id, url, Some("Readable Title"), None);
         assert_eq!(found.as_deref(), Some(legacy.as_path()));
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sanitize_category_path_rejects_unsafe_segments() {
+        assert_eq!(
+            sanitize_category_path(Some("Projects / NOOS Shuttle / Design")).unwrap(),
+            "projects/noos-shuttle/design"
+        );
+        assert!(sanitize_category_path(Some("../secrets")).is_err());
+        assert!(sanitize_category_path(Some("projects/.hidden")).is_err());
+        assert!(sanitize_category_path(Some("/absolute")).is_err());
+    }
+
+    #[test]
+    fn source_map_lookup_finds_categorized_source() {
+        let root = unique_test_dir("source-map-lookup");
+        let wiki = root.join("wiki");
+        let source = wiki
+            .join("raw")
+            .join("sources")
+            .join("projects")
+            .join("demo")
+            .join("doc--abc123.md");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(&source, "# Demo").unwrap();
+        let map = wiki.join("knowledge-library").join("source-map.json");
+        fs::create_dir_all(map.parent().unwrap()).unwrap();
+        fs::write(
+            &map,
+            serde_json::to_string(&json!({
+                "sources": [{
+                    "source_id": "feishu_docx_abc123",
+                    "source_path": "raw/sources/projects/demo/doc--abc123.md"
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let found = source_path_from_source_map(&wiki, "feishu_docx_abc123");
+        assert_eq!(found.as_deref(), Some(source.as_path()));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn normalize_feishu_export_dir_detects_main_markdown_and_resources() {
+        let root = unique_test_dir("feishu-package-normalize");
+        let export = root.join("export");
+        fs::create_dir_all(export.join("feishu_docx_abc").join("images")).unwrap();
+        fs::write(
+            export.join("feishu_docx_abc.md"),
+            "# Title\n\n![A](feishu_docx_abc/images/a.png)",
+        )
+        .unwrap();
+        fs::write(
+            export.join("feishu_docx_abc").join("images").join("a.png"),
+            "png",
+        )
+        .unwrap();
+
+        let package = normalize_feishu_export_dir(&export, "feishu_docx_abc").unwrap();
+        assert_eq!(package.export_mode, "package");
+        assert_eq!(package.resources.len(), 1);
+        assert_eq!(package.resources[0].relative_path, "images/a.png");
+        let normalized = normalize_exported_markdown_resources(
+            &package.markdown,
+            &package.resources,
+            ".assets/feishu_docx_abc",
+        );
+        assert!(normalized.contains("](.assets/feishu_docx_abc/images/a.png)"));
+        assert!(!normalized.contains(".assets/feishu_docx_abc/feishu_docx_abc/"));
+        assert_eq!(package.temp_root.as_deref(), Some(export.as_path()));
+        let assets = root.join("assets");
+        write_exported_resources(&package.resources, &assets).unwrap();
+        cleanup_feishu_export_package(&package);
+        assert!(assets.join("images").join("a.png").exists());
+        assert!(!export.exists());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn feishu_package_export_attempts_try_board_metadata_first() {
+        let attempts = feishu_package_export_attempts(
+            "https://team.feishu.cn/docx/abc123",
+            Path::new("/tmp/noos-export"),
+            "feishu_docx_abc123",
+        );
+
+        assert_eq!(
+            attempts[0],
+            vec![
+                "export",
+                "https://team.feishu.cn/docx/abc123",
+                "-o",
+                "/tmp/noos-export",
+                "-n",
+                "feishu_docx_abc123",
+                "--table",
+                "md",
+                "--export-board-metadata",
+            ]
+        );
+        assert_eq!(
+            attempts[1],
+            vec![
+                "export",
+                "https://team.feishu.cn/docx/abc123",
+                "-o",
+                "/tmp/noos-export",
+                "-n",
+                "feishu_docx_abc123",
+                "--table",
+                "md",
+            ]
+        );
+    }
+
+    #[test]
+    fn feishu_source_metadata_matches_current_library_fields() {
+        let markdown = build_feishu_source_markdown(
+            "# Title",
+            "https://team.feishu.cn/docx/abc123",
+            "Title",
+            "abc123",
+            "feishu_docx_abc123",
+            "projects/noos-shuttle/design",
+            ".assets/feishu_docx_abc123",
+            "package",
+            "2026-07-02T00:00:00Z",
+        );
+
+        assert!(feishu_source_metadata_matches(
+            &markdown,
+            "feishu_docx_abc123",
+            "projects/noos-shuttle/design",
+            ".assets/feishu_docx_abc123",
+            "package"
+        ));
+        assert!(!feishu_source_metadata_matches(
+            &markdown,
+            "feishu_docx_abc123",
+            "projects/noos-shuttle/product",
+            ".assets/feishu_docx_abc123",
+            "package"
+        ));
     }
 
     #[test]
@@ -4262,6 +5582,102 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn vault_browse_payload_includes_library_sources() {
+        let root = unique_test_dir("vault-library-source-browse");
+        let noos_home = root.join("home");
+        let (_wiki, _source_path) = create_library_source_fixture(&root, &noos_home);
+
+        let payload = vault_browse_payload(&noos_home, Some("library_sources"), None);
+
+        assert_eq!(payload["ok"], true);
+        let objects = payload["objects"].as_array().unwrap();
+        assert_eq!(objects.len(), 1);
+        assert_eq!(objects[0]["object_type"], "library_source");
+        assert_eq!(objects[0]["lookup_key"], "feishu_docx_abc123");
+        assert_eq!(objects[0]["title"], "Library Source Title");
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn vault_object_payload_reads_library_source() {
+        let root = unique_test_dir("vault-library-source-object");
+        let noos_home = root.join("home");
+        let (_wiki, source_path) = create_library_source_fixture(&root, &noos_home);
+
+        let payload = vault_object_payload(&noos_home, "feishu_docx_abc123", None, None);
+
+        assert_eq!(payload["ok"], true);
+        assert_eq!(payload["object"]["object_type"], "library_source");
+        assert_eq!(payload["object"]["path"], source_path.display().to_string());
+        assert!(payload["object"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Library source body."));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn vault_object_payload_from_path_reads_library_source() {
+        let root = unique_test_dir("vault-library-source-object-path");
+        let noos_home = root.join("home");
+        let (_wiki, source_path) = create_library_source_fixture(&root, &noos_home);
+        let path_string = source_path.display().to_string();
+
+        let payload = vault_object_payload(
+            &noos_home,
+            "feishu_docx_abc123",
+            Some(path_string.as_str()),
+            Some("library_sources"),
+        );
+
+        assert_eq!(payload["ok"], true);
+        assert_eq!(payload["object"]["object_type"], "library_source");
+        assert_eq!(payload["object"]["path"], source_path.display().to_string());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn read_vault_markdown_source_reads_library_source() {
+        let root = unique_test_dir("vault-library-source-read");
+        let noos_home = root.join("home");
+        let (_wiki, source_path) = create_library_source_fixture(&root, &noos_home);
+
+        let source = read_vault_markdown_source_from(&noos_home, "feishu_docx_abc123").unwrap();
+
+        assert_eq!(source.lookup_key, "feishu_docx_abc123");
+        assert_eq!(source.path, source_path);
+        assert_eq!(source.title.as_deref(), Some("Library Source Title"));
+        assert!(source.content.contains("Library source body."));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prepare_feishu_publish_markdown_strips_flattened_noos_metadata() {
+        let markdown = "type: noos_thread version: 0.1 handoff_revision: v1 source_app: chatgpt source_url: https://chatgpt.com/c/example target_agent: codex status: active created_at: 2026-05-18 title: 钓鱼玩法场次与经济框算表设计 tags: [fishing-economy] preferred_path: .noos/handoffs/active/example.md\n\n## 正文\n\nBody";
+        let prepared =
+            prepare_feishu_publish_markdown(markdown, "钓鱼玩法场次与经济框算表设计").unwrap();
+
+        assert!(!prepared.contains("type: noos_thread"));
+        assert_eq!(
+            prepared,
+            "# 钓鱼玩法场次与经济框算表设计\n\n## 正文\n\nBody"
+        );
+    }
+
+    #[test]
+    fn prepare_feishu_publish_markdown_strips_unfenced_noos_metadata_block() {
+        let markdown = "type: noos_thread\nversion: 0.1\nsource_app: chatgpt\ntitle: Handoff Title\n\n# Handoff Title\n\nBody";
+        let prepared = prepare_feishu_publish_markdown(markdown, "Fallback").unwrap();
+
+        assert!(!prepared.contains("source_app: chatgpt"));
+        assert_eq!(prepared, "# Handoff Title\n\nBody");
+    }
+
     fn test_index_object(object_id: &str, lookup_key: &str, path: &Path) -> VaultIndexObject {
         VaultIndexObject {
             object_type: "handoff",
@@ -4277,6 +5693,45 @@ mod tests {
             request_id: Some("request-test".to_string()),
             idempotency_key: Some("idempotency-test".to_string()),
         }
+    }
+
+    fn create_library_source_fixture(root: &Path, noos_home: &Path) -> (PathBuf, PathBuf) {
+        let wiki = root.join("wiki");
+        let source_path = wiki
+            .join("raw")
+            .join("sources")
+            .join("projects")
+            .join("noos-shuttle")
+            .join("library-source--abc123.md");
+        fs::create_dir_all(source_path.parent().unwrap()).unwrap();
+        fs::write(
+            &source_path,
+            "---\ntype: library_source\nsource_id: feishu_docx_abc123\ntitle: Library Source Title\n---\n\n# Library Source Title\n\nLibrary source body.",
+        )
+        .unwrap();
+        fs::create_dir_all(noos_home).unwrap();
+        write_json_file(
+            &noos_home.join("config.json"),
+            &json!({ "default_wiki_project": wiki.display().to_string() }),
+        )
+        .unwrap();
+        write_json_file(
+            &wiki.join("knowledge-library").join("source-map.json"),
+            &json!({
+                "schema": "noos/knowledge-source-map@0.1",
+                "sources": [{
+                    "source_id": "feishu_docx_abc123",
+                    "source_app": "feishu",
+                    "source_url": "https://team.feishu.cn/docx/ABC123",
+                    "category_path": "projects/noos-shuttle",
+                    "title": "Library Source Title",
+                    "source_path": "raw/sources/projects/noos-shuttle/library-source--abc123.md",
+                    "last_exported_at": "2026-07-02T00:00:00Z"
+                }]
+            }),
+        )
+        .unwrap();
+        (wiki, source_path)
     }
 
     fn unique_test_dir(name: &str) -> PathBuf {

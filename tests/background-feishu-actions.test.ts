@@ -12,6 +12,7 @@ describe("background Feishu action mapping", () => {
     const { feishuCommandForAction, feishuPublishCommandForAction } = await import("../src/background/service-worker");
 
     expect(feishuCommandForAction("export_md")).toBe("feishu.exportMd");
+    expect(feishuCommandForAction("change_category")).toBe("wiki.setFeishuCategory");
     expect(feishuCommandForAction("export_md_and_organize")).toBe("feishu.exportMdAndOrganize");
     expect(feishuCommandForAction("sync_markdown")).toBe("feishu.syncMarkdown");
     expect(feishuCommandForAction("sync_markdown_and_organize")).toBe("feishu.syncMarkdownAndOrganize");

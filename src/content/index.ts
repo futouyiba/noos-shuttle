@@ -24,18 +24,28 @@ type FeishuPublishMode = "create" | "overwrite";
 type FeishuPublishDestinationKind = "current_doc" | "drive_root" | "drive_folder";
 type FeishuWikiAction =
   | "export_md"
+  | "change_category"
   | "organize_wiki"
   | "export_md_and_organize"
   | "open_markdown_folder"
   | "open_wiki_folder";
 type ModalState =
-  | { kind: "success"; title: string; message: string }
+  | { kind: "success"; title: string; message: string; actions?: ModalAction[] }
   | { kind: "warnings"; title: string; message: string; warnings: string[] }
   | { kind: "choose-thread" }
   | { kind: "choose-crystal" }
   | { kind: "vault-picker" }
+  | { kind: "feishu-category"; pendingAction?: FeishuWikiAction }
   | { kind: "confirm-feishu-overwrite" }
   | null;
+
+interface ModalAction {
+  label: string;
+  action?: string;
+  href?: string;
+  primary?: boolean;
+  testId?: string;
+}
 
 interface ViewState {
   open: boolean;
@@ -59,6 +69,8 @@ interface ViewState {
   selectedVaultObjectKeys: string[];
   selectedPublishSource: VaultObjectContent | null;
   wikiProjectPath: string;
+  wikiCategoryPath: string;
+  recentCategoryPaths: string[];
   modal: ModalState;
 }
 
@@ -197,6 +209,8 @@ const viewState: ViewState = {
   selectedVaultObjectKeys: [],
   selectedPublishSource: null,
   wikiProjectPath: "",
+  wikiCategoryPath: "",
+  recentCategoryPaths: [],
   modal: null
 };
 
@@ -325,6 +339,13 @@ function render(app: HTMLElement): void {
     void refreshVaultObjects(app, { preserveSelection: true, preserveScroll: true });
   });
 
+  app.querySelector<HTMLInputElement>("[data-feishu-category-dialog-input='true']")?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void handleAction("feishu-confirm-category", app);
+    }
+  });
+
   app.querySelector<HTMLInputElement>("input[data-action='toggle-transcript']")?.addEventListener("change", (event) => {
     viewState.captureFullTranscript = (event.currentTarget as HTMLInputElement).checked;
     storeCaptureFullTranscript(viewState.captureFullTranscript);
@@ -412,6 +433,7 @@ function renderFeishuSurface(copy: (typeof COPY)[ShuttleLocale]): string {
   const pageContext = getFeishuPageContext();
   const documentTitle = feishuDocumentTitle();
   const target = viewState.wikiProjectPath || copy.defaultWikiProjectUnknown;
+  const category = viewState.wikiCategoryPath || copy.feishuCategoryUnset;
   const contextLabel =
     pageContext?.kind === "drive_root"
       ? copy.feishuRootFolder
@@ -431,11 +453,16 @@ function renderFeishuSurface(copy: (typeof COPY)[ShuttleLocale]): string {
               <span>${escapeHtml(copy.defaultWikiProject)}</span>
               <strong>${escapeHtml(target)}</strong>
             </div>
+            <div class="surface-summary">
+              <span>${escapeHtml(copy.feishuLibraryCategory)}</span>
+              <strong>${escapeHtml(category)}</strong>
+            </div>
             <div class="primary-actions">
-              <button class="primary-action" type="button" data-action="feishu-export-organize">${escapeHtml(copy.feishuExportMdAndOrganize)}</button>
+              <button class="primary-action" type="button" data-action="feishu-export-md">${escapeHtml(copy.feishuExportMd)}</button>
               <div class="surface-secondary-actions">
-                <button class="secondary-action" type="button" data-action="feishu-export-md">${escapeHtml(copy.feishuExportMd)}</button>
+                <button class="secondary-action" type="button" data-action="feishu-change-category">${escapeHtml(copy.feishuChangeCategory)}</button>
                 <button class="secondary-action" type="button" data-action="feishu-organize-wiki">${escapeHtml(copy.feishuOrganizeWiki)}</button>
+                <button class="secondary-action" type="button" data-action="feishu-export-organize">${escapeHtml(copy.feishuExportMdAndOrganize)}</button>
               </div>
             </div>
             <div class="surface-folder-actions">
@@ -777,6 +804,55 @@ function renderModal(): string {
     </div>`;
   }
 
+  if (modal.kind === "feishu-category") {
+    const recentCategories = uniqueCategoryPaths(viewState.recentCategoryPaths);
+    const recentOptions = recentCategories.map((path) => `<option value="${escapeAttribute(path)}"></option>`).join("");
+    const recentButtons = recentCategories
+      .map(
+        (path) =>
+          `<button type="button" data-action="feishu-use-category-${escapeAttribute(encodeURIComponent(path))}">
+            <span>${escapeHtml(path)}</span>
+          </button>`
+      )
+      .join("");
+
+    return `<div class="modal-backdrop" role="presentation">
+      <section class="modal" role="dialog" aria-modal="true" aria-label="${escapeAttribute(copy.feishuCategoryDialogTitle)}">
+        <header class="modal-header">
+          <div>
+            <strong>${escapeHtml(copy.feishuCategoryDialogTitle)}</strong>
+            <span>${escapeHtml(copy.feishuCategoryDialogHint)}</span>
+          </div>
+          <button class="icon-button" type="button" data-action="modal-close" aria-label="${copy.close}">x</button>
+        </header>
+        <div class="feishu-category-dialog">
+          <label class="feishu-category-field">
+            <span>${escapeHtml(copy.feishuCategoryInput)}</span>
+            <input type="text" value="${escapeAttribute(viewState.wikiCategoryPath)}" list="noos-feishu-category-dialog-list" data-feishu-category-dialog-input="true" placeholder="projects/noos-shuttle/design" autofocus />
+            <datalist id="noos-feishu-category-dialog-list">${recentOptions}</datalist>
+          </label>
+          ${
+            viewState.state === "warning" && viewState.message === copy.feishuCategoryRequired
+              ? `<p class="feishu-category-warning">${escapeHtml(viewState.message)}</p>`
+              : ""
+          }
+          ${
+            recentButtons
+              ? `<div class="recent-category-list" aria-label="${escapeAttribute(copy.feishuRecentCategories)}">
+                  <strong>${escapeHtml(copy.feishuRecentCategories)}</strong>
+                  ${recentButtons}
+                </div>`
+              : ""
+          }
+        </div>
+        <footer class="modal-actions">
+          <button type="button" data-action="modal-close">${copy.cancel}</button>
+          <button class="modal-primary-action" type="button" data-action="feishu-confirm-category">${copy.feishuUseCategory}</button>
+        </footer>
+      </section>
+    </div>`;
+  }
+
   if (modal.kind === "confirm-feishu-overwrite") {
     return `<div class="modal-backdrop" role="presentation">
       <section class="modal" role="dialog" aria-modal="true" aria-label="${escapeAttribute(copy.feishuOverwriteConfirmTitle)}">
@@ -800,11 +876,29 @@ function renderModal(): string {
         <button class="icon-button" type="button" data-action="modal-close" aria-label="${copy.close}">x</button>
       </header>
       <p>${escapeHtml(modal.message)}</p>
-      <footer class="modal-actions">
-        <button type="button" data-action="modal-close">${copy.ok}</button>
-      </footer>
+      ${renderSuccessModalActions(modal.actions, copy)}
     </section>
   </div>`;
+}
+
+function renderSuccessModalActions(actions: ModalAction[] | undefined, copy: (typeof COPY)[ShuttleLocale]): string {
+  const modalActions = actions?.length ? actions : [{ label: copy.ok, action: "modal-close" }];
+  return `<footer class="modal-actions">
+    ${modalActions
+      .map((action) => {
+        const className = action.primary ? "modal-primary-action" : "";
+        const testId = action.testId ? ` data-modal-test-id="${escapeAttribute(action.testId)}"` : "";
+        if (action.href) {
+          return `<a class="${className}" href="${escapeAttribute(action.href)}" target="_blank" rel="noopener noreferrer"${testId}>${escapeHtml(
+            action.label
+          )}</a>`;
+        }
+        return `<button class="${className}" type="button" data-action="${escapeAttribute(action.action || "modal-close")}"${testId}>${escapeHtml(
+          action.label
+        )}</button>`;
+      })
+      .join("")}
+  </footer>`;
 }
 
 function renderVaultFolderTree(): string {
@@ -976,12 +1070,34 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
     return;
   }
 
+  if (action === "feishu-change-category") {
+    viewState.modal = { kind: "feishu-category" };
+    render(app);
+    return;
+  }
+
+  if (action === "feishu-confirm-category") {
+    await confirmFeishuCategory(app, readFeishuCategoryDialogInput(app));
+    return;
+  }
+
+  if (action.startsWith("feishu-use-category-")) {
+    await confirmFeishuCategory(app, normalizeFeishuCategoryPath(decodeURIComponent(action.replace("feishu-use-category-", ""))));
+    return;
+  }
+
   if (action === "feishu-organize-wiki") {
     await runFeishuAction(app, "organize_wiki");
     return;
   }
 
   if (action === "feishu-open-markdown-folder") {
+    await runFeishuAction(app, "open_markdown_folder");
+    return;
+  }
+
+  if (action === "feishu-modal-open-markdown-folder") {
+    viewState.modal = null;
     await runFeishuAction(app, "open_markdown_folder");
     return;
   }
@@ -2592,21 +2708,46 @@ async function refreshVaultObjects(
   }
 }
 
-async function refreshWikiTarget(app: HTMLElement): Promise<void> {
+async function refreshWikiTarget(app: HTMLElement, options: { preserveScroll?: boolean } = {}): Promise<void> {
   try {
     const response = await sendExtensionMessage<
       { type: "NOOS_GET_WIKI_TARGET" },
-      { ok?: boolean; projectPath?: string; project_path?: string; message?: string }
+      {
+        ok?: boolean;
+        projectPath?: string;
+        project_path?: string;
+        currentCategoryPath?: string;
+        current_category_path?: string;
+        recentCategoryPaths?: string[];
+        recent_category_paths?: string[];
+        message?: string;
+      }
     >({ type: "NOOS_GET_WIKI_TARGET" });
     viewState.wikiProjectPath = response?.projectPath || response?.project_path || "";
+    viewState.wikiCategoryPath = response?.currentCategoryPath || response?.current_category_path || viewState.wikiCategoryPath;
+    viewState.recentCategoryPaths = response?.recentCategoryPaths || response?.recent_category_paths || [];
   } catch {
     viewState.wikiProjectPath = "";
   }
-  render(app);
+  if (options.preserveScroll) {
+    renderPreservingPopoverScroll(app);
+  } else {
+    render(app);
+  }
 }
 
-async function runFeishuAction(app: HTMLElement, action: FeishuWikiAction): Promise<void> {
+async function runFeishuAction(app: HTMLElement, action: FeishuWikiAction, categoryOverride?: string): Promise<void> {
   const copy = COPY[viewState.locale];
+  const categoryPath = categoryOverride || readFeishuCategoryInput(app) || viewState.wikiCategoryPath;
+  if ((action === "change_category" || action === "export_md" || action === "export_md_and_organize") && !categoryPath) {
+    viewState.state = "warning";
+    viewState.message = copy.feishuCategoryRequired;
+    viewState.modal = { kind: "feishu-category", pendingAction: action };
+    openSurfacePanel();
+    render(app);
+    return;
+  }
+  viewState.wikiCategoryPath = categoryPath;
   viewState.state = "waiting";
   viewState.message = copy.feishuMarkdownHint;
   openSurfacePanel();
@@ -2621,6 +2762,7 @@ async function runFeishuAction(app: HTMLElement, action: FeishuWikiAction): Prom
         url: string;
         title?: string;
         wikiProjectPath?: string;
+        categoryPath?: string;
       },
       FeishuActionResponse
     >({
@@ -2628,7 +2770,8 @@ async function runFeishuAction(app: HTMLElement, action: FeishuWikiAction): Prom
       action,
       url: location.href,
       title: feishuDocumentTitle(),
-      wikiProjectPath: viewState.wikiProjectPath || undefined
+      wikiProjectPath: viewState.wikiProjectPath || undefined,
+      categoryPath: categoryPath || undefined
     });
   } catch (error) {
     response = {
@@ -2649,8 +2792,74 @@ async function runFeishuAction(app: HTMLElement, action: FeishuWikiAction): Prom
   viewState.state = response.status === "unchanged" ? "warning" : "saved";
   viewState.wikiProjectPath = response.wikiProjectPath || response.wiki_project_path || viewState.wikiProjectPath;
   viewState.message = copy.feishuActionFinished(response.status || "queued", response.message || "");
+  await refreshWikiTarget(app, { preserveScroll: true });
+  if (isFeishuExportAction(action)) {
+    const sourceLocation = response.sourcePath || response.source_path || categoryPath;
+    viewState.modal = {
+      kind: "success",
+      title: copy.feishuExportSuccessTitle,
+      message: copy.feishuExportSuccessMessage(sourceLocation, action === "export_md_and_organize"),
+      actions: [
+        { label: copy.feishuOpenMarkdownFolder, action: "feishu-modal-open-markdown-folder", primary: true, testId: "feishu-open-export-folder" },
+        { label: copy.ok, action: "modal-close" }
+      ]
+    };
+  }
   openSurfacePanel();
   render(app);
+}
+
+function isFeishuExportAction(action: FeishuWikiAction): boolean {
+  return action === "export_md" || action === "export_md_and_organize";
+}
+
+async function confirmFeishuCategory(app: HTMLElement, categoryPath: string): Promise<void> {
+  const copy = COPY[viewState.locale];
+  if (!categoryPath) {
+    viewState.state = "warning";
+    viewState.message = copy.feishuCategoryRequired;
+    render(app);
+    return;
+  }
+
+  const pendingAction = viewState.modal?.kind === "feishu-category" ? viewState.modal.pendingAction : undefined;
+  viewState.modal = null;
+  viewState.wikiCategoryPath = categoryPath;
+  await runFeishuAction(app, pendingAction || "change_category", categoryPath);
+}
+
+function readFeishuCategoryInput(app: HTMLElement): string {
+  const input = app.querySelector<HTMLInputElement>("[data-feishu-category-input='true']");
+  return normalizeFeishuCategoryPath(input?.value || "");
+}
+
+function readFeishuCategoryDialogInput(app: HTMLElement): string {
+  const input = app.querySelector<HTMLInputElement>("[data-feishu-category-dialog-input='true']");
+  return normalizeFeishuCategoryPath(input?.value || "");
+}
+
+function uniqueCategoryPaths(paths: string[]): string[] {
+  return Array.from(new Set(paths.map(normalizeFeishuCategoryPath).filter(Boolean)));
+}
+
+function normalizeFeishuCategoryPath(value: string): string {
+  const parts = value
+    .split(/[\\/]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (!parts.length || parts.some((part) => part === "." || part === ".." || part.startsWith("."))) {
+    return "";
+  }
+  return parts
+    .map((part) =>
+      part
+        .replace(/[:*?"<>|]/g, "-")
+        .replace(/\s+/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-|-$/g, "")
+    )
+    .filter(Boolean)
+    .join("/");
 }
 
 async function runFeishuPublish(app: HTMLElement, mode: FeishuPublishMode): Promise<void> {
@@ -2728,13 +2937,17 @@ async function runFeishuPublish(app: HTMLElement, mode: FeishuPublishMode): Prom
   viewState.state = "saved";
   viewState.message = copy.feishuPublishFinished(response.status || "published", response.message || "");
   const documentUrl = response.documentUrl || response.document_url;
-  if (documentUrl) {
-    viewState.modal = {
-      kind: "success",
-      title: copy.deliverySuccessTitle,
-      message: `${viewState.message} ${documentUrl}`
-    };
-  }
+  viewState.modal = {
+    kind: "success",
+    title: copy.feishuPublishSuccessTitle,
+    message: copy.feishuPublishSuccessMessage(viewState.message, documentUrl),
+    actions: [
+      ...(documentUrl
+        ? [{ label: copy.feishuOpenFeishuDocument, href: documentUrl, primary: true, testId: "feishu-open-published-doc" }]
+        : []),
+      { label: copy.ok, action: "modal-close" }
+    ]
+  };
   openSurfacePanel();
   render(app);
 }

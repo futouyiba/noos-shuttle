@@ -209,6 +209,7 @@ interface FeishuWikiActionMessage {
   type: "NOOS_FEISHU_WIKI_ACTION";
   action:
     | "export_md"
+    | "change_category"
     | "organize_wiki"
     | "export_md_and_organize"
     | "open_markdown_folder"
@@ -218,6 +219,7 @@ interface FeishuWikiActionMessage {
   url: string;
   title?: string;
   wikiProjectPath?: string;
+  categoryPath?: string;
 }
 
 interface FeishuPublishMarkdownMessage {
@@ -341,6 +343,7 @@ function isFeishuWikiActionMessage(value: unknown): value is FeishuWikiActionMes
   return (
     message.type === "NOOS_FEISHU_WIKI_ACTION" &&
     (message.action === "export_md" ||
+      message.action === "change_category" ||
       message.action === "sync_markdown" ||
       message.action === "organize_wiki" ||
       message.action === "export_md_and_organize" ||
@@ -349,7 +352,8 @@ function isFeishuWikiActionMessage(value: unknown): value is FeishuWikiActionMes
       message.action === "open_wiki_folder") &&
     typeof message.url === "string" &&
     (message.title === undefined || typeof message.title === "string") &&
-    (message.wikiProjectPath === undefined || typeof message.wikiProjectPath === "string")
+    (message.wikiProjectPath === undefined || typeof message.wikiProjectPath === "string") &&
+    (message.categoryPath === undefined || typeof message.categoryPath === "string")
   );
 }
 
@@ -402,6 +406,7 @@ async function runFeishuWikiAction(message: FeishuWikiActionMessage): Promise<un
     url: message.url,
     title: message.title,
     wiki_project_path: message.wikiProjectPath,
+    category_path: message.categoryPath,
     force: message.action === "organize_wiki"
   });
   return normalizeHubPayload(payload);
@@ -431,6 +436,7 @@ export function feishuPublishCommandForAction(action: FeishuPublishMarkdownMessa
 export function feishuCommandForAction(action: FeishuWikiActionMessage["action"]): string {
   const commandByAction: Record<FeishuWikiActionMessage["action"], string> = {
     export_md: "feishu.exportMd",
+    change_category: "wiki.setFeishuCategory",
     sync_markdown: "feishu.syncMarkdown",
     organize_wiki: "wiki.organizeSource",
     export_md_and_organize: "feishu.exportMdAndOrganize",
@@ -508,6 +514,8 @@ function normalizeHubPayload(payload: unknown): unknown {
     errorCode: value.errorCode ?? value.error_code,
     projectPath: value.projectPath ?? value.project_path,
     wikiProjectPath: value.wikiProjectPath ?? value.wiki_project_path,
+    currentCategoryPath: value.currentCategoryPath ?? value.current_category_path,
+    recentCategoryPaths: value.recentCategoryPaths ?? value.recent_category_paths,
     sourcePath: value.sourcePath ?? value.source_path,
     documentUrl: value.documentUrl ?? value.document_url,
     folderName: value.folderName ?? value.folder_name
