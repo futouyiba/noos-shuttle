@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -1154,6 +1155,11 @@ fn export_feishu_md(request: HubActionRequest, organize: bool) -> HubActionRespo
         .as_deref()
         .unwrap_or("Untitled Feishu Document");
     let source_path = feishu_source_path(&wiki_project_path, &category_path, &token, Some(title));
+    let source_slug = source_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("feishu-source")
+        .to_string();
     let existing_source_path = existing_feishu_source_path(
         &wiki_project_path,
         &source_id,
@@ -1183,8 +1189,32 @@ fn export_feishu_md(request: HubActionRequest, organize: bool) -> HubActionRespo
         .parent()
         .unwrap_or_else(|| wiki_project_path.as_path())
         .join(&asset_root);
-    let normalized_markdown =
-        normalize_exported_markdown_resources(&exported.markdown, &exported.resources, &asset_root);
+    let localized_markdown = if let Some(export_dir) = exported.temp_root.as_deref() {
+        match localize_feishu_markdown_images(
+            &exported.markdown,
+            export_dir,
+            &wiki_project_path,
+            &source_slug,
+        ) {
+            Ok(markdown) => markdown,
+            Err(error) => {
+                cleanup_feishu_export_package(&exported);
+                return hub_action_error(
+                    "export_failed",
+                    &error,
+                    Some(source_path.display().to_string()),
+                    Some(wiki_project_path.display().to_string()),
+                );
+            }
+        }
+    } else {
+        exported.markdown.clone()
+    };
+    let normalized_markdown = normalize_exported_markdown_resources(
+        &localized_markdown,
+        &exported.resources,
+        &asset_root,
+    );
 
     let previous = fs::read_to_string(&existing_source_path).unwrap_or_default();
     let changed = feishu_source_body(&previous) != normalized_markdown.trim();
@@ -2019,7 +2049,7 @@ fn is_cjk_unified_ideograph(character: char) -> bool {
         || ('\u{f900}'..='\u{faff}').contains(&character)
 }
 
-fn export_feishu_markdown(url: &str) -> Result<String, String> {
+fn export_feishu_markdown_stdout(url: &str) -> Result<String, String> {
     let attempts: Vec<Vec<String>> = vec![
         vec![
             "export".to_string(),
@@ -2094,7 +2124,7 @@ fn export_feishu_package(url: &str, source_id: &str) -> Result<FeishuExportPacka
     }
     let _ = fs::remove_dir_all(&temp_root);
 
-    match export_feishu_markdown(url) {
+    match export_feishu_markdown_stdout(url) {
         Ok(markdown) => Ok(FeishuExportPackage {
             markdown,
             resources: Vec::new(),
@@ -2660,6 +2690,159 @@ fn render_knowledge_abstracts(source_map: &Value) -> String {
         lines.push(String::new());
     }
     lines.join("\n")
+}
+
+fn localize_feishu_markdown_images(
+    markdown: &str,
+    export_dir: &Path,
+    wiki_project_path: &Path,
+    source_slug: &str,
+) -> Result<String, String> {
+    let media_dir = wiki_project_path
+        .join("wiki")
+        .join("media")
+        .join(source_slug);
+    let mut used_names = HashSet::new();
+    rewrite_markdown_image_paths(markdown, |url| {
+        let Some(source_path) = feishu_export_image_source_path(export_dir, url)? else {
+            return Ok(None);
+        };
+        if !source_path.exists() {
+            return Err(format!(
+                "Feishu image asset was referenced but not found: {}",
+                source_path.display()
+            ));
+        }
+        fs::create_dir_all(&media_dir).map_err(|error| error.to_string())?;
+        let filename = unique_media_filename(&source_path, &mut used_names);
+        let target = media_dir.join(&filename);
+        fs::copy(&source_path, &target)
+            .map_err(|error| format!("Failed to copy Feishu image asset: {error}"))?;
+        Ok(Some(format!("media/{source_slug}/{filename}")))
+    })
+}
+
+fn rewrite_markdown_image_paths<F>(markdown: &str, mut map_url: F) -> Result<String, String>
+where
+    F: FnMut(&str) -> Result<Option<String>, String>,
+{
+    let mut out = String::with_capacity(markdown.len());
+    let mut cursor = 0;
+    while let Some(start_rel) = markdown[cursor..].find("![") {
+        let start = cursor + start_rel;
+        let Some(alt_close_rel) = markdown[start + 2..].find("](") else {
+            break;
+        };
+        let url_start = start + 2 + alt_close_rel + 2;
+        let Some(url_close_rel) = markdown[url_start..].find(')') else {
+            break;
+        };
+        let url_end = url_start + url_close_rel;
+        let url = &markdown[url_start..url_end];
+
+        out.push_str(&markdown[cursor..start]);
+        if let Some(new_url) = map_url(url.trim())? {
+            out.push_str(&markdown[start..url_start]);
+            out.push_str(&new_url);
+            out.push(')');
+        } else {
+            out.push_str(&markdown[start..=url_end]);
+        }
+        cursor = url_end + 1;
+    }
+    out.push_str(&markdown[cursor..]);
+    Ok(out)
+}
+
+fn feishu_export_image_source_path(
+    export_dir: &Path,
+    url: &str,
+) -> Result<Option<PathBuf>, String> {
+    if is_external_or_absolute_markdown_url(url) {
+        return Ok(None);
+    }
+    let cleaned = url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(url)
+        .trim()
+        .trim_start_matches("./");
+    if cleaned.is_empty() || !is_supported_image_path(Path::new(cleaned)) {
+        return Ok(None);
+    }
+    let rel = Path::new(cleaned);
+    if rel
+        .components()
+        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(format!("Unsafe Feishu image path: {url}"));
+    }
+    Ok(Some(export_dir.join(rel)))
+}
+
+fn is_external_or_absolute_markdown_url(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("data:")
+        || lower.starts_with("blob:")
+        || lower.starts_with("file:")
+        || lower.starts_with("tauri:")
+        || url.starts_with('/')
+        || url.starts_with("\\\\")
+        || (url.len() > 2 && url.as_bytes()[1] == b':')
+}
+
+fn is_supported_image_path(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.to_ascii_lowercase())
+            .as_deref(),
+        Some("png")
+            | Some("jpg")
+            | Some("jpeg")
+            | Some("gif")
+            | Some("webp")
+            | Some("bmp")
+            | Some("ico")
+            | Some("tiff")
+            | Some("tif")
+            | Some("avif")
+            | Some("heic")
+            | Some("heif")
+            | Some("svg")
+    )
+}
+
+fn unique_media_filename(source_path: &Path, used_names: &mut HashSet<String>) -> String {
+    let extension = source_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .filter(|extension| !extension.is_empty())
+        .unwrap_or_else(|| "png".to_string());
+    let stem = source_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(source_title_slug)
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or_else(|| "image".to_string());
+    for suffix in 0..10_000 {
+        let filename = if suffix == 0 {
+            format!("{stem}.{extension}")
+        } else {
+            format!("{stem}-{suffix}.{extension}")
+        };
+        if used_names.insert(filename.clone()) {
+            return filename;
+        }
+    }
+    format!(
+        "{stem}-{}.{}",
+        stable_hash_hex(&source_path.display().to_string()),
+        extension
+    )
 }
 
 fn read_vault_markdown_source(lookup_key: &str) -> Result<VaultMarkdownSource, (String, String)> {
@@ -5210,7 +5393,9 @@ mod tests {
             candidates.first(),
             Some(&PathBuf::from(r"C:\Program Files\Git\bin\bash.exe"))
         );
-        assert!(candidates.iter().any(|candidate| candidate == Path::new("bash")));
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate == Path::new("bash")));
     }
 
     #[test]
@@ -5397,6 +5582,47 @@ mod tests {
     }
 
     #[test]
+    fn localize_feishu_markdown_images_copies_and_rewrites_local_bitmaps() {
+        let root = unique_test_dir("feishu-image-localize");
+        let export_dir = root.join("export");
+        let wiki = root.join("wiki");
+        let source_slug = "feishu-readable--abc123";
+        fs::create_dir_all(export_dir.join(source_slug)).unwrap();
+        fs::create_dir_all(export_dir.join("other")).unwrap();
+        fs::write(export_dir.join(source_slug).join("chart.png"), b"one").unwrap();
+        fs::write(export_dir.join("other").join("chart.png"), b"two").unwrap();
+
+        let markdown = "\
+![Quarterly chart](feishu-readable--abc123/chart.png)
+![Remote](https://example.com/remote.png)
+[Attachment](feishu-readable--abc123/report.pdf)
+![Second chart](other/chart.png)
+";
+
+        let localized =
+            localize_feishu_markdown_images(markdown, &export_dir, &wiki, source_slug).unwrap();
+
+        assert!(localized.contains("![Quarterly chart](media/feishu-readable--abc123/chart.png)"));
+        assert!(localized.contains("![Second chart](media/feishu-readable--abc123/chart-1.png)"));
+        assert!(localized.contains("![Remote](https://example.com/remote.png)"));
+        assert!(localized.contains("[Attachment](feishu-readable--abc123/report.pdf)"));
+        assert!(wiki
+            .join("wiki")
+            .join("media")
+            .join(source_slug)
+            .join("chart.png")
+            .exists());
+        assert!(wiki
+            .join("wiki")
+            .join("media")
+            .join(source_slug)
+            .join("chart-1.png")
+            .exists());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn source_map_lookup_rejects_unsafe_source_paths() {
         let root = unique_test_dir("source-map-unsafe-paths");
         let wiki = root.join("wiki");
@@ -5429,6 +5655,25 @@ mod tests {
             assert_eq!(source_path_from_source_map(&wiki, source_id), None);
         }
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn localize_feishu_markdown_images_rejects_parent_dir_paths() {
+        let root = unique_test_dir("feishu-image-unsafe");
+        let export_dir = root.join("export");
+        let wiki = root.join("wiki");
+        fs::create_dir_all(&export_dir).unwrap();
+
+        let error = localize_feishu_markdown_images(
+            "![Unsafe](../secret.png)",
+            &export_dir,
+            &wiki,
+            "feishu-source",
+        )
+        .unwrap_err();
+
+        assert!(error.contains("Unsafe Feishu image path"));
         fs::remove_dir_all(root).unwrap();
     }
 

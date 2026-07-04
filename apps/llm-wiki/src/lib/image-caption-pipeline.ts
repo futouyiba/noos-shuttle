@@ -38,6 +38,7 @@ import { writeFile, readFile, createDirectory, fileExists, readFileAsBase64 } fr
 import { captionImage } from "@/lib/vision-caption"
 import type { LlmConfig } from "@/stores/wiki-store"
 import { normalizePath } from "@/lib/path-utils"
+import type { SourceImageAsset } from "@/lib/extract-source-images"
 
 interface CaptionEntry {
   caption: string
@@ -60,7 +61,7 @@ const CACHE_REL_PATH = ".llm-wiki/image-caption-cache.json"
  * and the Node test environment (since Node 19+ exposes the
  * `webcrypto` shape on `globalThis.crypto`).
  */
-async function sha256OfBase64(b64: string): Promise<string> {
+export async function sha256OfBase64(b64: string): Promise<string> {
   const binary = atob(b64)
   const bytes = new Uint8Array(binary.length)
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
@@ -212,6 +213,64 @@ function sliceContext(
   const afterStart = ref.index + ref.length
   const after = markdown.slice(afterStart, afterStart + windowChars)
   return { before, after }
+}
+
+const PASSTHROUGH_URL_RE = /^(https?:|data:|blob:|file:|tauri:)/i
+const IMAGE_PATH_RE = /\.(png|jpe?g|gif|webp|bmp|ico|tiff?|avif|heic|heif|svg)$/i
+
+function wikiMediaImageRelPath(url: string, sourceSlug?: string): string | null {
+  const raw = url.trim()
+  if (!raw || PASSTHROUGH_URL_RE.test(raw)) return null
+  if (raw.startsWith("/") || /^[a-zA-Z]:/.test(raw) || raw.startsWith("\\\\")) return null
+
+  const withoutDecorations = raw.split(/[?#]/, 1)[0].replace(/^\.\//, "")
+  if (!withoutDecorations.startsWith("media/")) return null
+  if (sourceSlug && !withoutDecorations.startsWith(`media/${sourceSlug}/`)) return null
+  if (!IMAGE_PATH_RE.test(withoutDecorations)) return null
+  return withoutDecorations
+}
+
+export async function collectMarkdownSourceImages(
+  projectPath: string,
+  markdown: string,
+  options: { sourceSlug?: string } = {},
+): Promise<SourceImageAsset[]> {
+  const pp = normalizePath(projectPath)
+  const refs = findImageReferences(markdown)
+  const seen = new Set<string>()
+  const images: SourceImageAsset[] = []
+
+  for (const ref of refs) {
+    const relPath = wikiMediaImageRelPath(ref.url, options.sourceSlug)
+    if (!relPath || seen.has(relPath)) continue
+    seen.add(relPath)
+
+    const absPath = `${pp}/wiki/${relPath}`
+    let sha256: string | undefined
+    let mimeType: string | undefined
+    try {
+      const bytes = await readFileAsBase64(absPath)
+      sha256 = await sha256OfBase64(bytes.base64)
+      mimeType = bytes.mimeType
+    } catch (err) {
+      console.warn(
+        `[caption-pipeline] failed to inspect markdown image ${absPath}:`,
+        err instanceof Error ? err.message : err,
+      )
+    }
+
+    images.push({
+      index: images.length + 1,
+      page: null,
+      relPath,
+      absPath,
+      sha256,
+      mimeType,
+      sourceAlt: ref.alt,
+    })
+  }
+
+  return images
 }
 
 /**
@@ -464,4 +523,4 @@ export async function captionMarkdownImages(
 
 // Exported for direct unit testing — keeps the module surface small
 // while letting the test file pin behavior on the helpers.
-export const __test = { findImageReferences, sha256OfBase64, MD_IMAGE_RE }
+export const __test = { findImageReferences, sha256OfBase64, MD_IMAGE_RE, wikiMediaImageRelPath }

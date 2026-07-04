@@ -27,7 +27,11 @@ vi.mock("@/commands/fs", () => ({
   readFileAsBase64: (p: string) => mockReadBase64(p),
 }))
 
-import { captionMarkdownImages, __test } from "./image-caption-pipeline"
+import {
+  captionMarkdownImages,
+  collectMarkdownSourceImages,
+  __test,
+} from "./image-caption-pipeline"
 import type { LlmConfig } from "@/stores/wiki-store"
 
 const cfg: LlmConfig = {
@@ -66,6 +70,55 @@ describe("findImageReferences (helper)", () => {
     const refs = __test.findImageReferences("[link](url) <img src=foo.png /> ![real](z.png)")
     expect(refs).toHaveLength(1)
     expect(refs[0].url).toBe("z.png")
+  })
+})
+
+describe("collectMarkdownSourceImages", () => {
+  it("collects source-scoped wiki media images with source alt and SHA-256", async () => {
+    mockReadBase64.mockResolvedValue({ base64: "AAAA", mimeType: "image/png" })
+
+    const images = await collectMarkdownSourceImages(
+      "/proj",
+      [
+        "![Revenue chart](media/feishu-doc/img.png)",
+        "![](./media/other/skip.png)",
+        "![Remote](https://example.com/x.png)",
+      ].join("\n"),
+      { sourceSlug: "feishu-doc" },
+    )
+
+    expect(images).toHaveLength(1)
+    expect(images[0]).toMatchObject({
+      index: 1,
+      page: null,
+      relPath: "media/feishu-doc/img.png",
+      absPath: "/proj/wiki/media/feishu-doc/img.png",
+      mimeType: "image/png",
+      sourceAlt: "Revenue chart",
+    })
+    expect(images[0].sha256).toBe(await __test.sha256OfBase64("AAAA"))
+  })
+
+  it("keeps missing markdown images as path-only fallback assets", async () => {
+    mockReadBase64.mockRejectedValue(new Error("missing"))
+
+    const images = await collectMarkdownSourceImages(
+      "/proj",
+      "![Existing alt](media/feishu-doc/missing.png)",
+      { sourceSlug: "feishu-doc" },
+    )
+
+    expect(images).toEqual([
+      {
+        index: 1,
+        page: null,
+        relPath: "media/feishu-doc/missing.png",
+        absPath: "/proj/wiki/media/feishu-doc/missing.png",
+        sha256: undefined,
+        mimeType: undefined,
+        sourceAlt: "Existing alt",
+      },
+    ])
   })
 })
 
@@ -218,6 +271,23 @@ describe("captionMarkdownImages", () => {
     })
 
     expect(mockReadBase64).toHaveBeenCalledWith("/custom/anchor/media/foo/img-1.png")
+  })
+
+  it("captions wiki-root media refs from markdown sources with the default resolver", async () => {
+    mockReadBase64.mockResolvedValue({ base64: "AAAA", mimeType: "image/png" })
+    mockCaption.mockResolvedValue("a Feishu bitmap")
+
+    const out = await captionMarkdownImages(
+      "/proj",
+      "![](media/feishu-doc/img.png)",
+      cfg,
+      {
+        shouldCaption: (url) => url.startsWith("media/feishu-doc/"),
+      },
+    )
+
+    expect(mockReadBase64).toHaveBeenCalledWith("/proj/wiki/media/feishu-doc/img.png")
+    expect(out.enrichedMarkdown).toBe("![a Feishu bitmap](media/feishu-doc/img.png)")
   })
 
   it("forwards AbortSignal to captionImage", async () => {

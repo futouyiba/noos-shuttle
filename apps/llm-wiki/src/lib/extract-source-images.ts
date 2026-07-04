@@ -16,17 +16,27 @@
 import { invoke } from "@tauri-apps/api/core"
 import { getFileName, normalizePath } from "@/lib/path-utils"
 
-/** Mirrors `commands::extract_images::SavedImage` on the Rust side. */
-export interface SavedImage {
+export interface SourceImageAsset {
   index: number
-  mimeType: string
   /** PDF page or PPTX slide number (1-based). DOCX always null. */
   page: number | null
-  width: number
-  height: number
   /** Path relative to the wiki/ root, e.g. `media/rope-paper/img-1.png`. */
   relPath: string
   /** Absolute filesystem path — used by `convertFileSrc` for preview. */
+  absPath?: string
+  sha256?: string
+  /** Alt/caption already present in source markdown before vision captioning. */
+  sourceAlt?: string
+  mimeType?: string
+  width?: number
+  height?: number
+}
+
+/** Mirrors `commands::extract_images::SavedImage` on the Rust side. */
+export interface SavedImage extends SourceImageAsset {
+  mimeType: string
+  width: number
+  height: number
   absPath: string
   sha256: string
 }
@@ -120,8 +130,9 @@ export async function extractAndSaveSourceImages(
  * page boundaries, which it doesn't yet.
  */
 export function buildImageMarkdownSection(
-  images: SavedImage[],
+  images: SourceImageAsset[],
   captionsBySha?: Map<string, string>,
+  options: { includeDescriptionBlocks?: boolean } = {},
 ): string {
   if (images.length === 0) return ""
 
@@ -129,7 +140,7 @@ export function buildImageMarkdownSection(
   // Group by page so the LLM can correlate "Figure 3 mentioned on
   // page 5" with the right image. DOCX images have page=null; they
   // get grouped under "Document":
-  const byPage = new Map<string, SavedImage[]>()
+  const byPage = new Map<string, SourceImageAsset[]>()
   for (const img of images) {
     const key = img.page == null ? "Document" : `Page ${img.page}`
     const bucket = byPage.get(key)
@@ -153,6 +164,12 @@ export function buildImageMarkdownSection(
   const sanitize = (s: string): string =>
     s.replace(/[\r\n]+/g, " ").replace(/]/g, ")").trim()
 
+  const meaningfulSourceAlt = (s: string | undefined): string => {
+    const trimmed = sanitize(s ?? "")
+    if (/^(image|图片|whiteboard|diagram)$/i.test(trimmed)) return ""
+    return trimmed
+  }
+
   for (const key of ordered) {
     lines.push(`### ${key}`, "")
     for (const img of byPage.get(key) ?? []) {
@@ -163,9 +180,13 @@ export function buildImageMarkdownSection(
       // Empty alt is still better than no image reference at all
       // — the inline LLM-generated text might cite the image by
       // page number anyway.
-      const caption = captionsBySha?.get(img.sha256)
-      const alt = caption ? sanitize(caption) : ""
+      const caption = img.sha256 ? captionsBySha?.get(img.sha256) : undefined
+      const description = caption ? sanitize(caption) : meaningfulSourceAlt(img.sourceAlt)
+      const alt = description || meaningfulSourceAlt(img.sourceAlt)
       lines.push(`![${alt}](${img.relPath})`)
+      if (options.includeDescriptionBlocks && description) {
+        lines.push("", `*Image description: ${description}*`)
+      }
     }
     lines.push("")
   }

@@ -14,8 +14,13 @@ import { embedPage } from "@/lib/embedding"
 import {
   extractAndSaveSourceImages,
   buildImageMarkdownSection,
+  type SourceImageAsset,
 } from "@/lib/extract-source-images"
-import { captionMarkdownImages, loadCaptionCache } from "@/lib/image-caption-pipeline"
+import {
+  captionMarkdownImages,
+  collectMarkdownSourceImages,
+  loadCaptionCache,
+} from "@/lib/image-caption-pipeline"
 import type { MultimodalConfig } from "@/stores/wiki-store"
 
 /**
@@ -45,6 +50,31 @@ function resolveCaptionConfig(
     // shape matches LlmConfig.
     maxContextSize: mainLlm.maxContextSize,
   }
+}
+
+function sourceSlugForFileName(fileName: string): string {
+  return fileName.replace(/\.[^.]+$/, "")
+}
+
+function wikiMediaRelPathForSource(url: string, sourceSlug: string): string | null {
+  const raw = url.trim()
+  if (!raw || /^(https?:|data:|blob:|file:|tauri:)/i.test(raw)) return null
+  if (raw.startsWith("/") || /^[a-zA-Z]:/.test(raw) || raw.startsWith("\\\\")) return null
+  const relPath = raw.split(/[?#]/, 1)[0].replace(/^\.\//, "")
+  if (!relPath.startsWith(`media/${sourceSlug}/`)) return null
+  if (!/\.(png|jpe?g|gif|webp|bmp|ico|tiff?|avif|heic|heif|svg)$/i.test(relPath)) return null
+  return relPath
+}
+
+function sourceImageUrlToAbsPath(
+  projectPath: string,
+  sourceSlug: string,
+  extractedMediaPrefix: string,
+  url: string,
+): string | null {
+  if (url.startsWith(extractedMediaPrefix)) return url
+  const relPath = wikiMediaRelPathForSource(url, sourceSlug)
+  return relPath ? `${projectPath}/wiki/${relPath}` : null
 }
 import { buildLanguageDirective } from "@/lib/output-language"
 import { detectLanguage } from "@/lib/detect-language"
@@ -308,6 +338,7 @@ async function autoIngestImpl(
   const sp = normalizePath(sourcePath)
   const activity = useActivityStore.getState()
   const fileName = getFileName(sp)
+  const sourceSlug = sourceSlugForFileName(fileName)
   console.log(`[ingest:diag] autoIngestImpl ENTRY for "${fileName}" (project="${pp}", source="${sp}")`)
   const activityId = activity.addItem({
     type: "ingest",
@@ -342,7 +373,9 @@ async function autoIngestImpl(
       console.log(`[ingest:diag] cache-hit branch: starting image extraction for ${sp}`)
       const savedImages = await extractAndSaveSourceImages(pp, sp)
       console.log(`[ingest:diag] cache-hit branch: got ${savedImages.length} image(s)`)
-      if (savedImages.length > 0) {
+      const markdownImages = await collectMarkdownSourceImages(pp, sourceContent, { sourceSlug })
+      const sourceImages: SourceImageAsset[] = [...savedImages, ...markdownImages]
+      if (sourceImages.length > 0) {
         // Caption first (populates the cache), THEN inject — the
         // safety-net section uses the cache to populate alt text.
         // Doing them in this order means cache-hit re-runs (e.g.
@@ -360,7 +393,7 @@ async function autoIngestImpl(
         // would need to delete the wiki/sources/<slug>.md page
         // to start clean.)
         const mmCfg = useWikiStore.getState().multimodalConfig
-        if (!mmCfg.enabled) {
+        if (!mmCfg.enabled && markdownImages.length === 0) {
           console.log(
             `[ingest:caption] cache-hit + disabled — skipping caption + safety-net inject (${savedImages.length} image(s) untouched on disk)`,
           )
@@ -368,11 +401,13 @@ async function autoIngestImpl(
           const captionLlm = resolveCaptionConfig(mmCfg, llmConfig)
           if (captionLlm) {
             try {
+              const extractedMediaPrefix = `${pp}/wiki/media/${sourceSlug}/`
               await captionMarkdownImages(pp, sourceContent, captionLlm, {
                 signal,
                 shouldCaption: (url) =>
-                  url.startsWith(`${pp}/wiki/media/${fileName.replace(/\.[^.]+$/, "")}/`),
-                urlToAbsPath: (url) => url,
+                  sourceImageUrlToAbsPath(pp, sourceSlug, extractedMediaPrefix, url) !== null,
+                urlToAbsPath: (url) =>
+                  sourceImageUrlToAbsPath(pp, sourceSlug, extractedMediaPrefix, url),
                 concurrency: mmCfg.concurrency,
                 onProgress: (done, total) =>
                   activity.updateItem(activityId, {
@@ -386,7 +421,9 @@ async function autoIngestImpl(
               )
             }
           }
-          await injectImagesIntoSourceSummary(pp, fileName, savedImages)
+          await injectImagesIntoSourceSummary(pp, fileName, sourceImages, {
+            includeDescriptionBlocks: markdownImages.length > 0,
+          })
           // Re-embed the source-summary page so caption text lands
           // in the search index. Without this step, search by image
           // content stays empty for files ingested before captioning
@@ -435,9 +472,11 @@ async function autoIngestImpl(
   console.log(`[ingest:diag] full-pipeline branch: got ${savedImages.length} image(s)`)
   if (savedImages.length > 0) {
     console.log(
-      `[ingest:images] saved ${savedImages.length} image(s) for "${fileName}" → wiki/media/${fileName.replace(/\.[^.]+$/, "")}/`,
+      `[ingest:images] saved ${savedImages.length} image(s) for "${fileName}" → wiki/media/${sourceSlug}/`,
     )
   }
+  const markdownImages = await collectMarkdownSourceImages(pp, sourceContent, { sourceSlug })
+  const sourceImages: SourceImageAsset[] = [...savedImages, ...markdownImages]
 
   // ── Step 0.6: Caption embedded images ─────────────────────────
   // Now that read_file's combined extraction has put `![](abs_path)`
@@ -485,20 +524,19 @@ async function autoIngestImpl(
     // Strip `![alt](url)` references — match the same regex shape
     // we use elsewhere for image refs. Preserve a single space
     // where the ref used to sit so adjacent words don't fuse.
+    const extractedMediaPrefix = `${pp}/wiki/media/${sourceSlug}/`
     enrichedSourceContent = sourceContent.replace(
-      /!\[[^\]]*\]\([^)\s]+\)/g,
-      " ",
+      /!\[[^\]]*\]\(([^)\s]+)\)/g,
+      (whole, url) => (url.startsWith(extractedMediaPrefix) ? " " : whole),
     )
     console.log(
       `[ingest:caption] disabled — stripped image refs from sourceContent (${savedImages.length} image(s) won't appear in wiki pages)`,
     )
   } else if (
     captionLlm &&
-    savedImages.length > 0 &&
-    /!\[\]\(/.test(sourceContent)
+    sourceImages.length > 0
   ) {
     activity.updateItem(activityId, { detail: "Captioning images..." })
-    const sourceSlug = fileName.replace(/\.[^.]+$/, "")
     const ourMediaPrefix = `${pp}/wiki/media/${sourceSlug}/`
     try {
       const result = await captionMarkdownImages(pp, sourceContent, captionLlm, {
@@ -508,8 +546,10 @@ async function autoIngestImpl(
         // pre-existing markdown image refs the user may have typed
         // into the source content (e.g. for hand-authored .md
         // sources).
-        shouldCaption: (url) => url.startsWith(ourMediaPrefix),
-        urlToAbsPath: (url) => url, // already absolute in our extraction output
+        shouldCaption: (url) =>
+          sourceImageUrlToAbsPath(pp, sourceSlug, ourMediaPrefix, url) !== null,
+        urlToAbsPath: (url) =>
+          sourceImageUrlToAbsPath(pp, sourceSlug, ourMediaPrefix, url),
         concurrency: mmCfg.concurrency,
         onProgress: (done, total) =>
           activity.updateItem(activityId, {
@@ -518,7 +558,7 @@ async function autoIngestImpl(
       })
       enrichedSourceContent = result.enrichedMarkdown
       console.log(
-        `[ingest:caption] images=${savedImages.length} fresh=${result.freshCaptions} cached=${result.cachedCaptions} failed=${result.failed}`,
+        `[ingest:caption] images=${sourceImages.length} fresh=${result.freshCaptions} cached=${result.cachedCaptions} failed=${result.failed}`,
       )
     } catch (err) {
       console.warn(
@@ -676,13 +716,15 @@ async function autoIngestImpl(
     }
   }
 
-  // ── Step 3.5: Append extracted images to the source-summary page ─
-  // Skipped when the master toggle is off — see Step 0.6 above for
-  // the full rationale. With captioning disabled we also don't
-  // want the safety-net section to slip image refs into the wiki
-  // through the back door.
-  if (mmCfg.enabled && savedImages.length > 0 && !signal?.aborted) {
-    await injectImagesIntoSourceSummary(pp, fileName, savedImages)
+  // ── Step 3.5: Append extracted/local images to the source-summary page ─
+  // Extracted PDF/Office images still follow the multimodal master
+  // toggle. Feishu-exported Markdown images are already explicit
+  // local media references, so we keep their path/source-alt
+  // fallback even when captioning is disabled.
+  if ((mmCfg.enabled || markdownImages.length > 0) && sourceImages.length > 0 && !signal?.aborted) {
+    await injectImagesIntoSourceSummary(pp, fileName, sourceImages, {
+      includeDescriptionBlocks: markdownImages.length > 0,
+    })
   }
 
   if (writtenPaths.length > 0) {
@@ -1293,7 +1335,8 @@ async function backupExistingPage(
 async function injectImagesIntoSourceSummary(
   pp: string,
   fileName: string,
-  savedImages: { relPath: string; page: number | null; sha256?: string }[],
+  savedImages: SourceImageAsset[],
+  options: { includeDescriptionBlocks?: boolean } = {},
 ): Promise<void> {
   if (savedImages.length === 0) return
   const sourceBaseName = fileName.replace(/\.[^.]+$/, "")
@@ -1309,7 +1352,9 @@ async function injectImagesIntoSourceSummary(
     // by image content (e.g. "find the chart with revenue data")
     // never matches because alt text was empty.
     const captionsBySha = await loadCaptionCache(pp)
-    const newSection = buildImageMarkdownSection(savedImages as never, captionsBySha)
+    const newSection = buildImageMarkdownSection(savedImages, captionsBySha, {
+      includeDescriptionBlocks: options.includeDescriptionBlocks,
+    })
     const marker = "<!-- llm-wiki:embedded-images -->"
     const wrapped = `\n\n${marker}\n${newSection.trim()}\n${marker}\n`
     if (existing) {
@@ -1617,12 +1662,18 @@ export async function executeIngestWrites(
   // safety-net inject here too so the executeIngestWrites path
   // stays consistent with autoIngest.
   const mmCfgWrites = useWikiStore.getState().multimodalConfig
-  if (ingestSource && mmCfgWrites.enabled) {
+  if (ingestSource) {
     try {
+      const sourceContent = await tryReadFile(ingestSource)
+      const fileName = getFileName(ingestSource)
+      const sourceSlug = sourceSlugForFileName(fileName)
       const savedImages = await extractAndSaveSourceImages(pp, ingestSource)
-      if (savedImages.length > 0) {
-        const fileName = getFileName(ingestSource)
-        await injectImagesIntoSourceSummary(pp, fileName, savedImages)
+      const markdownImages = await collectMarkdownSourceImages(pp, sourceContent, { sourceSlug })
+      const sourceImages: SourceImageAsset[] = [...savedImages, ...markdownImages]
+      if ((mmCfgWrites.enabled || markdownImages.length > 0) && sourceImages.length > 0) {
+        await injectImagesIntoSourceSummary(pp, fileName, sourceImages, {
+          includeDescriptionBlocks: markdownImages.length > 0,
+        })
       }
     } catch (err) {
       console.warn(
