@@ -1,0 +1,52 @@
+{
+  "projectName": "Example App",
+  "defaultBase": "origin/main",
+  "maxListedFiles": 150,
+  "areaRules": [
+    {
+      "id": "backend",
+      "label": "Backend",
+      "patterns": ["api/**", "server/**", "src/server/**"]
+    },
+    {
+      "id": "frontend",
+      "label": "Frontend",
+      "patterns": ["app/**", "src/**", "components/**"]
+    },
+    {
+      "id": "database",
+      "label": "Database",
+      "patterns": ["db/**", "migrations/**", "prisma/**"]
+    }
+  ],
+  "riskRules": [
+    {
+      "id": "database-migration",
+      "severity": "high",
+      "label": "Database migration",
+      "detail": "Migration changes need rollback and deploy-order review.",
+      "patterns": ["db/migrations/**", "migrations/**", "prisma/migrations/**"]
+    },
+    {
+      "id": "auth-or-permissions",
+      "severity": "high",
+      "label": "Auth or permission boundary",
+      "detail": "Auth and permission changes need explicit security review.",
+      "patterns": ["auth/**", "**/auth/**", "permissions/**", "**/permissions/**", "policy/**", "**/policy/**"]
+    }
+  ],
+  "checkRules": [
+    {
+      "command": "npm run lint",
+      "reason": "Configured lint check for application code.",
+      "patterns": ["src/**", "app/**", "components/**"]
+    },
+    {
+      "command": "npm run test:integration",
+      "reason": "Configured integration tests for backend or database changes.",
+      "patterns": ["api/**", "server/**", "db/**", "migrations/**"]
+    }
+  ],
+  "manifestPermissionFiles": ["apps/browser-extension/manifest.json"],
+  "manifestPermissionKeys": ["permissions", "host_permissions"]
+}

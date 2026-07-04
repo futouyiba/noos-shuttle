@@ -5,6 +5,9 @@
   "description": "NOOS Shuttle packages AI conversations into agent-ready handoff threads.",
   "author": "FuTou 2026",
   "type": "module",
+  "bin": {
+    "review-intake": "scripts/review-intake.mjs"
+  },
   "scripts": {
     "build": "vite build",
     "dev": "vite build --watch",

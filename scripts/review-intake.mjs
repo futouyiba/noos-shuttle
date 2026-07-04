@@ -2,12 +2,17 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const maxListedFiles = 120;
+let repoRoot = process.cwd();
+let maxListedFiles = 120;
+let packageScripts = {};
+let activeAreaRules = [];
+let activeRiskRules = [];
+let activeCheckRules = [];
+let activeManifestPermissionFiles = [];
+let activeManifestPermissionKeys = [];
 
-const areaRules = [
+const defaultAreaRules = [
   {
     id: "hub",
     label: "NOOS Hub",
@@ -107,7 +112,7 @@ const areaRules = [
   },
 ];
 
-const riskRules = [
+const defaultRiskRules = [
   {
     id: "active-handoff",
     severity: "high",
@@ -191,7 +196,9 @@ const riskRules = [
   },
 ];
 
-const manifestPermissionKeys = [
+const defaultManifestPermissionFiles = ["public/manifest.json", "apps/llm-wiki/extension/manifest.json"];
+
+const defaultManifestPermissionKeys = [
   "permissions",
   "optional_permissions",
   "host_permissions",
@@ -215,11 +222,34 @@ function main() {
       fail("Missing required --source <branch|worktree|commit>.");
     }
 
+    repoRoot = resolveRepoRoot(options.repo);
+    const config = loadConfig(options);
+    const configValue = config.value;
+    maxListedFiles = parsePositiveInteger(options.maxFiles ?? configValue.maxListedFiles, 120, "max listed files");
+    packageScripts = readPackageScripts();
+    activeAreaRules = [...defaultAreaRules, ...compileAreaRules(configValue.areaRules ?? [])];
+    activeRiskRules = [...defaultRiskRules, ...compileRiskRules(configValue.riskRules ?? [])];
+    activeCheckRules = compileCheckRules(configValue.checkRules ?? []);
+    activeManifestPermissionFiles = unique([
+      ...defaultManifestPermissionFiles,
+      ...(configValue.manifestPermissionFiles ?? []),
+    ]);
+    activeManifestPermissionKeys = unique([
+      ...defaultManifestPermissionKeys,
+      ...(configValue.manifestPermissionKeys ?? []),
+    ]);
+
     const worktrees = parseWorktrees(git(["worktree", "list", "--porcelain"]).stdout);
-    const baseInput = options.base ?? defaultBaseRef();
+    const baseInput = options.base ?? configValue.defaultBase ?? defaultBaseRef();
     const base = resolveRef(baseInput, "base");
     const source = resolveSource(options.source, worktrees);
-    const report = buildReport({ source, base, baseInput, worktrees });
+    const report = buildReport({
+      source,
+      base,
+      baseInput,
+      configPath: config.path,
+      projectName: configValue.projectName ?? readPackageName() ?? path.basename(repoRoot),
+    });
 
     process.stdout.write(renderMarkdown(report));
   } catch (error) {
@@ -251,6 +281,34 @@ function parseArgs(argv) {
       options.base = arg.slice("--base=".length);
       continue;
     }
+    if (arg === "--repo") {
+      options.repo = requireValue(argv, (index += 1), arg);
+      continue;
+    }
+    if (arg.startsWith("--repo=")) {
+      options.repo = arg.slice("--repo=".length);
+      continue;
+    }
+    if (arg === "--config") {
+      options.config = requireValue(argv, (index += 1), arg);
+      continue;
+    }
+    if (arg.startsWith("--config=")) {
+      options.config = arg.slice("--config=".length);
+      continue;
+    }
+    if (arg === "--no-config") {
+      options.noConfig = true;
+      continue;
+    }
+    if (arg === "--max-files") {
+      options.maxFiles = requireValue(argv, (index += 1), arg);
+      continue;
+    }
+    if (arg.startsWith("--max-files=")) {
+      options.maxFiles = arg.slice("--max-files=".length);
+      continue;
+    }
     throw new Error(`Unknown argument: ${arg}`);
   }
   return options;
@@ -262,6 +320,159 @@ function requireValue(argv, index, flag) {
     throw new Error(`Missing value for ${flag}.`);
   }
   return value;
+}
+
+function resolveRepoRoot(repoOption) {
+  const startDir = repoOption ? path.resolve(repoOption) : process.cwd();
+  const result = git(["rev-parse", "--show-toplevel"], { cwd: startDir, allowFailure: true });
+  if (result.status !== 0) {
+    throw new Error(`Could not resolve a Git repository from ${startDir}. Pass --repo <path> explicitly.`);
+  }
+  return result.stdout.trim();
+}
+
+function loadConfig(options) {
+  if (options.noConfig) {
+    return { path: null, value: {} };
+  }
+
+  const candidates = options.config
+    ? [path.resolve(options.config)]
+    : [
+        path.join(repoRoot, ".review-intake.json"),
+        path.join(repoRoot, ".review-intake.config.json"),
+        path.join(repoRoot, "review-intake.config.json"),
+      ];
+
+  for (const candidate of candidates) {
+    if (!fs.existsSync(candidate)) {
+      continue;
+    }
+    const raw = fs.readFileSync(candidate, "utf8");
+    try {
+      return {
+        path: candidate,
+        value: JSON.parse(raw),
+      };
+    } catch (error) {
+      throw new Error(`Could not parse review intake config ${candidate}: ${error.message}`);
+    }
+  }
+
+  if (options.config) {
+    throw new Error(`Review intake config was not found: ${candidates[0]}`);
+  }
+  return { path: null, value: {} };
+}
+
+function compileAreaRules(rules) {
+  return rules.map((rule, index) => ({
+    id: requireString(rule.id, `areaRules[${index}].id`),
+    label: requireString(rule.label ?? rule.id, `areaRules[${index}].label`),
+    matches: compilePatterns(rule.patterns, `areaRules[${index}].patterns`),
+  }));
+}
+
+function compileRiskRules(rules) {
+  return rules.map((rule, index) => ({
+    id: requireString(rule.id, `riskRules[${index}].id`),
+    severity: normalizeSeverity(rule.severity ?? "medium", `riskRules[${index}].severity`),
+    label: requireString(rule.label ?? rule.id, `riskRules[${index}].label`),
+    detail: requireString(rule.detail ?? "Review this path before merging.", `riskRules[${index}].detail`),
+    matches: compilePatterns(rule.patterns, `riskRules[${index}].patterns`),
+  }));
+}
+
+function compileCheckRules(rules) {
+  return rules.map((rule, index) => ({
+    command: requireString(rule.command, `checkRules[${index}].command`),
+    reason: requireString(rule.reason ?? "Configured check matched changed paths.", `checkRules[${index}].reason`),
+    matches: compilePatterns(rule.patterns, `checkRules[${index}].patterns`),
+  }));
+}
+
+function compilePatterns(patterns, fieldName) {
+  if (!Array.isArray(patterns) || patterns.length === 0) {
+    throw new Error(`${fieldName} must be a non-empty array.`);
+  }
+  const matchers = patterns.map((pattern, index) => compilePathPattern(pattern, `${fieldName}[${index}]`));
+  return (file) => matchers.some((matcher) => matcher(file));
+}
+
+function compilePathPattern(pattern, fieldName) {
+  const value = requireString(pattern, fieldName);
+  if (value.startsWith("regex:")) {
+    const regex = new RegExp(value.slice("regex:".length));
+    return (file) => regex.test(file);
+  }
+  const regex = globToRegExp(value);
+  return (file) => regex.test(file);
+}
+
+function globToRegExp(pattern) {
+  let output = "^";
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index];
+    const next = pattern[index + 1];
+    if (char === "*" && next === "*") {
+      output += ".*";
+      index += 1;
+    } else if (char === "*") {
+      output += "[^/]*";
+    } else if (char === "?") {
+      output += "[^/]";
+    } else {
+      output += escapeRegExp(char);
+    }
+  }
+  return new RegExp(`${output}$`);
+}
+
+function requireString(value, fieldName) {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`${fieldName} must be a non-empty string.`);
+  }
+  return value;
+}
+
+function normalizeSeverity(value, fieldName) {
+  const severity = requireString(value, fieldName);
+  if (!["low", "medium", "high"].includes(severity)) {
+    throw new Error(`${fieldName} must be one of: low, medium, high.`);
+  }
+  return severity;
+}
+
+function parsePositiveInteger(value, fallback, label) {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+  const parsed = Number.parseInt(String(value), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`${label} must be a positive integer.`);
+  }
+  return parsed;
+}
+
+function readPackageScripts() {
+  const packageJson = readPackageJson();
+  return packageJson?.scripts ?? {};
+}
+
+function readPackageName() {
+  return readPackageJson()?.name ?? null;
+}
+
+function readPackageJson() {
+  const packagePath = path.join(repoRoot, "package.json");
+  if (!fs.existsSync(packagePath)) {
+    return null;
+  }
+  try {
+    return JSON.parse(fs.readFileSync(packagePath, "utf8"));
+  } catch {
+    return null;
+  }
 }
 
 function defaultBaseRef() {
@@ -399,7 +610,7 @@ function resolveExistingWorktreePath(input) {
   return result.stdout.trim();
 }
 
-function buildReport({ source, base, baseInput }) {
+function buildReport({ source, base, baseInput, configPath, projectName }) {
   const mergeBase = getMergeBase(base.commit, source.commit);
   const diffBase = mergeBase ?? base.commit;
   const relation = getAheadBehind(base.commit, source.commit);
@@ -420,6 +631,9 @@ function buildReport({ source, base, baseInput }) {
   });
 
   return {
+    projectName,
+    repoRoot,
+    configPath,
     generatedAt: new Date().toISOString(),
     mode: "read-only local refs; no fetch, checkout, merge, or push",
     source,
@@ -585,7 +799,7 @@ function summarizeAreas(changedFiles) {
 }
 
 function classifyFile(file) {
-  const areas = areaRules.filter((rule) => rule.matches(file)).map(({ id, label }) => ({ id, label }));
+  const areas = activeAreaRules.filter((rule) => rule.matches(file)).map(({ id, label }) => ({ id, label }));
   if (areas.length === 0) {
     areas.push({ id: "other", label: "Other" });
   }
@@ -596,7 +810,7 @@ function detectRiskFlags(changedFiles, diffBase, sourceCommit) {
   const flags = new Map();
 
   for (const file of changedFiles) {
-    for (const rule of riskRules) {
+    for (const rule of activeRiskRules) {
       if (!rule.matches(file.path)) {
         continue;
       }
@@ -614,10 +828,10 @@ function detectRiskFlags(changedFiles, diffBase, sourceCommit) {
 
   const manifestFiles = changedFiles
     .map((file) => file.path)
-    .filter((file) => file === "public/manifest.json" || file === "apps/llm-wiki/extension/manifest.json");
+    .filter((file) => activeManifestPermissionFiles.includes(file));
   for (const file of manifestFiles) {
     const diff = git(["diff", "--unified=0", diffBase, sourceCommit, "--", file]).stdout;
-    const changedPermissionKeys = manifestPermissionKeys.filter((key) =>
+    const changedPermissionKeys = activeManifestPermissionKeys.filter((key) =>
       new RegExp(`^[+-]\\s*"${escapeRegExp(key)}"\\s*:`, "m").test(diff),
     );
     if (changedPermissionKeys.length === 0) {
@@ -698,6 +912,7 @@ function suggestChecks(changedFiles, riskFlags) {
     }
   };
 
+  const hasScript = (scriptName) => Object.prototype.hasOwnProperty.call(packageScripts, scriptName);
   const touchesExtension = files.some((file) =>
     ["src/", "public/", "tests/"].some((prefix) => file.startsWith(prefix)) ||
     file === "vite.config.ts" ||
@@ -717,21 +932,32 @@ function suggestChecks(changedFiles, riskFlags) {
   const touchesRootMjs = files.filter((file) => file.startsWith("scripts/") && file.endsWith(".mjs"));
   const touchesShell = files.filter((file) => file.startsWith("scripts/") && file.endsWith(".sh"));
   const touchesRelease = riskFlags.some((flag) => flag.id === "release-flow" || flag.id === "signing-config");
+  const touchesJsTs = files.some((file) => /\.(cjs|mjs|js|jsx|ts|tsx)$/.test(file));
+  const touchesRootPackage = files.some((file) => file === "package.json" || file === "package-lock.json");
+  const touchesTests = files.some((file) => file.startsWith("tests/") || /\.test\.(ts|tsx|js|jsx)$/.test(file));
 
-  if (touchesExtension) {
-    add("npm run typecheck", "Browser extension or shared TypeScript changed.");
-    add("npm test", "Root tests cover extension and shared NOOS logic.");
-    add("npm run build", "Extension bundle should still build.");
+  if ((touchesExtension || touchesJsTs || touchesRootPackage) && hasScript("typecheck")) {
+    add("npm run typecheck", "TypeScript or package configuration changed.");
   }
-  if (touchesHubWeb) {
+  if ((touchesExtension || touchesJsTs || touchesTests || touchesRootPackage) && hasScript("test")) {
+    add("npm test", "Code, tests, or package configuration changed.");
+  }
+  if ((touchesExtension || touchesJsTs || touchesRootPackage) && hasScript("build")) {
+    add("npm run build", "Build inputs or package configuration changed.");
+  }
+  if (touchesHubWeb && hasScript("hub:web:build")) {
     add("npm run hub:web:build", "NOOS Hub frontend changed.");
   }
   if (touchesHubRust) {
     add("cargo test --manifest-path apps/noos-hub/src-tauri/Cargo.toml", "NOOS Hub Rust/Tauri backend changed.");
   }
-  if (touchesWiki || touchesWikiBuild) {
+  if ((touchesWiki || touchesWikiBuild) && hasScript("wiki:typecheck")) {
     add("npm run wiki:typecheck", "LLM Wiki TypeScript changed.");
+  }
+  if ((touchesWiki || touchesWikiBuild) && hasScript("wiki:test")) {
     add("npm run wiki:test", "LLM Wiki tests cover app logic and mocks.");
+  }
+  if ((touchesWiki || touchesWikiBuild) && hasScript("wiki:build")) {
     add("npm run wiki:build", "LLM Wiki app should still build.");
   }
   if (touchesWikiRust) {
@@ -743,8 +969,13 @@ function suggestChecks(changedFiles, riskFlags) {
   for (const file of touchesShell) {
     add(`bash -n ${file}`, "Changed shell script should parse.");
   }
-  if (touchesRelease) {
+  if (touchesRelease && hasScript("package:release")) {
     add("npm run package:release", "Release packaging changed; run only when intentional and environment is ready.");
+  }
+  for (const rule of activeCheckRules) {
+    if (files.some((file) => rule.matches(file))) {
+      add(rule.command, rule.reason);
+    }
   }
 
   return checks;
@@ -792,8 +1023,11 @@ function renderMarkdown(report) {
   const lines = [];
   lines.push("# Review Intake Report");
   lines.push("");
+  lines.push(`Project: ${report.projectName}`);
   lines.push(`Source: ${report.source.input}`);
   lines.push(`Base: ${report.base.input}`);
+  lines.push(`Repo root: ${report.repoRoot}`);
+  lines.push(`Config: ${report.configPath ?? "none"}`);
   lines.push(`Generated: ${report.generatedAt}`);
   lines.push(`Mode: ${report.mode}`);
   lines.push("");
@@ -1026,18 +1260,30 @@ function escapeMarkdownCell(value) {
   return String(value).replaceAll("|", "\\|").replaceAll("\n", " ");
 }
 
-function printHelp() {
-  process.stdout.write(`Usage: npm run review:intake -- --source <branch|worktree|commit> [--base <ref>]
+function unique(values) {
+  return [...new Set(values.filter((value) => value !== undefined && value !== null && value !== ""))];
+}
 
-Generates a read-only Markdown intake report for NOOS Shuttle review work.
+function printHelp() {
+  process.stdout.write(`Usage: review-intake --source <branch|worktree|commit> [--base <ref>]
+
+Generates a read-only Markdown intake report for Git branch/worktree review work.
 
 Options:
   --source <value>  Branch, worktree path, remote branch, or commit to inspect.
-  --base <ref>      Base ref to compare against. Defaults to origin/main, then main.
+  --base <ref>      Base ref to compare against. Defaults to config defaultBase, origin/main, then main.
+  --repo <path>     Git repository path. Defaults to the current working directory.
+  --config <path>   JSON config path. Defaults to .review-intake.json, .review-intake.config.json, or review-intake.config.json.
+  --no-config       Ignore config files and use built-in rules only.
+  --max-files <n>   Maximum changed files to list in the Markdown table. Defaults to 120.
   -h, --help        Show this help.
 
 The tool reads local Git refs and worktrees only. It does not fetch, checkout,
 merge, commit, or push.
+
+Config supports projectName, defaultBase, maxListedFiles, areaRules, riskRules,
+checkRules, manifestPermissionFiles, and manifestPermissionKeys. Path patterns
+use simple glob syntax (*, **, ?) or regex:<pattern>.
 `);
 }
 
