@@ -169,6 +169,34 @@ struct VaultMarkdownSource {
     content: String,
 }
 
+#[derive(Debug)]
+struct PreparedFeishuPublish {
+    markdown_with_markers: String,
+    assets: Vec<PublishResourceAsset>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PublishResourceKind {
+    Image,
+    File,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PublishResourceAsset {
+    id: String,
+    kind: PublishResourceKind,
+    marker: String,
+    source_url: String,
+    abs_path: PathBuf,
+    display_name: String,
+    alt_text: String,
+}
+
+struct FeishuPublishedDocument {
+    document_id: String,
+    url: Option<String>,
+}
+
 struct FeishuExportPackage {
     markdown: String,
     resources: Vec<ExportedResource>,
@@ -1457,6 +1485,17 @@ fn publish_feishu_markdown(request: HubActionRequest) -> HubActionResponse {
             );
         }
     };
+    let prepared = match prepare_feishu_publish_package(&source, &markdown) {
+        Ok(prepared) => prepared,
+        Err(message) => {
+            return hub_action_error(
+                "invalid_markdown",
+                &message,
+                Some(source.path.display().to_string()),
+                request.wiki_project_path,
+            );
+        }
+    };
     let mode = request.mode.as_deref().unwrap_or("create");
     if mode == "overwrite" {
         let Some(url) = request
@@ -1471,17 +1510,25 @@ fn publish_feishu_markdown(request: HubActionRequest) -> HubActionResponse {
                 request.wiki_project_path,
             );
         };
-        match overwrite_feishu_document(url, &markdown) {
-            Ok(document_url) => HubActionResponse {
-                ok: true,
-                status: "overwritten".to_string(),
-                message: "Current Feishu document overwritten from NOOS Markdown.".to_string(),
-                error_code: None,
-                source_path: Some(source.path.display().to_string()),
-                wiki_project_path: None,
-                document_url: Some(document_url.unwrap_or_else(|| url.to_string())),
-                folder_name: request.folder_name,
-                changed: Some(true),
+        match overwrite_feishu_document(url, &prepared.markdown_with_markers) {
+            Ok(document) => match finalize_feishu_publish_resources(&document, &prepared.assets) {
+                Ok(()) => HubActionResponse {
+                    ok: true,
+                    status: "overwritten".to_string(),
+                    message: "Current Feishu document overwritten from NOOS Markdown.".to_string(),
+                    error_code: None,
+                    source_path: Some(source.path.display().to_string()),
+                    wiki_project_path: None,
+                    document_url: Some(document.url.unwrap_or_else(|| url.to_string())),
+                    folder_name: request.folder_name,
+                    changed: Some(true),
+                },
+                Err(error) => hub_action_error(
+                    "publish_failed",
+                    &error,
+                    Some(source.path.display().to_string()),
+                    request.wiki_project_path,
+                ),
             },
             Err(error) => hub_action_error(
                 if looks_like_feishu_auth_error(&error) {
@@ -1496,20 +1543,32 @@ fn publish_feishu_markdown(request: HubActionRequest) -> HubActionResponse {
         }
     } else {
         let destination = request.destination_kind.as_deref().unwrap_or("drive_root");
-        match create_feishu_document(&markdown, destination, request.folder_token.as_deref()) {
-            Ok(document_url) => HubActionResponse {
-                ok: true,
-                status: "published".to_string(),
-                message: format!(
-                    "NOOS Markdown published as a Feishu document: {}",
-                    source.lookup_key
+        match create_feishu_document(
+            &prepared.markdown_with_markers,
+            destination,
+            request.folder_token.as_deref(),
+        ) {
+            Ok(document) => match finalize_feishu_publish_resources(&document, &prepared.assets) {
+                Ok(()) => HubActionResponse {
+                    ok: true,
+                    status: "published".to_string(),
+                    message: format!(
+                        "NOOS Markdown published as a Feishu document: {}",
+                        source.lookup_key
+                    ),
+                    error_code: None,
+                    source_path: Some(source.path.display().to_string()),
+                    wiki_project_path: None,
+                    document_url: document.url,
+                    folder_name: request.folder_name,
+                    changed: Some(true),
+                },
+                Err(error) => hub_action_error(
+                    "publish_failed",
+                    &error,
+                    Some(source.path.display().to_string()),
+                    request.wiki_project_path,
                 ),
-                error_code: None,
-                source_path: Some(source.path.display().to_string()),
-                wiki_project_path: None,
-                document_url,
-                folder_name: request.folder_name,
-                changed: Some(true),
             },
             Err(error) => hub_action_error(
                 if looks_like_feishu_auth_error(&error) {
@@ -2708,10 +2767,11 @@ fn localize_feishu_markdown_images(
             return Ok(None);
         };
         if !source_path.exists() {
-            return Err(format!(
+            eprintln!(
                 "Feishu image asset was referenced but not found: {}",
                 source_path.display()
-            ));
+            );
+            return Ok(None);
         }
         fs::create_dir_all(&media_dir).map_err(|error| error.to_string())?;
         let filename = unique_media_filename(&source_path, &mut used_names);
@@ -2952,11 +3012,223 @@ fn strip_flattened_noos_frontmatter(content: &str) -> &str {
     ""
 }
 
+fn prepare_feishu_publish_package(
+    source: &VaultMarkdownSource,
+    markdown: &str,
+) -> Result<PreparedFeishuPublish, String> {
+    let mut assets = Vec::new();
+    let markdown_with_markers =
+        rewrite_publish_markdown_resources(markdown, |kind, label, url| {
+            let Some(abs_path) = resolve_publish_resource_path(source, url)? else {
+                return Ok(None);
+            };
+            let id = format!("r{:03}", assets.len() + 1);
+            let marker = publish_resource_marker(&id);
+            let display_name = abs_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("{id}.bin"));
+            assets.push(PublishResourceAsset {
+                id,
+                kind,
+                marker: marker.clone(),
+                source_url: url.trim().to_string(),
+                abs_path,
+                display_name,
+                alt_text: label.trim().to_string(),
+            });
+            Ok(Some(marker))
+        })?;
+    Ok(PreparedFeishuPublish {
+        markdown_with_markers,
+        assets,
+    })
+}
+
+fn rewrite_publish_markdown_resources<F>(markdown: &str, mut map: F) -> Result<String, String>
+where
+    F: FnMut(PublishResourceKind, &str, &str) -> Result<Option<String>, String>,
+{
+    let mut out = String::with_capacity(markdown.len());
+    let mut cursor = 0;
+    while cursor < markdown.len() {
+        let next_image = markdown[cursor..].find("![").map(|idx| cursor + idx);
+        let next_link = markdown[cursor..].find('[').map(|idx| cursor + idx);
+        let Some(start) = (match (next_image, next_link) {
+            (Some(image), Some(link)) if image <= link => Some(image),
+            (Some(_image), Some(link)) if link > 0 && markdown.as_bytes()[link - 1] == b'!' => {
+                next_image
+            }
+            (Some(_image), Some(link)) => Some(link),
+            (Some(image), None) => Some(image),
+            (None, Some(link)) if link > 0 && markdown.as_bytes()[link - 1] == b'!' => None,
+            (None, Some(link)) => Some(link),
+            (None, None) => None,
+        }) else {
+            break;
+        };
+
+        let is_image = markdown[start..].starts_with("![");
+        let label_start = start + if is_image { 2 } else { 1 };
+        let Some(label_close_rel) = markdown[label_start..].find("](") else {
+            out.push_str(&markdown[cursor..=start]);
+            cursor = start + 1;
+            continue;
+        };
+        let label_end = label_start + label_close_rel;
+        let url_start = label_end + 2;
+        let Some(url_close_rel) = markdown[url_start..].find(')') else {
+            out.push_str(&markdown[cursor..=start]);
+            cursor = start + 1;
+            continue;
+        };
+        let url_end = url_start + url_close_rel;
+        let token_end = url_end + 1;
+        let label = &markdown[label_start..label_end];
+        let url = &markdown[url_start..url_end];
+        let kind = if is_image {
+            PublishResourceKind::Image
+        } else {
+            PublishResourceKind::File
+        };
+
+        out.push_str(&markdown[cursor..start]);
+        if let Some(marker) = map(kind, label, url)? {
+            if markdown_token_is_standalone_line(markdown, start, token_end) {
+                out.push_str(&marker);
+            } else {
+                out.push_str("\n\n");
+                out.push_str(&marker);
+                out.push_str("\n\n");
+            }
+        } else {
+            out.push_str(&markdown[start..token_end]);
+        }
+        cursor = token_end;
+    }
+    out.push_str(&markdown[cursor..]);
+    Ok(out)
+}
+
+fn markdown_token_is_standalone_line(markdown: &str, start: usize, end: usize) -> bool {
+    let line_start = markdown[..start]
+        .rfind('\n')
+        .map(|idx| idx + 1)
+        .unwrap_or(0);
+    let line_end = markdown[end..]
+        .find('\n')
+        .map(|idx| end + idx)
+        .unwrap_or(markdown.len());
+    markdown[line_start..start].trim().is_empty() && markdown[end..line_end].trim().is_empty()
+}
+
+fn resolve_publish_resource_path(
+    source: &VaultMarkdownSource,
+    raw_url: &str,
+) -> Result<Option<PathBuf>, String> {
+    let Some(rel_path) = clean_local_publish_resource_url(raw_url)? else {
+        return Ok(None);
+    };
+    let source_parent = source
+        .path
+        .parent()
+        .ok_or_else(|| "NOOS Markdown source has no parent directory.".to_string())?;
+    let wiki_project_path = wiki_project_path_from_library_source_path(&source.path);
+    let target = if rel_path.starts_with("media/") {
+        let Some(wiki) = wiki_project_path.as_ref() else {
+            return Ok(None);
+        };
+        wiki.join("wiki").join(&rel_path)
+    } else {
+        source_parent.join(&rel_path)
+    };
+    let canonical_target = target.canonicalize().map_err(|_| {
+        format!(
+            "Local publish resource does not exist or is unreadable: {}",
+            raw_url.trim()
+        )
+    })?;
+    if canonical_target.is_dir() {
+        return Err(format!(
+            "Local publish resource is a directory, not a file: {}",
+            raw_url.trim()
+        ));
+    }
+
+    let source_parent_allowed = is_inside_path(&canonical_target, source_parent);
+    let wiki_media_allowed = wiki_project_path
+        .as_ref()
+        .map(|wiki| is_inside_path(&canonical_target, &wiki.join("wiki").join("media")))
+        .unwrap_or(false);
+    if !source_parent_allowed && !wiki_media_allowed {
+        return Err(format!(
+            "Local publish resource is outside allowed roots: {}",
+            raw_url.trim()
+        ));
+    }
+    Ok(Some(canonical_target))
+}
+
+fn clean_local_publish_resource_url(raw_url: &str) -> Result<Option<PathBuf>, String> {
+    let trimmed = raw_url.trim().trim_matches('<').trim_matches('>');
+    if trimmed.is_empty()
+        || trimmed.starts_with('#')
+        || is_external_or_absolute_markdown_url(trimmed)
+        || trimmed.to_ascii_lowercase().starts_with("mailto:")
+    {
+        return Ok(None);
+    }
+    let cleaned = trimmed
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(trimmed)
+        .trim()
+        .trim_start_matches("./");
+    if cleaned.is_empty() {
+        return Ok(None);
+    }
+    let rel = Path::new(cleaned);
+    if rel
+        .components()
+        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(format!("Unsafe local publish resource path: {raw_url}"));
+    }
+    Ok(Some(rel.to_path_buf()))
+}
+
+fn wiki_project_path_from_library_source_path(path: &Path) -> Option<PathBuf> {
+    for ancestor in path.ancestors() {
+        if ancestor
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name == "sources")
+            .unwrap_or(false)
+        {
+            let raw = ancestor.parent()?;
+            if raw
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name == "raw")
+                .unwrap_or(false)
+            {
+                return raw.parent().map(Path::to_path_buf);
+            }
+        }
+    }
+    None
+}
+
+fn publish_resource_marker(id: &str) -> String {
+    format!("NOOS_FEISHU_RESOURCE_{id}")
+}
+
 fn create_feishu_document(
     markdown: &str,
     destination_kind: &str,
     folder_token: Option<&str>,
-) -> Result<Option<String>, String> {
+) -> Result<FeishuPublishedDocument, String> {
     let mut args = vec![
         "docs".to_string(),
         "+create".to_string(),
@@ -2981,10 +3253,10 @@ fn create_feishu_document(
     args.push("-".to_string());
 
     let payload = run_lark_cli_json_with_stdin(&args, markdown)?;
-    Ok(json_path_string(&payload, &["data", "document", "url"]))
+    published_document_from_payload(&payload, None)
 }
 
-fn overwrite_feishu_document(url: &str, markdown: &str) -> Result<Option<String>, String> {
+fn overwrite_feishu_document(url: &str, markdown: &str) -> Result<FeishuPublishedDocument, String> {
     let args = vec![
         "docs".to_string(),
         "+update".to_string(),
@@ -3000,7 +3272,286 @@ fn overwrite_feishu_document(url: &str, markdown: &str) -> Result<Option<String>
         "-".to_string(),
     ];
     let payload = run_lark_cli_json_with_stdin(&args, markdown)?;
-    Ok(json_path_string(&payload, &["data", "document", "url"]).or_else(|| Some(url.to_string())))
+    published_document_from_payload(&payload, Some(url))
+}
+
+fn published_document_from_payload(
+    payload: &Value,
+    fallback_url: Option<&str>,
+) -> Result<FeishuPublishedDocument, String> {
+    let url = json_path_string(payload, &["data", "document", "url"])
+        .or_else(|| fallback_url.map(str::to_string));
+    let document_id = json_path_string(payload, &["data", "document", "document_id"])
+        .or_else(|| json_path_string(payload, &["data", "document_id"]))
+        .or_else(|| url.as_deref().and_then(document_id_from_feishu_url))
+        .or_else(|| fallback_url.and_then(document_id_from_feishu_url))
+        .ok_or_else(|| "Feishu document id was not returned by lark-cli.".to_string())?;
+    Ok(FeishuPublishedDocument { document_id, url })
+}
+
+fn document_id_from_feishu_url(url: &str) -> Option<String> {
+    let cleaned = url.split(['?', '#']).next().unwrap_or(url);
+    let marker = "/docx/";
+    let start = cleaned.find(marker)? + marker.len();
+    let token = cleaned[start..]
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .trim();
+    if token.is_empty() {
+        None
+    } else {
+        Some(token.to_string())
+    }
+}
+
+fn finalize_feishu_publish_resources(
+    document: &FeishuPublishedDocument,
+    assets: &[PublishResourceAsset],
+) -> Result<(), String> {
+    if assets.is_empty() {
+        return Ok(());
+    }
+    let block_ids = fetch_feishu_publish_marker_blocks(&document.document_id, assets)?;
+    let mut replaced = HashSet::new();
+    for asset in assets {
+        let Some(block_id) = block_ids
+            .iter()
+            .find(|(marker, _)| marker == &asset.marker)
+            .map(|(_, block_id)| block_id.as_str())
+        else {
+            let _ = restore_unreplaced_feishu_publish_markers(
+                &document.document_id,
+                assets,
+                &block_ids,
+                &replaced,
+            );
+            return Err(format!(
+                "Feishu publish marker was not found: {}",
+                asset.marker
+            ));
+        };
+        let token = match upload_feishu_publish_asset(&document.document_id, block_id, asset) {
+            Ok(token) => token,
+            Err(error) => {
+                let _ = restore_unreplaced_feishu_publish_markers(
+                    &document.document_id,
+                    assets,
+                    &block_ids,
+                    &replaced,
+                );
+                return Err(error);
+            }
+        };
+        let xml = feishu_publish_asset_xml(asset, &token);
+        if let Err(error) = replace_feishu_publish_block(&document.document_id, block_id, &xml) {
+            let _ = restore_unreplaced_feishu_publish_markers(
+                &document.document_id,
+                assets,
+                &block_ids,
+                &replaced,
+            );
+            return Err(error);
+        }
+        replaced.insert(asset.id.clone());
+    }
+    Ok(())
+}
+
+fn fetch_feishu_publish_marker_blocks(
+    document_id: &str,
+    assets: &[PublishResourceAsset],
+) -> Result<Vec<(String, String)>, String> {
+    let args = vec![
+        "docs".to_string(),
+        "+fetch".to_string(),
+        "--api-version".to_string(),
+        "v2".to_string(),
+        "--doc".to_string(),
+        document_id.to_string(),
+        "--detail".to_string(),
+        "with-ids".to_string(),
+    ];
+    let payload = run_lark_cli_json(&args)?;
+    let content = json_path_string(&payload, &["data", "document", "content"])
+        .ok_or_else(|| "Feishu document fetch did not return content.".to_string())?;
+    let mut blocks = Vec::new();
+    for asset in assets {
+        if let Some(block_id) = find_marker_block_id(&content, &asset.marker) {
+            blocks.push((asset.marker.clone(), block_id));
+        }
+    }
+    Ok(blocks)
+}
+
+fn upload_feishu_publish_asset(
+    document_id: &str,
+    block_id: &str,
+    asset: &PublishResourceAsset,
+) -> Result<String, String> {
+    let args = feishu_media_upload_args(document_id, block_id, asset);
+    let payload = run_lark_cli_json(&args)?;
+    json_find_string_recursive(&payload, &["file_token", "token"]).ok_or_else(|| {
+        format!(
+            "Feishu media upload did not return a token for {}",
+            asset.display_name
+        )
+    })
+}
+
+fn feishu_media_upload_args(
+    document_id: &str,
+    block_id: &str,
+    asset: &PublishResourceAsset,
+) -> Vec<String> {
+    vec![
+        "docs".to_string(),
+        "+media-upload".to_string(),
+        "--doc-id".to_string(),
+        document_id.to_string(),
+        "--parent-node".to_string(),
+        block_id.to_string(),
+        "--parent-type".to_string(),
+        match asset.kind {
+            PublishResourceKind::Image => "docx_image",
+            PublishResourceKind::File => "docx_file",
+        }
+        .to_string(),
+        "--file".to_string(),
+        asset.abs_path.display().to_string(),
+    ]
+}
+
+fn replace_feishu_publish_block(
+    document_id: &str,
+    block_id: &str,
+    xml: &str,
+) -> Result<(), String> {
+    let args = vec![
+        "docs".to_string(),
+        "+update".to_string(),
+        "--api-version".to_string(),
+        "v2".to_string(),
+        "--doc".to_string(),
+        document_id.to_string(),
+        "--command".to_string(),
+        "block_replace".to_string(),
+        "--block-id".to_string(),
+        block_id.to_string(),
+        "--doc-format".to_string(),
+        "xml".to_string(),
+        "--content".to_string(),
+        "-".to_string(),
+    ];
+    run_lark_cli_json_with_stdin(&args, xml).map(|_| ())
+}
+
+fn restore_unreplaced_feishu_publish_markers(
+    document_id: &str,
+    assets: &[PublishResourceAsset],
+    block_ids: &[(String, String)],
+    replaced: &HashSet<String>,
+) -> Result<(), String> {
+    for asset in assets.iter().filter(|asset| !replaced.contains(&asset.id)) {
+        if let Some((_, block_id)) = block_ids.iter().find(|(marker, _)| marker == &asset.marker) {
+            let _ = replace_feishu_publish_block(
+                document_id,
+                block_id,
+                &feishu_publish_asset_fallback_xml(asset),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn feishu_publish_asset_xml(asset: &PublishResourceAsset, token: &str) -> String {
+    match asset.kind {
+        PublishResourceKind::Image => {
+            let caption = if asset.alt_text.trim().is_empty() {
+                String::new()
+            } else {
+                format!(" caption=\"{}\"", xml_escape_attr(&asset.alt_text))
+            };
+            format!(
+                "<img src=\"{}\" name=\"{}\"{} />",
+                xml_escape_attr(token),
+                xml_escape_attr(&asset.display_name),
+                caption
+            )
+        }
+        PublishResourceKind::File => format!(
+            "<source token=\"{}\" name=\"{}\" />",
+            xml_escape_attr(token),
+            xml_escape_attr(&asset.display_name)
+        ),
+    }
+}
+
+fn feishu_publish_asset_fallback_xml(asset: &PublishResourceAsset) -> String {
+    let text = match asset.kind {
+        PublishResourceKind::Image => {
+            format!("![{}]({})", asset.alt_text, asset.source_url)
+        }
+        PublishResourceKind::File => {
+            format!("[{}]({})", asset.alt_text, asset.source_url)
+        }
+    };
+    format!("<p>{}</p>", xml_escape_text(&text))
+}
+
+fn find_marker_block_id(content: &str, marker: &str) -> Option<String> {
+    let marker_index = content.find(marker)?;
+    let tag_start = content[..marker_index].rfind('<')?;
+    let tag_end = content[tag_start..].find('>')? + tag_start;
+    parse_xml_attr(&content[tag_start..=tag_end], "id")
+}
+
+fn parse_xml_attr(tag: &str, name: &str) -> Option<String> {
+    for quote in ['"', '\''] {
+        let needle = format!("{name}={quote}");
+        if let Some(start) = tag.find(&needle).map(|idx| idx + needle.len()) {
+            let end = tag[start..].find(quote)? + start;
+            return Some(tag[start..end].to_string());
+        }
+    }
+    None
+}
+
+fn json_find_string_recursive(value: &Value, keys: &[&str]) -> Option<String> {
+    match value {
+        Value::Object(map) => {
+            for key in keys {
+                if let Some(found) = map.get(*key).and_then(Value::as_str) {
+                    return Some(found.to_string());
+                }
+            }
+            map.values()
+                .find_map(|child| json_find_string_recursive(child, keys))
+        }
+        Value::Array(items) => items
+            .iter()
+            .find_map(|child| json_find_string_recursive(child, keys)),
+        _ => None,
+    }
+}
+
+fn xml_escape_attr(value: &str) -> String {
+    xml_escape_text(value).replace('"', "&quot;")
+}
+
+fn xml_escape_text(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn run_lark_cli_json(args: &[String]) -> Result<Value, String> {
+    let output = Command::new("lark-cli")
+        .args(args)
+        .output()
+        .map_err(|error| format!("lark-cli could not be started: {error}"))?;
+    parse_lark_cli_json_output(output)
 }
 
 fn run_lark_cli_json_with_stdin(args: &[String], stdin_content: &str) -> Result<Value, String> {
@@ -3019,6 +3570,10 @@ fn run_lark_cli_json_with_stdin(args: &[String], stdin_content: &str) -> Result<
     let output = child
         .wait_with_output()
         .map_err(|error| format!("lark-cli failed: {error}"))?;
+    parse_lark_cli_json_output(output)
+}
+
+fn parse_lark_cli_json_output(output: std::process::Output) -> Result<Value, String> {
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     if !output.status.success() {
@@ -5675,6 +6230,166 @@ mod tests {
 
         assert!(error.contains("Unsafe Feishu image path"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn localize_feishu_markdown_images_keeps_missing_image_reference() {
+        let root = unique_test_dir("feishu-image-missing");
+        let export_dir = root.join("export");
+        let wiki = root.join("wiki");
+        fs::create_dir_all(&export_dir).unwrap();
+
+        let markdown = "![Missing](images/missing.png)\n\nBody";
+        let localized =
+            localize_feishu_markdown_images(markdown, &export_dir, &wiki, "feishu-source").unwrap();
+
+        assert_eq!(localized, markdown);
+        assert!(!wiki
+            .join("wiki")
+            .join("media")
+            .join("feishu-source")
+            .exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prepare_feishu_publish_package_resolves_media_and_assets() {
+        let root = unique_test_dir("feishu-publish-package");
+        let wiki = root.join("wiki");
+        let source_path = wiki
+            .join("raw")
+            .join("sources")
+            .join("projects")
+            .join("demo")
+            .join("source--abc123.md");
+        let media_path = wiki
+            .join("wiki")
+            .join("media")
+            .join("source--abc123")
+            .join("chart.png");
+        let asset_path = source_path
+            .parent()
+            .unwrap()
+            .join(".assets")
+            .join("feishu_docx_abc123")
+            .join("spec.pdf");
+        fs::create_dir_all(media_path.parent().unwrap()).unwrap();
+        fs::create_dir_all(asset_path.parent().unwrap()).unwrap();
+        fs::write(&media_path, b"png").unwrap();
+        fs::write(&asset_path, b"pdf").unwrap();
+
+        let source = VaultMarkdownSource {
+            lookup_key: "feishu_docx_abc123".to_string(),
+            title: Some("Source".to_string()),
+            path: source_path,
+            content: String::new(),
+        };
+        let markdown = "\
+# Source
+
+![Quarterly chart](media/source--abc123/chart.png)
+
+See [Spec](.assets/feishu_docx_abc123/spec.pdf).
+
+![Remote](https://example.com/remote.png)
+";
+
+        let prepared = prepare_feishu_publish_package(&source, markdown).unwrap();
+
+        assert_eq!(prepared.assets.len(), 2);
+        assert!(prepared
+            .markdown_with_markers
+            .contains("NOOS_FEISHU_RESOURCE_r001"));
+        assert!(prepared
+            .markdown_with_markers
+            .contains("NOOS_FEISHU_RESOURCE_r002"));
+        assert!(prepared
+            .markdown_with_markers
+            .contains("![Remote](https://example.com/remote.png)"));
+        assert_eq!(prepared.assets[0].kind, PublishResourceKind::Image);
+        assert_eq!(prepared.assets[0].alt_text, "Quarterly chart");
+        assert_eq!(
+            prepared.assets[0].abs_path,
+            media_path.canonicalize().unwrap()
+        );
+        assert_eq!(prepared.assets[1].kind, PublishResourceKind::File);
+        assert_eq!(prepared.assets[1].alt_text, "Spec");
+        assert_eq!(
+            prepared.assets[1].abs_path,
+            asset_path.canonicalize().unwrap()
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prepare_feishu_publish_package_rejects_unsafe_local_paths() {
+        let root = unique_test_dir("feishu-publish-unsafe");
+        let source_path = root
+            .join("wiki")
+            .join("raw")
+            .join("sources")
+            .join("source.md");
+        fs::create_dir_all(source_path.parent().unwrap()).unwrap();
+        let source = VaultMarkdownSource {
+            lookup_key: "source".to_string(),
+            title: None,
+            path: source_path,
+            content: String::new(),
+        };
+
+        let error = prepare_feishu_publish_package(&source, "[Secret](../secret.pdf)").unwrap_err();
+
+        assert!(error.contains("Unsafe local publish resource path"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn feishu_publish_marker_helpers_parse_blocks_and_commands() {
+        let xml = r#"<title id="ttl">Doc</title><p id="blk1">NOOS_FEISHU_RESOURCE_r001</p><p id='blk2'>NOOS_FEISHU_RESOURCE_r002</p>"#;
+        assert_eq!(
+            find_marker_block_id(xml, "NOOS_FEISHU_RESOURCE_r001").as_deref(),
+            Some("blk1")
+        );
+        assert_eq!(
+            find_marker_block_id(xml, "NOOS_FEISHU_RESOURCE_r002").as_deref(),
+            Some("blk2")
+        );
+
+        let asset = PublishResourceAsset {
+            id: "r001".to_string(),
+            kind: PublishResourceKind::Image,
+            marker: publish_resource_marker("r001"),
+            source_url: "media/source/chart.png".to_string(),
+            abs_path: PathBuf::from("/tmp/chart.png"),
+            display_name: "chart.png".to_string(),
+            alt_text: "Chart".to_string(),
+        };
+        let args = feishu_media_upload_args("doc123", "blk1", &asset);
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--parent-type", "docx_image"]));
+        assert!(args.windows(2).any(|pair| pair == ["--doc-id", "doc123"]));
+        assert!(feishu_publish_asset_xml(&asset, "img_token").contains("<img "));
+        assert!(feishu_publish_asset_xml(&asset, "img_token").contains("caption=\"Chart\""));
+    }
+
+    #[test]
+    fn published_document_payload_extracts_document_id_from_url() {
+        let payload = json!({
+            "data": {
+                "document": {
+                    "url": "https://example.feishu.cn/docx/doccnABC123?from=hub"
+                }
+            }
+        });
+        let document = published_document_from_payload(&payload, None).unwrap();
+
+        assert_eq!(document.document_id, "doccnABC123");
+        assert_eq!(
+            document.url.as_deref(),
+            Some("https://example.feishu.cn/docx/doccnABC123?from=hub")
+        );
     }
 
     #[test]

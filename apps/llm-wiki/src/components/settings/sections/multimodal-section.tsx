@@ -26,7 +26,7 @@ export function MultimodalSection({ draft, setDraft }: Props) {
         <p className="mt-1 text-sm text-muted-foreground">
           {t(
             "settings.sections.multimodal.description",
-            "Generate factual captions for images extracted from PDFs / DOCX / PPTX during ingest. Captions are inserted as alt text inside the source markdown — they're what semantic search matches when you search for image content. Cached by image hash so duplicate logos / charts only call the LLM once.",
+            "Generate factual captions for images extracted from PDFs / DOCX / PPTX and for local Markdown images such as Feishu package media during ingest. Captions are inserted as alt text inside the source markdown — they're what semantic search matches when you search for image content. Cached by image hash so duplicate logos / charts only call the LLM once.",
           )}
         </p>
       </div>
@@ -56,7 +56,7 @@ export function MultimodalSection({ draft, setDraft }: Props) {
           <div className="text-xs text-muted-foreground">
             {t(
               "settings.sections.multimodal.enableHint",
-              "Off: images still get extracted, just no captions. Search won't find them by visual content. On: each new image triggers one vision-LLM call (cached by hash).",
+              "Off: extracted image references are stripped from ingested content, while local Markdown package images keep their path and original alt text only. On: each new local or extracted image triggers one vision-LLM call (cached by hash).",
             )}
           </div>
         </div>
