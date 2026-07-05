@@ -1,6 +1,6 @@
 [package]
 name = "noos-hub"
-version = "0.1.5"
+version = "0.1.6"
 description = "NOOS Hub desktop control plane"
 authors = ["FuTou 2026"]
 edition = "2021"
