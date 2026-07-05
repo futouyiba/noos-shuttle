@@ -24,9 +24,11 @@ type FeishuPublishMode = "create" | "overwrite";
 type FeishuPublishDestinationKind = "current_doc" | "drive_root" | "drive_folder";
 type FeishuWikiAction =
   | "export_md"
+  | "export_folder_md"
   | "change_category"
   | "organize_wiki"
   | "export_md_and_organize"
+  | "export_folder_md_and_organize"
   | "open_markdown_folder"
   | "open_wiki_folder";
 type ModalState =
@@ -434,6 +436,7 @@ function renderFeishuSurface(copy: (typeof COPY)[ShuttleLocale]): string {
   const documentTitle = feishuDocumentTitle();
   const target = viewState.wikiProjectPath || copy.defaultWikiProjectUnknown;
   const category = viewState.wikiCategoryPath || copy.feishuCategoryUnset;
+  const canExport = pageContext?.kind === "doc" || pageContext?.kind === "drive_folder";
   const contextLabel =
     pageContext?.kind === "drive_root"
       ? copy.feishuRootFolder
@@ -446,7 +449,7 @@ function renderFeishuSurface(copy: (typeof COPY)[ShuttleLocale]): string {
       <strong>${escapeHtml(contextLabel)}</strong>
     </div>
     ${
-      pageContext?.kind === "doc"
+      canExport
         ? `<section class="surface-section">
             <div class="surface-section-title">${escapeHtml(copy.feishuExportSectionTitle)}</div>
             <div class="surface-summary">
@@ -458,11 +461,17 @@ function renderFeishuSurface(copy: (typeof COPY)[ShuttleLocale]): string {
               <strong>${escapeHtml(category)}</strong>
             </div>
             <div class="primary-actions">
-              <button class="primary-action" type="button" data-action="feishu-export-md">${escapeHtml(copy.feishuExportMd)}</button>
+              <button class="primary-action" type="button" data-action="${pageContext?.kind === "drive_folder" ? "feishu-export-folder-md" : "feishu-export-md"}">${escapeHtml(
+                pageContext?.kind === "drive_folder" ? copy.feishuExportFolderMd : copy.feishuExportMd
+              )}</button>
               <div class="surface-secondary-actions">
                 <button class="secondary-action" type="button" data-action="feishu-change-category">${escapeHtml(copy.feishuChangeCategory)}</button>
-                <button class="secondary-action" type="button" data-action="feishu-organize-wiki">${escapeHtml(copy.feishuOrganizeWiki)}</button>
-                <button class="secondary-action" type="button" data-action="feishu-export-organize">${escapeHtml(copy.feishuExportMdAndOrganize)}</button>
+                ${
+                  pageContext?.kind === "doc"
+                    ? `<button class="secondary-action" type="button" data-action="feishu-organize-wiki">${escapeHtml(copy.feishuOrganizeWiki)}</button>
+                       <button class="secondary-action" type="button" data-action="feishu-export-organize">${escapeHtml(copy.feishuExportMdAndOrganize)}</button>`
+                    : `<button class="secondary-action" type="button" data-action="feishu-export-folder-organize">${escapeHtml(copy.feishuExportFolderMdAndOrganize)}</button>`
+                }
               </div>
             </div>
             <div class="surface-folder-actions">
@@ -1065,8 +1074,18 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
     return;
   }
 
+  if (action === "feishu-export-folder-organize") {
+    await runFeishuAction(app, "export_folder_md_and_organize");
+    return;
+  }
+
   if (action === "feishu-export-md") {
     await runFeishuAction(app, "export_md");
+    return;
+  }
+
+  if (action === "feishu-export-folder-md") {
+    await runFeishuAction(app, "export_folder_md");
     return;
   }
 
@@ -2738,11 +2757,19 @@ async function refreshWikiTarget(app: HTMLElement, options: { preserveScroll?: b
 
 async function runFeishuAction(app: HTMLElement, action: FeishuWikiAction, categoryOverride?: string): Promise<void> {
   const copy = COPY[viewState.locale];
+  const pageContext = getFeishuPageContext();
   const categoryPath = categoryOverride || readFeishuCategoryInput(app) || viewState.wikiCategoryPath;
-  if ((action === "change_category" || action === "export_md" || action === "export_md_and_organize") && !categoryPath) {
+  if ((action === "change_category" || isFeishuExportAction(action)) && !categoryPath) {
     viewState.state = "warning";
     viewState.message = copy.feishuCategoryRequired;
     viewState.modal = { kind: "feishu-category", pendingAction: action };
+    openSurfacePanel();
+    render(app);
+    return;
+  }
+  if (isFeishuFolderExportAction(action) && !pageContext?.folderToken) {
+    viewState.state = "error";
+    viewState.message = copy.feishuActionFailed;
     openSurfacePanel();
     render(app);
     return;
@@ -2763,6 +2790,8 @@ async function runFeishuAction(app: HTMLElement, action: FeishuWikiAction, categ
         title?: string;
         wikiProjectPath?: string;
         categoryPath?: string;
+        folderToken?: string;
+        folderName?: string;
       },
       FeishuActionResponse
     >({
@@ -2771,7 +2800,9 @@ async function runFeishuAction(app: HTMLElement, action: FeishuWikiAction, categ
       url: location.href,
       title: feishuDocumentTitle(),
       wikiProjectPath: viewState.wikiProjectPath || undefined,
-      categoryPath: categoryPath || undefined
+      categoryPath: categoryPath || undefined,
+      folderToken: pageContext?.folderToken,
+      folderName: pageContext?.label
     });
   } catch (error) {
     response = {
@@ -2798,7 +2829,7 @@ async function runFeishuAction(app: HTMLElement, action: FeishuWikiAction, categ
     viewState.modal = {
       kind: "success",
       title: copy.feishuExportSuccessTitle,
-      message: copy.feishuExportSuccessMessage(sourceLocation, action === "export_md_and_organize"),
+      message: copy.feishuExportSuccessMessage(sourceLocation, action === "export_md_and_organize" || action === "export_folder_md_and_organize"),
       actions: [
         { label: copy.feishuOpenMarkdownFolder, action: "feishu-modal-open-markdown-folder", primary: true, testId: "feishu-open-export-folder" },
         { label: copy.ok, action: "modal-close" }
@@ -2810,7 +2841,11 @@ async function runFeishuAction(app: HTMLElement, action: FeishuWikiAction, categ
 }
 
 function isFeishuExportAction(action: FeishuWikiAction): boolean {
-  return action === "export_md" || action === "export_md_and_organize";
+  return action === "export_md" || action === "export_md_and_organize" || isFeishuFolderExportAction(action);
+}
+
+function isFeishuFolderExportAction(action: FeishuWikiAction): boolean {
+  return action === "export_folder_md" || action === "export_folder_md_and_organize";
 }
 
 async function confirmFeishuCategory(app: HTMLElement, categoryPath: string): Promise<void> {

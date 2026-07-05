@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -202,6 +202,35 @@ struct FeishuExportPackage {
     resources: Vec<ExportedResource>,
     export_mode: String,
     temp_root: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FeishuDriveExportItem {
+    name: String,
+    kind: String,
+    token: Option<String>,
+    url: Option<String>,
+    folder_segments: Vec<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct FeishuDrivePage {
+    items: Vec<FeishuDriveRawItem>,
+    has_more: bool,
+    next_page_token: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct FeishuDriveRawItem {
+    name: String,
+    kind: String,
+    token: Option<String>,
+    url: Option<String>,
+}
+
+struct FeishuDriveFolderCursor {
+    token: String,
+    folder_segments: Vec<String>,
 }
 
 struct ExportedResource {
@@ -1088,6 +1117,8 @@ fn run_browser_hub_action(request: HubActionRequest) -> HubActionResponse {
         "feishu.exportMdAndOrganize" | "feishu.syncMarkdownAndOrganize" => {
             export_feishu_md(request, true)
         }
+        "feishu.exportFolderMd" => export_feishu_folder(request, false),
+        "feishu.exportFolderMdAndOrganize" => export_feishu_folder(request, true),
         "feishu.publishMarkdown" => publish_feishu_markdown(request),
         "wiki.setFeishuCategory" => set_feishu_category(request),
         "wiki.organizeSource" => organize_wiki_source(request),
@@ -1176,24 +1207,34 @@ fn export_feishu_md(request: HubActionRequest, organize: bool) -> HubActionRespo
         }
     };
 
-    let token = feishu_token_from_url(url).unwrap_or_else(|| stable_hash_hex(url));
-    let source_id = feishu_source_id(&token);
     let title = request
         .title
         .as_deref()
         .unwrap_or("Untitled Feishu Document");
-    let source_path = feishu_source_path(&wiki_project_path, &category_path, &token, Some(title));
+    export_feishu_document_to_library(&wiki_project_path, &category_path, url, title, organize)
+}
+
+fn export_feishu_document_to_library(
+    wiki_project_path: &Path,
+    category_path: &str,
+    url: &str,
+    title: &str,
+    organize: bool,
+) -> HubActionResponse {
+    let token = feishu_token_from_url(url).unwrap_or_else(|| stable_hash_hex(url));
+    let source_id = feishu_source_id(&token);
+    let source_path = feishu_source_path(wiki_project_path, category_path, &token, Some(title));
     let source_slug = source_path
         .file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or("feishu-source")
         .to_string();
     let existing_source_path = existing_feishu_source_path(
-        &wiki_project_path,
+        wiki_project_path,
         &source_id,
         url,
         Some(title),
-        Some(&category_path),
+        Some(category_path),
     )
     .unwrap_or_else(|| source_path.clone());
     let exported = match export_feishu_package(url, &source_id) {
@@ -1215,13 +1256,13 @@ fn export_feishu_md(request: HubActionRequest, organize: bool) -> HubActionRespo
     let asset_root = format!(".assets/{source_id}");
     let asset_target = source_path
         .parent()
-        .unwrap_or_else(|| wiki_project_path.as_path())
+        .unwrap_or(wiki_project_path)
         .join(&asset_root);
     let localized_markdown = if let Some(export_dir) = exported.temp_root.as_deref() {
         match localize_feishu_markdown_images(
             &exported.markdown,
             export_dir,
-            &wiki_project_path,
+            wiki_project_path,
             &source_slug,
         ) {
             Ok(markdown) => markdown,
@@ -1252,7 +1293,7 @@ fn export_feishu_md(request: HubActionRequest, organize: bool) -> HubActionRespo
         source_app: "feishu".to_string(),
         source_url: url.to_string(),
         title: title.to_string(),
-        category_path: category_path.clone(),
+        category_path: category_path.to_string(),
         source_path: source_path.clone(),
         asset_root: asset_root.clone(),
         export_mode: exported.export_mode.clone(),
@@ -1267,7 +1308,7 @@ fn export_feishu_md(request: HubActionRequest, organize: bool) -> HubActionRespo
         title,
         &token,
         &source_id,
-        &category_path,
+        category_path,
         &asset_root,
         &exported.export_mode,
         &last_exported_at,
@@ -1276,7 +1317,7 @@ fn export_feishu_md(request: HubActionRequest, organize: bool) -> HubActionRespo
     let metadata_matches = feishu_source_metadata_matches(
         &previous,
         &source_id,
-        &category_path,
+        category_path,
         &asset_root,
         &exported.export_mode,
     );
@@ -1320,7 +1361,7 @@ fn export_feishu_md(request: HubActionRequest, organize: bool) -> HubActionRespo
                 );
             }
         }
-        if let Err(error) = update_knowledge_library(&wiki_project_path, &library_metadata) {
+        if let Err(error) = update_knowledge_library(wiki_project_path, &library_metadata) {
             cleanup_feishu_export_package(&exported);
             return hub_action_error(
                 "index_write_failed",
@@ -1329,7 +1370,7 @@ fn export_feishu_md(request: HubActionRequest, organize: bool) -> HubActionRespo
                 Some(wiki_project_path.display().to_string()),
             );
         }
-        if let Err(error) = remember_wiki_category_path(&wiki_project_path, &category_path) {
+        if let Err(error) = remember_wiki_category_path(wiki_project_path, category_path) {
             cleanup_feishu_export_package(&exported);
             return hub_action_error(
                 "config_write_failed",
@@ -1394,7 +1435,7 @@ fn export_feishu_md(request: HubActionRequest, organize: bool) -> HubActionRespo
             Some(wiki_project_path.display().to_string()),
         );
     }
-    if let Err(error) = update_knowledge_library(&wiki_project_path, &library_metadata) {
+    if let Err(error) = update_knowledge_library(wiki_project_path, &library_metadata) {
         cleanup_feishu_export_package(&exported);
         return hub_action_error(
             "index_write_failed",
@@ -1403,7 +1444,7 @@ fn export_feishu_md(request: HubActionRequest, organize: bool) -> HubActionRespo
             Some(wiki_project_path.display().to_string()),
         );
     }
-    if let Err(error) = remember_wiki_category_path(&wiki_project_path, &category_path) {
+    if let Err(error) = remember_wiki_category_path(wiki_project_path, category_path) {
         cleanup_feishu_export_package(&exported);
         return hub_action_error(
             "config_write_failed",
@@ -1448,6 +1489,145 @@ fn export_feishu_md(request: HubActionRequest, organize: bool) -> HubActionRespo
         document_url: None,
         folder_name: None,
         changed: Some(true),
+    }
+}
+
+fn export_feishu_folder(request: HubActionRequest, organize: bool) -> HubActionResponse {
+    let Some(folder_token) = request
+        .folder_token
+        .as_deref()
+        .filter(|token| !token.trim().is_empty())
+    else {
+        return hub_action_error(
+            "export_failed",
+            "Missing Feishu folder token.",
+            None,
+            request.wiki_project_path,
+        );
+    };
+    let Some(wiki_project_path) = resolve_wiki_project_path(request.wiki_project_path.as_deref())
+    else {
+        return hub_action_error(
+            "export_failed",
+            "No default Wiki project configured in NOOS Hub.",
+            None,
+            request.wiki_project_path,
+        );
+    };
+    let category_path = match sanitize_category_path(request.category_path.as_deref()) {
+        Ok(path) => path,
+        Err(error) => {
+            return hub_action_error(
+                "missing_category_path",
+                &error,
+                None,
+                Some(wiki_project_path.display().to_string()),
+            );
+        }
+    };
+    let folder_name = request
+        .folder_name
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or("Feishu Folder");
+    let folder_items = match list_feishu_drive_folder_tree(folder_token, folder_name) {
+        Ok(items) => items,
+        Err(error) => {
+            let code = if looks_like_feishu_auth_error(&error) {
+                "needs_auth"
+            } else {
+                "export_failed"
+            };
+            return hub_action_error(
+                code,
+                &error,
+                Some(
+                    library_source_folder(&wiki_project_path, &category_path)
+                        .display()
+                        .to_string(),
+                ),
+                Some(wiki_project_path.display().to_string()),
+            );
+        }
+    };
+
+    let mut exported = 0usize;
+    let mut unchanged = 0usize;
+    let mut queued = 0usize;
+    let mut skipped = 0usize;
+    let mut failed = Vec::new();
+    for item in folder_items {
+        if !is_feishu_drive_item_exportable(&item.kind) {
+            skipped += 1;
+            continue;
+        }
+        let Some(url) = feishu_drive_item_export_url(&item, request.url.as_deref()) else {
+            skipped += 1;
+            continue;
+        };
+        let item_category_path = append_category_segments(&category_path, &item.folder_segments);
+        let response = export_feishu_document_to_library(
+            &wiki_project_path,
+            &item_category_path,
+            &url,
+            &item.name,
+            organize,
+        );
+        if response.ok {
+            match response.status.as_str() {
+                "unchanged" => unchanged += 1,
+                "queued" => queued += 1,
+                _ => exported += 1,
+            }
+        } else {
+            failed.push(format!("{}: {}", item.name, response.message.trim()));
+        }
+    }
+
+    let processed = exported + unchanged + queued;
+    let target_folder = library_source_folder(
+        &wiki_project_path,
+        &append_category_segments(&category_path, &[folder_name.to_string()]),
+    );
+    if processed == 0 && !failed.is_empty() {
+        return hub_action_error(
+            "export_failed",
+            &format!(
+                "Feishu folder export failed for all exportable documents. Failed {} item(s): {}",
+                failed.len(),
+                failed.join("; ")
+            ),
+            Some(target_folder.display().to_string()),
+            Some(wiki_project_path.display().to_string()),
+        );
+    }
+
+    let status = if !failed.is_empty() {
+        "folder_exported_with_issues"
+    } else if processed == 0 {
+        "folder_export_empty"
+    } else if organize {
+        "folder_queued"
+    } else {
+        "folder_exported"
+    };
+    let issue_suffix = if failed.is_empty() {
+        String::new()
+    } else {
+        format!(" Failed {} item(s): {}.", failed.len(), failed.join("; "))
+    };
+    HubActionResponse {
+        ok: true,
+        status: status.to_string(),
+        message: format!(
+            "Feishu folder export complete. Exported {exported}, unchanged {unchanged}, queued {queued}, skipped {skipped}.{issue_suffix}"
+        ),
+        error_code: None,
+        source_path: Some(target_folder.display().to_string()),
+        wiki_project_path: Some(wiki_project_path.display().to_string()),
+        document_url: None,
+        folder_name: Some(folder_name.to_string()),
+        changed: Some(exported > 0 || queued > 0),
     }
 }
 
@@ -1664,12 +1844,26 @@ fn open_feishu_source_folder(request: HubActionRequest) -> HubActionResponse {
             request.wiki_project_path,
         );
     };
-    let category_path = request
+    let mut category_path = request
         .category_path
         .as_deref()
         .and_then(|path| sanitize_category_path(Some(path)).ok())
         .or_else(|| wiki_category_state(&wiki_project_path).0)
         .unwrap_or_default();
+    if request
+        .folder_token
+        .as_deref()
+        .filter(|token| !token.trim().is_empty())
+        .is_some()
+    {
+        if let Some(folder_name) = request
+            .folder_name
+            .as_deref()
+            .filter(|name| !name.trim().is_empty())
+        {
+            category_path = append_category_segments(&category_path, &[folder_name.to_string()]);
+        }
+    }
     let source_folder = library_source_folder(&wiki_project_path, &category_path);
     if let Err(error) = fs::create_dir_all(&source_folder) {
         return hub_action_error(
@@ -2365,6 +2559,220 @@ fn cleanup_feishu_export_package(package: &FeishuExportPackage) {
     if let Some(temp_root) = package.temp_root.as_ref() {
         let _ = fs::remove_dir_all(temp_root);
     }
+}
+
+fn list_feishu_drive_folder_tree(
+    folder_token: &str,
+    folder_name: &str,
+) -> Result<Vec<FeishuDriveExportItem>, String> {
+    let mut items = Vec::new();
+    let mut queue = VecDeque::from([FeishuDriveFolderCursor {
+        token: folder_token.to_string(),
+        folder_segments: vec![folder_name.to_string()],
+    }]);
+    let mut visited_pages = HashSet::new();
+    let mut visited_folders = HashSet::new();
+
+    while let Some(cursor) = queue.pop_front() {
+        if !visited_folders.insert(cursor.token.clone()) {
+            continue;
+        }
+        let mut page_token: Option<String> = None;
+        let mut missing_next_token_retries = 0usize;
+        loop {
+            let page_key = format!(
+                "{}:{}",
+                cursor.token,
+                page_token.as_deref().unwrap_or("first")
+            );
+            let page = fetch_feishu_drive_folder_page(&cursor.token, page_token.as_deref())?;
+            if visited_pages.insert(page_key) {
+                for raw in page.items {
+                    if is_feishu_drive_folder_kind(&raw.kind) {
+                        if let Some(token) = raw.token.as_deref().filter(|token| !token.is_empty())
+                        {
+                            let mut folder_segments = cursor.folder_segments.clone();
+                            folder_segments.push(raw.name);
+                            queue.push_back(FeishuDriveFolderCursor {
+                                token: token.to_string(),
+                                folder_segments,
+                            });
+                        }
+                        continue;
+                    }
+                    items.push(FeishuDriveExportItem {
+                        name: raw.name,
+                        kind: raw.kind,
+                        token: raw.token,
+                        url: raw.url,
+                        folder_segments: cursor.folder_segments.clone(),
+                    });
+                }
+            }
+            if !page.has_more {
+                break;
+            }
+            if let Some(next) = page
+                .next_page_token
+                .filter(|token| !token.trim().is_empty())
+            {
+                page_token = Some(next);
+                missing_next_token_retries = 0;
+                continue;
+            }
+            missing_next_token_retries += 1;
+            if missing_next_token_retries >= 3 {
+                return Err(format!(
+                    "Feishu Drive folder pagination did not return next_page_token for folder {}.",
+                    cursor.token
+                ));
+            }
+        }
+    }
+
+    Ok(items)
+}
+
+fn fetch_feishu_drive_folder_page(
+    folder_token: &str,
+    page_token: Option<&str>,
+) -> Result<FeishuDrivePage, String> {
+    let mut params = json!({
+        "folder_token": folder_token,
+        "page_size": 200
+    });
+    if let Some(page_token) = page_token.filter(|token| !token.trim().is_empty()) {
+        params["page_token"] = json!(page_token);
+    }
+    let args = vec![
+        "drive".to_string(),
+        "files".to_string(),
+        "list".to_string(),
+        "--params".to_string(),
+        params.to_string(),
+        "--format".to_string(),
+        "json".to_string(),
+    ];
+    let payload = run_lark_cli_json(&args)?;
+    feishu_drive_page_from_payload(&payload)
+}
+
+fn feishu_drive_page_from_payload(payload: &Value) -> Result<FeishuDrivePage, String> {
+    let data = payload.get("data").unwrap_or(payload);
+    let files = data
+        .get("files")
+        .and_then(Value::as_array)
+        .or_else(|| data.get("items").and_then(Value::as_array))
+        .or_else(|| {
+            data.get("files")
+                .and_then(|files| files.get("items"))
+                .and_then(Value::as_array)
+        })
+        .ok_or_else(|| "Feishu Drive folder list did not return data.files.".to_string())?;
+    let items = files
+        .iter()
+        .filter_map(feishu_drive_raw_item_from_value)
+        .collect::<Vec<_>>();
+    Ok(FeishuDrivePage {
+        items,
+        has_more: data
+            .get("has_more")
+            .or_else(|| data.get("hasMore"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        next_page_token: data
+            .get("next_page_token")
+            .or_else(|| data.get("nextPageToken"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
+}
+
+fn feishu_drive_raw_item_from_value(value: &Value) -> Option<FeishuDriveRawItem> {
+    let name = json_first_string(value, &["name", "title", "file_name"])?.to_string();
+    let kind = json_first_string(value, &["type", "file_type", "obj_type", "kind"])
+        .unwrap_or("file")
+        .to_string();
+    let token = json_first_string(value, &["token", "file_token", "obj_token"]).map(str::to_string);
+    let url = json_first_string(value, &["url", "link"]).map(str::to_string);
+    Some(FeishuDriveRawItem {
+        name,
+        kind,
+        token,
+        url,
+    })
+}
+
+fn json_first_string<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_str))
+}
+
+fn is_feishu_drive_folder_kind(kind: &str) -> bool {
+    kind.eq_ignore_ascii_case("folder")
+}
+
+fn is_feishu_drive_item_exportable(kind: &str) -> bool {
+    matches!(
+        normalize_feishu_drive_kind(kind).as_str(),
+        "doc" | "docx" | "wiki" | "sheet" | "sheets" | "bitable" | "base"
+    )
+}
+
+fn feishu_drive_item_export_url(
+    item: &FeishuDriveExportItem,
+    folder_url: Option<&str>,
+) -> Option<String> {
+    if let Some(url) = item.url.as_deref().filter(|url| !url.trim().is_empty()) {
+        return Some(url.to_string());
+    }
+    let origin = feishu_url_origin(folder_url?)?;
+    let token = item.token.as_deref()?.trim();
+    if token.is_empty() {
+        return None;
+    }
+    let marker = match normalize_feishu_drive_kind(&item.kind).as_str() {
+        "doc" | "docx" => "docx",
+        "wiki" => "wiki",
+        "sheet" | "sheets" => "sheets",
+        "bitable" | "base" => "base",
+        _ => return None,
+    };
+    Some(format!("{origin}/{marker}/{token}"))
+}
+
+fn normalize_feishu_drive_kind(kind: &str) -> String {
+    kind.trim().to_ascii_lowercase().replace('-', "_")
+}
+
+fn feishu_url_origin(url: &str) -> Option<String> {
+    let trimmed = url.trim();
+    let (scheme, rest) = trimmed
+        .strip_prefix("https://")
+        .map(|rest| ("https", rest))
+        .or_else(|| trimmed.strip_prefix("http://").map(|rest| ("http", rest)))?;
+    let host = rest.split(['/', '?', '#']).next()?.trim();
+    if host.is_empty() {
+        None
+    } else {
+        Some(format!("{scheme}://{host}"))
+    }
+}
+
+fn append_category_segments(base: &str, segments: &[String]) -> String {
+    let mut parts: Vec<String> = base
+        .split('/')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect();
+    for segment in segments {
+        let slug = source_title_slug(segment);
+        if !slug.is_empty() {
+            parts.push(slug);
+        }
+    }
+    parts.join("/")
 }
 
 fn source_path_from_source_map(wiki_project_path: &Path, source_id: &str) -> Option<PathBuf> {
@@ -6501,6 +6909,62 @@ See [Spec](.assets/feishu_docx_abc123/spec.pdf).
                 "--table",
                 "md",
             ]
+        );
+    }
+
+    #[test]
+    fn feishu_drive_page_parser_handles_folder_documents_and_pagination() {
+        let payload = json!({
+            "data": {
+                "files": [
+                    { "name": "Design", "type": "folder", "token": "fld_sub" },
+                    { "name": "Spec", "type": "docx", "token": "doc_token", "url": "https://team.feishu.cn/docx/doc_token" },
+                    { "name": "Metrics", "file_type": "sheet", "file_token": "sht_token" }
+                ],
+                "has_more": true,
+                "next_page_token": "page-2"
+            }
+        });
+
+        let page = feishu_drive_page_from_payload(&payload).unwrap();
+
+        assert_eq!(page.items.len(), 3);
+        assert!(is_feishu_drive_folder_kind(&page.items[0].kind));
+        assert!(is_feishu_drive_item_exportable(&page.items[1].kind));
+        assert!(is_feishu_drive_item_exportable(&page.items[2].kind));
+        assert_eq!(page.items[2].token.as_deref(), Some("sht_token"));
+        assert!(page.has_more);
+        assert_eq!(page.next_page_token.as_deref(), Some("page-2"));
+    }
+
+    #[test]
+    fn feishu_drive_export_url_falls_back_to_folder_origin_and_kind() {
+        let item = FeishuDriveExportItem {
+            name: "Metrics".to_string(),
+            kind: "sheet".to_string(),
+            token: Some("sht123".to_string()),
+            url: None,
+            folder_segments: vec!["Campaign Docs".to_string()],
+        };
+
+        assert_eq!(
+            feishu_drive_item_export_url(
+                &item,
+                Some("https://team.feishu.cn/drive/folder/fldABC123")
+            )
+            .as_deref(),
+            Some("https://team.feishu.cn/sheets/sht123")
+        );
+    }
+
+    #[test]
+    fn feishu_folder_category_segments_preserve_root_and_children() {
+        assert_eq!(
+            append_category_segments(
+                "projects/noos-shuttle/design",
+                &["Campaign Docs".to_string(), "Phase 1".to_string()]
+            ),
+            "projects/noos-shuttle/design/campaign-docs/phase-1"
         );
     }
 

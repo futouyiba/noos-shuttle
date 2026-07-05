@@ -444,6 +444,19 @@ describe("content script smoke flow", () => {
     });
 
     await clickShuttle(folderPage, ".surface-fab");
+    await waitForShuttleText(folderPage, "导出当前文件夹");
+    await clickShuttle(folderPage, "[data-action='feishu-export-folder-md']");
+    await waitForShuttleText(folderPage, "导出完成");
+    const folderExportRequest = await folderPage.evaluate(() => (globalThis as unknown as { lastFeishuAction?: unknown }).lastFeishuAction);
+    expect(folderExportRequest).toMatchObject({
+      type: "NOOS_FEISHU_WIKI_ACTION",
+      action: "export_folder_md",
+      url: "https://team.feishu.cn/drive/folder/fldABC123",
+      folderToken: "fldABC123",
+      folderName: "Campaign Docs",
+      categoryPath: "projects/noos-shuttle/design"
+    });
+    await clickShuttle(folderPage, "[data-action='modal-close']");
     await clickShuttle(folderPage, "[data-action='feishu-select-markdown']");
     await waitForShuttleText(folderPage, "用于发布到飞书");
     await clickShuttle(folderPage, "[data-action='feed-selected-vault-object']");

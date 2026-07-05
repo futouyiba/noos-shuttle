@@ -209,9 +209,11 @@ interface FeishuWikiActionMessage {
   type: "NOOS_FEISHU_WIKI_ACTION";
   action:
     | "export_md"
+    | "export_folder_md"
     | "change_category"
     | "organize_wiki"
     | "export_md_and_organize"
+    | "export_folder_md_and_organize"
     | "open_markdown_folder"
     | "open_wiki_folder"
     | "sync_markdown"
@@ -220,6 +222,8 @@ interface FeishuWikiActionMessage {
   title?: string;
   wikiProjectPath?: string;
   categoryPath?: string;
+  folderToken?: string;
+  folderName?: string;
 }
 
 interface FeishuPublishMarkdownMessage {
@@ -343,17 +347,21 @@ function isFeishuWikiActionMessage(value: unknown): value is FeishuWikiActionMes
   return (
     message.type === "NOOS_FEISHU_WIKI_ACTION" &&
     (message.action === "export_md" ||
+      message.action === "export_folder_md" ||
       message.action === "change_category" ||
       message.action === "sync_markdown" ||
       message.action === "organize_wiki" ||
       message.action === "export_md_and_organize" ||
+      message.action === "export_folder_md_and_organize" ||
       message.action === "sync_markdown_and_organize" ||
       message.action === "open_markdown_folder" ||
       message.action === "open_wiki_folder") &&
     typeof message.url === "string" &&
     (message.title === undefined || typeof message.title === "string") &&
     (message.wikiProjectPath === undefined || typeof message.wikiProjectPath === "string") &&
-    (message.categoryPath === undefined || typeof message.categoryPath === "string")
+    (message.categoryPath === undefined || typeof message.categoryPath === "string") &&
+    (message.folderToken === undefined || typeof message.folderToken === "string") &&
+    (message.folderName === undefined || typeof message.folderName === "string")
   );
 }
 
@@ -407,6 +415,8 @@ async function runFeishuWikiAction(message: FeishuWikiActionMessage): Promise<un
     title: message.title,
     wiki_project_path: message.wikiProjectPath,
     category_path: message.categoryPath,
+    folder_token: message.folderToken,
+    folder_name: message.folderName,
     force: message.action === "organize_wiki"
   });
   return normalizeHubPayload(payload);
@@ -436,10 +446,12 @@ export function feishuPublishCommandForAction(action: FeishuPublishMarkdownMessa
 export function feishuCommandForAction(action: FeishuWikiActionMessage["action"]): string {
   const commandByAction: Record<FeishuWikiActionMessage["action"], string> = {
     export_md: "feishu.exportMd",
+    export_folder_md: "feishu.exportFolderMd",
     change_category: "wiki.setFeishuCategory",
     sync_markdown: "feishu.syncMarkdown",
     organize_wiki: "wiki.organizeSource",
     export_md_and_organize: "feishu.exportMdAndOrganize",
+    export_folder_md_and_organize: "feishu.exportFolderMdAndOrganize",
     sync_markdown_and_organize: "feishu.syncMarkdownAndOrganize",
     open_markdown_folder: "wiki.openFeishuSourceFolder",
     open_wiki_folder: "wiki.openProjectFolder"

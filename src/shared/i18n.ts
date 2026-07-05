@@ -88,6 +88,8 @@ export interface ShuttleCopy {
   feishuExportSectionTitle: string;
   feishuExportMdAndOrganize: string;
   feishuExportMd: string;
+  feishuExportFolderMdAndOrganize: string;
+  feishuExportFolderMd: string;
   feishuOrganizeWiki: string;
   feishuLibraryCategory: string;
   feishuCategoryInput: string;
@@ -257,6 +259,8 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     feishuExportSectionTitle: "Feishu to NOOS",
     feishuExportMdAndOrganize: "Export & Organize Wiki",
     feishuExportMd: "Export to Library",
+    feishuExportFolderMdAndOrganize: "Export Folder & Organize Wiki",
+    feishuExportFolderMd: "Export Current Folder",
     feishuOrganizeWiki: "Organize Wiki",
     feishuLibraryCategory: "Library category",
     feishuCategoryInput: "Category path",
@@ -416,6 +420,8 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     feishuExportSectionTitle: "飞书到 NOOS",
     feishuExportMdAndOrganize: "导出并整理 Wiki",
     feishuExportMd: "导出到文档库",
+    feishuExportFolderMdAndOrganize: "导出当前文件夹并整理 Wiki",
+    feishuExportFolderMd: "导出当前文件夹",
     feishuOrganizeWiki: "整理 Wiki",
     feishuLibraryCategory: "文档库分类",
     feishuCategoryInput: "分类路径",
