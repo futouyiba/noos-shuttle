@@ -1716,7 +1716,14 @@ fn export_feishu_folder(request: HubActionRequest, organize: bool) -> HubActionR
         wiki_project_path: Some(wiki_project_path.display().to_string()),
         document_url: None,
         folder_name: Some(folder_name.to_string()),
-        changed: Some(exported > 0 || queued > 0),
+        changed: Some(
+            exported > 0
+                || queued > 0
+                || link_refresh
+                    .as_ref()
+                    .map(|refresh| refresh.changed_files > 0)
+                    .unwrap_or(false),
+        ),
     }
 }
 
@@ -3125,7 +3132,7 @@ fn refresh_knowledge_library_links(
                 &mut outgoing_seen,
                 target,
                 label,
-                &cleaned_url,
+                &relative_link,
             );
             Ok(Some(relative_link))
         })?;
@@ -7261,6 +7268,10 @@ mod tests {
             })
             .unwrap();
         assert_eq!(entry_a["outgoing_refs"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            entry_a["outgoing_refs"][0]["link"],
+            "../beta/doc-b--bbb222.md"
+        );
         assert_eq!(entry_a["unresolved_refs"].as_array().unwrap().len(), 1);
         assert_eq!(entry_b["incoming_refs"].as_array().unwrap().len(), 1);
         assert!(
