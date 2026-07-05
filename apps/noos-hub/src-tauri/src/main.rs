@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -252,6 +252,22 @@ struct LibrarySourceMetadata {
     resource_count: usize,
     last_exported_at: String,
     wiki_status: String,
+}
+
+#[derive(Clone, Debug)]
+struct LibraryLinkTarget {
+    source_id: String,
+    title: String,
+    source_url: String,
+    source_path: PathBuf,
+    source_path_string: String,
+}
+
+#[derive(Default)]
+struct LibraryLinkRefresh {
+    changed_files: usize,
+    resolved_refs: usize,
+    unresolved_refs: usize,
 }
 
 #[derive(Serialize)]
@@ -1211,7 +1227,14 @@ fn export_feishu_md(request: HubActionRequest, organize: bool) -> HubActionRespo
         .title
         .as_deref()
         .unwrap_or("Untitled Feishu Document");
-    export_feishu_document_to_library(&wiki_project_path, &category_path, url, title, organize)
+    export_feishu_document_to_library(
+        &wiki_project_path,
+        &category_path,
+        url,
+        title,
+        organize,
+        true,
+    )
 }
 
 fn export_feishu_document_to_library(
@@ -1220,6 +1243,7 @@ fn export_feishu_document_to_library(
     url: &str,
     title: &str,
     organize: bool,
+    refresh_links: bool,
 ) -> HubActionResponse {
     let token = feishu_token_from_url(url).unwrap_or_else(|| stable_hash_hex(url));
     let source_id = feishu_source_id(&token);
@@ -1379,6 +1403,22 @@ fn export_feishu_document_to_library(
                 Some(wiki_project_path.display().to_string()),
             );
         }
+        let link_refresh = if refresh_links {
+            match refresh_knowledge_library_links(wiki_project_path, &last_exported_at) {
+                Ok(refresh) => refresh,
+                Err(error) => {
+                    cleanup_feishu_export_package(&exported);
+                    return hub_action_error(
+                        "index_write_failed",
+                        &error,
+                        Some(source_path.display().to_string()),
+                        Some(wiki_project_path.display().to_string()),
+                    );
+                }
+            }
+        } else {
+            LibraryLinkRefresh::default()
+        };
         if organize {
             if let Err(error) = queue_wiki_organize_by_touch(&source_path) {
                 cleanup_feishu_export_package(&exported);
@@ -1395,16 +1435,22 @@ fn export_feishu_document_to_library(
             ok: true,
             status: if organize { "queued" } else { "unchanged" }.to_string(),
             message: if organize {
-                "Feishu package is unchanged and Wiki organization queued.".to_string()
+                format!(
+                    "Feishu package is unchanged and Wiki organization queued.{}",
+                    library_link_refresh_suffix(&link_refresh)
+                )
             } else {
-                "Feishu package source is unchanged.".to_string()
+                format!(
+                    "Feishu package source is unchanged.{}",
+                    library_link_refresh_suffix(&link_refresh)
+                )
             },
             error_code: None,
             source_path: Some(source_path.display().to_string()),
             wiki_project_path: Some(wiki_project_path.display().to_string()),
             document_url: None,
             folder_name: None,
-            changed: Some(organize),
+            changed: Some(organize || link_refresh.changed_files > 0),
         };
     }
 
@@ -1453,6 +1499,22 @@ fn export_feishu_document_to_library(
             Some(wiki_project_path.display().to_string()),
         );
     }
+    let link_refresh = if refresh_links {
+        match refresh_knowledge_library_links(wiki_project_path, &last_exported_at) {
+            Ok(refresh) => refresh,
+            Err(error) => {
+                cleanup_feishu_export_package(&exported);
+                return hub_action_error(
+                    "index_write_failed",
+                    &error,
+                    Some(source_path.display().to_string()),
+                    Some(wiki_project_path.display().to_string()),
+                );
+            }
+        }
+    } else {
+        LibraryLinkRefresh::default()
+    };
 
     if organize {
         if let Err(error) = queue_wiki_organize_by_touch(&source_path) {
@@ -1468,7 +1530,10 @@ fn export_feishu_document_to_library(
         return HubActionResponse {
             ok: true,
             status: "queued".to_string(),
-            message: "Feishu package exported and Wiki organization queued.".to_string(),
+            message: format!(
+                "Feishu package exported and Wiki organization queued.{}",
+                library_link_refresh_suffix(&link_refresh)
+            ),
             error_code: None,
             source_path: Some(source_path.display().to_string()),
             wiki_project_path: Some(wiki_project_path.display().to_string()),
@@ -1482,7 +1547,10 @@ fn export_feishu_document_to_library(
     HubActionResponse {
         ok: true,
         status: "exported".to_string(),
-        message: "Feishu package exported to the document library.".to_string(),
+        message: format!(
+            "Feishu package exported to the document library.{}",
+            library_link_refresh_suffix(&link_refresh)
+        ),
         error_code: None,
         source_path: Some(source_path.display().to_string()),
         wiki_project_path: Some(wiki_project_path.display().to_string()),
@@ -1572,6 +1640,7 @@ fn export_feishu_folder(request: HubActionRequest, organize: bool) -> HubActionR
             &url,
             &item.name,
             organize,
+            false,
         );
         if response.ok {
             match response.status.as_str() {
@@ -1585,6 +1654,17 @@ fn export_feishu_folder(request: HubActionRequest, organize: bool) -> HubActionR
     }
 
     let processed = exported + unchanged + queued;
+    let link_refresh = if processed > 0 {
+        match refresh_knowledge_library_links(&wiki_project_path, &now_iso_utc()) {
+            Ok(refresh) => Some(refresh),
+            Err(error) => {
+                failed.push(format!("link refresh: {}", error.trim()));
+                None
+            }
+        }
+    } else {
+        None
+    };
     let target_folder = library_source_folder(
         &wiki_project_path,
         &append_category_segments(&category_path, &[folder_name.to_string()]),
@@ -1616,11 +1696,20 @@ fn export_feishu_folder(request: HubActionRequest, organize: bool) -> HubActionR
     } else {
         format!(" Failed {} item(s): {}.", failed.len(), failed.join("; "))
     };
+    let link_suffix = link_refresh
+        .as_ref()
+        .map(|refresh| {
+            format!(
+                " Links refreshed: {} local ref(s), {} unresolved, {} file(s) updated.",
+                refresh.resolved_refs, refresh.unresolved_refs, refresh.changed_files
+            )
+        })
+        .unwrap_or_default();
     HubActionResponse {
         ok: true,
         status: status.to_string(),
         message: format!(
-            "Feishu folder export complete. Exported {exported}, unchanged {unchanged}, queued {queued}, skipped {skipped}.{issue_suffix}"
+            "Feishu folder export complete. Exported {exported}, unchanged {unchanged}, queued {queued}, skipped {skipped}.{issue_suffix}{link_suffix}"
         ),
         error_code: None,
         source_path: Some(target_folder.display().to_string()),
@@ -2785,6 +2874,10 @@ fn source_path_from_source_map(wiki_project_path: &Path, source_id: &str) -> Opt
             .map(|value| value == source_id)
             .unwrap_or(false)
     })?;
+    library_source_path_from_map_entry(wiki_project_path, source)
+}
+
+fn library_source_path_from_map_entry(wiki_project_path: &Path, source: &Value) -> Option<PathBuf> {
     let source_path = source.get("source_path")?.as_str()?;
     let relative_path = sanitize_source_map_source_path(source_path)?;
     let path = wiki_project_path.join(relative_path);
@@ -2925,11 +3018,21 @@ fn update_knowledge_library(
         "updated_at": metadata.last_exported_at,
         "sources": sources,
     });
-    write_json_file(&knowledge_source_map_path(wiki_project_path), &source_map)?;
+    write_knowledge_library_artifacts(wiki_project_path, &source_map, &metadata.last_exported_at)
+}
+
+fn write_knowledge_library_artifacts(
+    wiki_project_path: &Path,
+    source_map: &Value,
+    updated_at: &str,
+) -> Result<(), String> {
+    let library_dir = wiki_project_path.join("knowledge-library");
+    fs::create_dir_all(library_dir.join("canon")).map_err(|error| error.to_string())?;
+    write_json_file(&knowledge_source_map_path(wiki_project_path), source_map)?;
 
     let manifest = json!({
         "schema": "noos/knowledge-library-manifest@0.1",
-        "updated_at": metadata.last_exported_at,
+        "updated_at": updated_at,
         "source_count": source_map.get("sources").and_then(Value::as_array).map(Vec::len).unwrap_or(0),
         "main": "index.md",
         "abstracts": "abstracts.md",
@@ -2946,6 +3049,489 @@ fn update_knowledge_library(
         render_knowledge_abstracts(&source_map).as_bytes(),
     )?;
     Ok(())
+}
+
+fn refresh_knowledge_library_links(
+    wiki_project_path: &Path,
+    updated_at: &str,
+) -> Result<LibraryLinkRefresh, String> {
+    let source_map = read_json_object(&knowledge_source_map_path(wiki_project_path));
+    let sources = source_map
+        .get("sources")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if sources.is_empty() {
+        return Ok(LibraryLinkRefresh::default());
+    }
+
+    let targets = collect_library_link_targets(wiki_project_path, &sources);
+    let mut outgoing_by_source: HashMap<String, Vec<Value>> = HashMap::new();
+    let mut unresolved_by_source: HashMap<String, Vec<Value>> = HashMap::new();
+    let mut incoming_by_target: HashMap<String, Vec<Value>> = HashMap::new();
+    let mut refresh = LibraryLinkRefresh::default();
+
+    for source in &sources {
+        let Some(source_id) = source.get("source_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(current) = targets.get(source_id).cloned() else {
+            continue;
+        };
+        let content = fs::read_to_string(&current.source_path).unwrap_or_default();
+        let (frontmatter, body) = split_markdown_frontmatter_preserving(&content);
+        let mut outgoing_refs = Vec::new();
+        let mut unresolved_refs = Vec::new();
+        let mut outgoing_seen = HashSet::new();
+        let mut unresolved_seen = HashSet::new();
+        let rewritten_body = rewrite_markdown_links_skipping_code(body, |label, url| {
+            let cleaned_url = clean_markdown_link_url(url);
+            if let Some(target) =
+                library_link_target_for_local_url(&targets, &current, &cleaned_url)
+            {
+                if target.source_id != current.source_id {
+                    push_library_outgoing_ref(
+                        &mut outgoing_refs,
+                        &mut outgoing_seen,
+                        target,
+                        label,
+                        &cleaned_url,
+                    );
+                }
+                return Ok(None);
+            }
+            if !is_feishu_document_markdown_url(&cleaned_url) {
+                return Ok(None);
+            }
+            let Some(target) = library_link_target_for_url(&targets, &cleaned_url) else {
+                if unresolved_seen.insert(cleaned_url.clone()) {
+                    unresolved_refs.push(json!({
+                        "label": label.trim(),
+                        "url": cleaned_url,
+                    }));
+                }
+                return Ok(None);
+            };
+            if target.source_id == current.source_id {
+                return Ok(None);
+            }
+            let relative_link = relative_markdown_link(
+                wiki_project_path,
+                &current.source_path,
+                &target.source_path,
+            )?;
+            push_library_outgoing_ref(
+                &mut outgoing_refs,
+                &mut outgoing_seen,
+                target,
+                label,
+                &cleaned_url,
+            );
+            Ok(Some(relative_link))
+        })?;
+        let rewritten_content = format!("{frontmatter}{rewritten_body}");
+        if rewritten_content != content {
+            write_bytes_atomic(&current.source_path, rewritten_content.as_bytes())?;
+            refresh.changed_files += 1;
+        }
+        refresh.resolved_refs += outgoing_refs.len();
+        refresh.unresolved_refs += unresolved_refs.len();
+        outgoing_by_source.insert(current.source_id.clone(), outgoing_refs.clone());
+        unresolved_by_source.insert(current.source_id.clone(), unresolved_refs);
+        for target_ref in outgoing_refs {
+            let Some(target_id) = target_ref.get("source_id").and_then(Value::as_str) else {
+                continue;
+            };
+            incoming_by_target
+                .entry(target_id.to_string())
+                .or_default()
+                .push(json!({
+                    "source_id": current.source_id.clone(),
+                    "title": current.title.clone(),
+                    "source_path": current.source_path_string.clone(),
+                    "label": target_ref.get("label").cloned().unwrap_or(Value::Null),
+                    "url": target_ref.get("url").cloned().unwrap_or(Value::Null),
+                }));
+        }
+    }
+
+    let mut updated_sources = sources
+        .into_iter()
+        .map(|source| {
+            let mut source = source;
+            let Some(map) = source.as_object_mut() else {
+                return source;
+            };
+            let Some(source_id) = map
+                .get("source_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+            else {
+                return source;
+            };
+            let outgoing_refs = outgoing_by_source
+                .get(&source_id)
+                .cloned()
+                .unwrap_or_default();
+            let incoming_refs = incoming_by_target
+                .get(&source_id)
+                .cloned()
+                .unwrap_or_default();
+            let unresolved_refs = unresolved_by_source
+                .get(&source_id)
+                .cloned()
+                .unwrap_or_default();
+            map.insert("outgoing_refs".to_string(), json!(outgoing_refs));
+            map.insert("incoming_refs".to_string(), json!(incoming_refs));
+            map.insert("unresolved_refs".to_string(), json!(unresolved_refs));
+
+            if let Some(target) = targets.get(&source_id) {
+                let content = fs::read_to_string(&target.source_path).unwrap_or_default();
+                let body = feishu_source_body(&content);
+                let resource_count = map
+                    .get("resource_count")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
+                map.insert(
+                    "content_hash".to_string(),
+                    json!(format!("sha256ish:{}", stable_hash_hex(body.trim()))),
+                );
+                map.insert(
+                    "resource_summary".to_string(),
+                    json!(resource_summary(resource_count, body)),
+                );
+                map.insert("summary".to_string(), json!(summarize_markdown_body(body)));
+                map.insert(
+                    "headings".to_string(),
+                    json!(extract_markdown_headings(body, 8)),
+                );
+            }
+            source
+        })
+        .collect::<Vec<_>>();
+    updated_sources.sort_by(|a, b| {
+        let a_key = format!(
+            "{}\u{0}{}",
+            a.get("category_path").and_then(Value::as_str).unwrap_or(""),
+            a.get("title").and_then(Value::as_str).unwrap_or("")
+        );
+        let b_key = format!(
+            "{}\u{0}{}",
+            b.get("category_path").and_then(Value::as_str).unwrap_or(""),
+            b.get("title").and_then(Value::as_str).unwrap_or("")
+        );
+        a_key.cmp(&b_key)
+    });
+    let updated_source_map = json!({
+        "schema": source_map
+            .get("schema")
+            .and_then(Value::as_str)
+            .unwrap_or("noos/knowledge-source-map@0.1"),
+        "updated_at": updated_at,
+        "sources": updated_sources,
+    });
+    write_knowledge_library_artifacts(wiki_project_path, &updated_source_map, updated_at)?;
+    Ok(refresh)
+}
+
+fn collect_library_link_targets(
+    wiki_project_path: &Path,
+    sources: &[Value],
+) -> HashMap<String, LibraryLinkTarget> {
+    let mut targets = HashMap::new();
+    for source in sources {
+        let Some(source_id) = source.get("source_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(source_url) = source.get("source_url").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(path) = library_source_path_from_map_entry(wiki_project_path, source) else {
+            continue;
+        };
+        if !path.is_file() {
+            continue;
+        }
+        let title = source
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("Untitled")
+            .to_string();
+        let source_path_string = relative_path_string(wiki_project_path, &path);
+        targets.insert(
+            source_id.to_string(),
+            LibraryLinkTarget {
+                source_id: source_id.to_string(),
+                title,
+                source_url: source_url.to_string(),
+                source_path: path,
+                source_path_string,
+            },
+        );
+    }
+    targets
+}
+
+fn library_link_target_for_url<'a>(
+    targets: &'a HashMap<String, LibraryLinkTarget>,
+    url: &str,
+) -> Option<&'a LibraryLinkTarget> {
+    let token = feishu_token_from_url(url)?;
+    let source_id = feishu_source_id(&token);
+    targets.get(&source_id).or_else(|| {
+        targets.values().find(|target| {
+            feishu_token_from_url(&target.source_url).as_deref() == Some(token.as_str())
+        })
+    })
+}
+
+fn library_link_target_for_local_url<'a>(
+    targets: &'a HashMap<String, LibraryLinkTarget>,
+    current: &LibraryLinkTarget,
+    url: &str,
+) -> Option<&'a LibraryLinkTarget> {
+    let cleaned = url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(url)
+        .trim()
+        .trim_start_matches("./");
+    if cleaned.is_empty()
+        || cleaned.starts_with('#')
+        || is_external_or_absolute_markdown_url(cleaned)
+        || !cleaned.to_ascii_lowercase().ends_with(".md")
+    {
+        return None;
+    }
+    let rel = Path::new(cleaned);
+    if rel.components().any(|component| {
+        !matches!(
+            component,
+            Component::Normal(_) | Component::CurDir | Component::ParentDir
+        )
+    }) {
+        return None;
+    }
+    let candidate = current
+        .source_path
+        .parent()?
+        .join(rel)
+        .canonicalize()
+        .ok()?;
+    targets
+        .values()
+        .find(|target| target.source_path.canonicalize().ok().as_ref() == Some(&candidate))
+}
+
+fn push_library_outgoing_ref(
+    refs: &mut Vec<Value>,
+    seen: &mut HashSet<String>,
+    target: &LibraryLinkTarget,
+    label: &str,
+    url: &str,
+) -> bool {
+    if !seen.insert(target.source_id.clone()) {
+        return false;
+    }
+    refs.push(json!({
+        "source_id": target.source_id.clone(),
+        "title": target.title.clone(),
+        "source_path": target.source_path_string.clone(),
+        "label": label.trim(),
+        "url": target.source_url.clone(),
+        "link": url,
+    }));
+    true
+}
+
+fn split_markdown_frontmatter_preserving(markdown: &str) -> (&str, &str) {
+    if !markdown.starts_with("---\n") {
+        return ("", markdown);
+    }
+    let rest = &markdown[4..];
+    if let Some(index) = rest.find("\n---") {
+        let body_start = 4 + index + 4;
+        return (&markdown[..body_start], &markdown[body_start..]);
+    }
+    ("", markdown)
+}
+
+fn rewrite_markdown_links_skipping_code<F>(markdown: &str, mut map_url: F) -> Result<String, String>
+where
+    F: FnMut(&str, &str) -> Result<Option<String>, String>,
+{
+    let mut out = String::with_capacity(markdown.len());
+    let mut in_fence = false;
+    for line in markdown.split_inclusive('\n') {
+        let content = line.strip_suffix('\n').unwrap_or(line);
+        let newline = if line.ends_with('\n') { "\n" } else { "" };
+        let trimmed = content.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            out.push_str(line);
+            continue;
+        }
+        if in_fence {
+            out.push_str(line);
+            continue;
+        }
+        out.push_str(&rewrite_markdown_line_links(content, &mut map_url)?);
+        out.push_str(newline);
+    }
+    Ok(out)
+}
+
+fn rewrite_markdown_line_links<F>(line: &str, map_url: &mut F) -> Result<String, String>
+where
+    F: FnMut(&str, &str) -> Result<Option<String>, String>,
+{
+    let mut out = String::with_capacity(line.len());
+    let mut cursor = 0;
+    while cursor < line.len() {
+        let rest = &line[cursor..];
+        if rest.starts_with('`') {
+            let run_len = rest.bytes().take_while(|byte| *byte == b'`').count();
+            let marker = &rest[..run_len];
+            if let Some(close_rel) = rest[run_len..].find(marker) {
+                let end = cursor + run_len + close_rel + run_len;
+                out.push_str(&line[cursor..end]);
+                cursor = end;
+                continue;
+            }
+            out.push_str(rest);
+            break;
+        }
+        if rest.starts_with("![") {
+            if let Some(token_end) = markdown_link_token_end(line, cursor, true) {
+                out.push_str(&line[cursor..token_end]);
+                cursor = token_end;
+                continue;
+            }
+        }
+        if rest.starts_with('[') {
+            if let Some((label_start, label_end, url_start, url_end, token_end)) =
+                markdown_link_token_parts(line, cursor, false)
+            {
+                let label = &line[label_start..label_end];
+                let url = &line[url_start..url_end];
+                out.push_str(&line[cursor..label_start]);
+                if let Some(new_url) = map_url(label, url)? {
+                    out.push_str(label);
+                    out.push_str("](");
+                    out.push_str(&new_url);
+                    out.push(')');
+                } else {
+                    out.push_str(&line[label_start..token_end]);
+                }
+                cursor = token_end;
+                continue;
+            }
+        }
+        let Some(character) = rest.chars().next() else {
+            break;
+        };
+        out.push(character);
+        cursor += character.len_utf8();
+    }
+    Ok(out)
+}
+
+fn markdown_link_token_end(line: &str, start: usize, is_image: bool) -> Option<usize> {
+    markdown_link_token_parts(line, start, is_image).map(|parts| parts.4)
+}
+
+fn markdown_link_token_parts(
+    line: &str,
+    start: usize,
+    is_image: bool,
+) -> Option<(usize, usize, usize, usize, usize)> {
+    let label_start = start + if is_image { 2 } else { 1 };
+    let label_close_rel = line[label_start..].find("](")?;
+    let label_end = label_start + label_close_rel;
+    let url_start = label_end + 2;
+    let url_close_rel = line[url_start..].find(')')?;
+    let url_end = url_start + url_close_rel;
+    Some((label_start, label_end, url_start, url_end, url_end + 1))
+}
+
+fn clean_markdown_link_url(url: &str) -> String {
+    url.trim()
+        .trim_matches('<')
+        .trim_matches('>')
+        .trim()
+        .to_string()
+}
+
+fn is_feishu_document_markdown_url(url: &str) -> bool {
+    feishu_token_from_url(url).is_some()
+        && feishu_url_host(url).map(is_feishu_host).unwrap_or(false)
+}
+
+fn feishu_url_host(url: &str) -> Option<&str> {
+    let trimmed = url.trim();
+    let rest = trimmed
+        .strip_prefix("https://")
+        .or_else(|| trimmed.strip_prefix("http://"))?;
+    rest.split(['/', '?', '#'])
+        .next()
+        .filter(|host| !host.is_empty())
+}
+
+fn is_feishu_host(host: &str) -> bool {
+    ["feishu.cn", "larksuite.com", "larksuite.cn"]
+        .iter()
+        .any(|candidate| host == *candidate || host.ends_with(&format!(".{candidate}")))
+}
+
+fn relative_markdown_link(root: &Path, from_file: &Path, to_file: &Path) -> Result<String, String> {
+    let from_parent = from_file
+        .parent()
+        .ok_or_else(|| "Source Markdown path has no parent directory.".to_string())?;
+    let from_rel = from_parent
+        .strip_prefix(root)
+        .map_err(|_| "Source Markdown path is outside the Wiki project.".to_string())?;
+    let to_rel = to_file
+        .strip_prefix(root)
+        .map_err(|_| "Target Markdown path is outside the Wiki project.".to_string())?;
+    let from_parts = normal_path_component_strings(from_rel)?;
+    let to_parts = normal_path_component_strings(to_rel)?;
+    let common = from_parts
+        .iter()
+        .zip(to_parts.iter())
+        .take_while(|(left, right)| left == right)
+        .count();
+    let mut parts = Vec::new();
+    for _ in common..from_parts.len() {
+        parts.push("..".to_string());
+    }
+    parts.extend(to_parts.into_iter().skip(common));
+    if parts.is_empty() {
+        return Ok(".".to_string());
+    }
+    Ok(parts.join("/"))
+}
+
+fn normal_path_component_strings(path: &Path) -> Result<Vec<String>, String> {
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => parts.push(part.to_string_lossy().replace('\\', "/")),
+            Component::CurDir => {}
+            _ => return Err("Cannot build Markdown link for non-normal path.".to_string()),
+        }
+    }
+    Ok(parts)
+}
+
+fn library_link_refresh_suffix(refresh: &LibraryLinkRefresh) -> String {
+    if refresh.resolved_refs == 0 && refresh.unresolved_refs == 0 && refresh.changed_files == 0 {
+        String::new()
+    } else {
+        format!(
+            " Links refreshed: {} local ref(s), {} unresolved, {} file(s) updated.",
+            refresh.resolved_refs, refresh.unresolved_refs, refresh.changed_files
+        )
+    }
 }
 
 fn knowledge_source_map_path(wiki_project_path: &Path) -> PathBuf {
@@ -3154,9 +3740,49 @@ fn render_knowledge_abstracts(source_map: &Value) -> String {
                 lines.push(format!("- Open when: {reasons}"));
             }
         }
+        if let Some(related) = related_docs_summary(&source) {
+            lines.push(format!("- Related docs: {related}"));
+        }
         lines.push(String::new());
     }
     lines.join("\n")
+}
+
+fn related_docs_summary(source: &Value) -> Option<String> {
+    let outgoing = source
+        .get("outgoing_refs")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let incoming = source
+        .get("incoming_refs")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let unresolved = source
+        .get("unresolved_refs")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if outgoing.is_empty() && incoming.is_empty() && unresolved.is_empty() {
+        return None;
+    }
+    let outgoing_titles = outgoing
+        .iter()
+        .filter_map(|item| item.get("title").and_then(Value::as_str))
+        .take(4)
+        .collect::<Vec<_>>()
+        .join("; ");
+    let target_text = if outgoing_titles.is_empty() {
+        format!("links to {}", outgoing.len())
+    } else {
+        format!("links to {} ({outgoing_titles})", outgoing.len())
+    };
+    Some(format!(
+        "{target_text}; linked from {}; unresolved Feishu links {}",
+        incoming.len(),
+        unresolved.len()
+    ))
 }
 
 fn localize_feishu_markdown_images(
@@ -3198,14 +3824,11 @@ where
     let mut cursor = 0;
     while let Some(start_rel) = markdown[cursor..].find("![") {
         let start = cursor + start_rel;
-        let Some(alt_close_rel) = markdown[start + 2..].find("](") else {
+        let Some((_label_start, _label_end, url_start, url_end, token_end)) =
+            markdown_link_token_parts(markdown, start, true)
+        else {
             break;
         };
-        let url_start = start + 2 + alt_close_rel + 2;
-        let Some(url_close_rel) = markdown[url_start..].find(')') else {
-            break;
-        };
-        let url_end = url_start + url_close_rel;
         let url = &markdown[url_start..url_end];
 
         out.push_str(&markdown[cursor..start]);
@@ -3216,7 +3839,7 @@ where
         } else {
             out.push_str(&markdown[start..=url_end]);
         }
-        cursor = url_end + 1;
+        cursor = token_end;
     }
     out.push_str(&markdown[cursor..]);
     Ok(out)
@@ -3478,21 +4101,13 @@ where
         };
 
         let is_image = markdown[start..].starts_with("![");
-        let label_start = start + if is_image { 2 } else { 1 };
-        let Some(label_close_rel) = markdown[label_start..].find("](") else {
+        let Some((label_start, label_end, url_start, url_end, token_end)) =
+            markdown_link_token_parts(markdown, start, is_image)
+        else {
             out.push_str(&markdown[cursor..=start]);
             cursor = start + 1;
             continue;
         };
-        let label_end = label_start + label_close_rel;
-        let url_start = label_end + 2;
-        let Some(url_close_rel) = markdown[url_start..].find(')') else {
-            out.push_str(&markdown[cursor..=start]);
-            cursor = start + 1;
-            continue;
-        };
-        let url_end = url_start + url_close_rel;
-        let token_end = url_end + 1;
         let label = &markdown[label_start..label_end];
         let url = &markdown[url_start..url_end];
         let kind = if is_image {
@@ -4863,18 +5478,8 @@ fn collect_library_source_objects(noos_home: &Path) -> Vec<Value> {
 }
 
 fn library_source_object_from_map_entry(wiki_project_path: &Path, source: &Value) -> Option<Value> {
-    let source_path = source.get("source_path")?.as_str()?;
-    let relative_path = sanitize_source_map_source_path(source_path)?;
-    let path = wiki_project_path.join(relative_path);
-    let is_markdown = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| extension.eq_ignore_ascii_case("md"))
-        .unwrap_or(false);
-    if !is_markdown
-        || !path.is_file()
-        || !library_source_path_allowed_for_wiki(&path, wiki_project_path)
-    {
+    let path = library_source_path_from_map_entry(wiki_project_path, source)?;
+    if !path.is_file() {
         return None;
     }
 
@@ -6540,6 +7145,147 @@ mod tests {
 
         let found = source_path_from_source_map(&wiki, "feishu_docx_abc123");
         assert_eq!(found.as_deref(), Some(source.as_path()));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn refresh_knowledge_library_links_rewrites_feishu_doc_links_and_indexes_refs() {
+        let root = unique_test_dir("library-link-refresh");
+        let wiki = root.join("wiki");
+        let url_a = "https://team.feishu.cn/docx/aaa111";
+        let url_b = "https://team.feishu.cn/docx/bbb222";
+        let url_missing = "https://team.feishu.cn/docx/ccc333";
+        let source_id_a = feishu_source_id("aaa111");
+        let source_id_b = feishu_source_id("bbb222");
+        let source_a = wiki
+            .join("raw")
+            .join("sources")
+            .join("projects")
+            .join("alpha")
+            .join("doc-a--aaa111.md");
+        let source_b = wiki
+            .join("raw")
+            .join("sources")
+            .join("projects")
+            .join("beta")
+            .join("doc-b--bbb222.md");
+        fs::create_dir_all(source_a.parent().unwrap()).unwrap();
+        fs::create_dir_all(source_b.parent().unwrap()).unwrap();
+        fs::write(
+            &source_a,
+            build_feishu_source_markdown(
+                &format!(
+                    "# Doc A\n\nSee [Doc B]({url_b}), [Self]({url_a}), and [Missing]({url_missing}).\n\n![Image link]({url_b})\n\nInline `{}` stays.\n\n```md\n[Code link]({url_b})\n```\n",
+                    format!("[Inline link]({url_b})")
+                ),
+                url_a,
+                "Doc A",
+                "aaa111",
+                &source_id_a,
+                "projects/alpha",
+                ".assets/feishu_docx_aaa111",
+                "package",
+                "2026-07-05T00:00:00Z",
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &source_b,
+            build_feishu_source_markdown(
+                "# Doc B\n\nBody",
+                url_b,
+                "Doc B",
+                "bbb222",
+                &source_id_b,
+                "projects/beta",
+                ".assets/feishu_docx_bbb222",
+                "package",
+                "2026-07-05T00:00:00Z",
+            ),
+        )
+        .unwrap();
+        write_json_file(
+            &wiki.join("knowledge-library").join("source-map.json"),
+            &json!({
+                "schema": "noos/knowledge-source-map@0.1",
+                "sources": [
+                    {
+                        "source_id": source_id_a,
+                        "source_app": "feishu",
+                        "source_url": url_a,
+                        "category_path": "projects/alpha",
+                        "title": "Doc A",
+                        "source_path": "raw/sources/projects/alpha/doc-a--aaa111.md",
+                        "resource_count": 0
+                    },
+                    {
+                        "source_id": source_id_b,
+                        "source_app": "feishu",
+                        "source_url": url_b,
+                        "category_path": "projects/beta",
+                        "title": "Doc B",
+                        "source_path": "raw/sources/projects/beta/doc-b--bbb222.md",
+                        "resource_count": 0
+                    }
+                ]
+            }),
+        )
+        .unwrap();
+
+        let refresh = refresh_knowledge_library_links(&wiki, "2026-07-05T00:00:01Z").unwrap();
+
+        assert_eq!(refresh.changed_files, 1);
+        assert_eq!(refresh.resolved_refs, 1);
+        assert_eq!(refresh.unresolved_refs, 1);
+        let rewritten = fs::read_to_string(&source_a).unwrap();
+        assert!(rewritten.contains("[Doc B](../beta/doc-b--bbb222.md)"));
+        assert!(rewritten.contains(&format!("[Self]({url_a})")));
+        assert!(rewritten.contains(&format!("[Missing]({url_missing})")));
+        assert!(rewritten.contains(&format!("![Image link]({url_b})")));
+        assert!(rewritten.contains(&format!("[Inline link]({url_b})")));
+        assert!(rewritten.contains(&format!("[Code link]({url_b})")));
+
+        let source_map = read_json_object(&knowledge_source_map_path(&wiki));
+        let sources = source_map.get("sources").and_then(Value::as_array).unwrap();
+        let entry_a = sources
+            .iter()
+            .find(|source| {
+                source.get("source_id").and_then(Value::as_str) == Some("feishu_docx_aaa111")
+            })
+            .unwrap();
+        let entry_b = sources
+            .iter()
+            .find(|source| {
+                source.get("source_id").and_then(Value::as_str) == Some("feishu_docx_bbb222")
+            })
+            .unwrap();
+        assert_eq!(entry_a["outgoing_refs"].as_array().unwrap().len(), 1);
+        assert_eq!(entry_a["unresolved_refs"].as_array().unwrap().len(), 1);
+        assert_eq!(entry_b["incoming_refs"].as_array().unwrap().len(), 1);
+        assert!(
+            fs::read_to_string(wiki.join("knowledge-library").join("abstracts.md"))
+                .unwrap()
+                .contains("Related docs")
+        );
+
+        let second = refresh_knowledge_library_links(&wiki, "2026-07-05T00:00:02Z").unwrap();
+        assert_eq!(second.changed_files, 0);
+        assert_eq!(second.resolved_refs, 1);
+        let source_map = read_json_object(&knowledge_source_map_path(&wiki));
+        let sources = source_map.get("sources").and_then(Value::as_array).unwrap();
+        let entry_a = sources
+            .iter()
+            .find(|source| {
+                source.get("source_id").and_then(Value::as_str) == Some("feishu_docx_aaa111")
+            })
+            .unwrap();
+        assert_eq!(entry_a["outgoing_refs"].as_array().unwrap().len(), 1);
+        assert_eq!(entry_a["outgoing_refs"][0]["url"], url_b);
+        assert_eq!(
+            entry_a["outgoing_refs"][0]["link"],
+            "../beta/doc-b--bbb222.md"
+        );
 
         fs::remove_dir_all(root).unwrap();
     }
