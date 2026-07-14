@@ -30,24 +30,23 @@ Make NOOS Shuttle and NOOS Hub reliable as a local-first context shuttle:
 
 | Workstream | Status | Owner Window | Notes |
 | --- | --- | --- | --- |
-| Shuttle Vault import picker | implemented v0.2 | Codex | Large picker has virtual folders, search, multi-select, and shared feed action |
-| ChatGPT Project Sources import | implemented v0.2 | User + Codex | Current chat and Project Sources share the same selected-object feed path |
-| Hub ingest and local Vault | in progress | Codex | Hub saves Handoff/Crystal and returns local path/key; browse endpoint added |
-| Runtime Projection for agents | smoke-tested | Codex | Real Crystal was projected into `.noos/runtime/current/` and consumed by Codex |
-| Object model docs | in progress | Codex | See `docs/noos-vault-object-model.md` and system definition doc |
+| Shuttle Vault import picker | implemented | — | Virtual folders, search, multi-select, and shared feed action are on `main` |
+| ChatGPT Project Sources import/export | acceptance pending | — | Implementation is on `main`; logged-in Chrome export regression remains |
+| Reply-scoped generated image download | acceptance pending | — | Implementation is on `main`; verify selected/current-reply scope in logged-in Chrome |
+| Hub ingest and local Vault | implemented | — | Hub saves, indexes, browses, and returns local Vault objects |
+| Runtime Projection for agents | smoke-tested | — | Selected context can be projected into `.noos/runtime/current/` |
+| Hub UX refactor | completed | — | Dashboard, four-section navigation, stacked adapters, toast/retry feedback are merged |
+| Repository baseline verification | in progress | Claude Code | Running root, Hub, Wiki, and sleep/recovery checks after v0.1.6 metadata cleanup |
 
 ## Latest Context
 
-- The user confirmed importing material into ChatGPT Project Sources has worked.
-- The current weakness is selection UX when recent objects do not contain the desired Handoff or Crystal.
-- The product needs a larger, folder-like Vault selection window.
-- The selection area must support multi-select.
-- Clicking a Vault item must not reset the Shuttle panel scroll position.
-- Auto Copy / Auto Download / Auto Save to Vault toggles are too large and should stay compact.
-- For knowledge organization, the current recommendation is virtual folders plus search rather than arbitrary user-managed physical folders.
-- Hub now exposes `/v1/vault/browse` for authorized browser-side Vault browsing.
-- Shuttle's larger Vault picker uses Hub folders/search when available and keeps recent-object import compact.
-- A real Vault Crystal with key `20260521-noos-ai-64e4` was projected into a runtime task and read by Codex before implementation work.
+- Product release baseline is `v0.1.6` at `aa07af9`; later docs/ignore commits are on `main`.
+- The Hub UX refactor is merged and its handoff has moved to `done/`.
+- The remaining active handoff is the Project Sources export and reply image work because logged-in Chrome acceptance is not yet recorded.
+- Hub owns local Vault browsing through `/v1/vault/recent` and `/v1/vault/browse`; Shuttle keeps a compact recent list plus the larger picker.
+- User-facing Vault organization continues to prefer virtual folders, search, tags, collections, latest lists, and source filters over arbitrary physical folder management.
+- `.noos/runtime/current/` is temporary agent context and may be absent when no runtime task is active.
+- See `.noos/context/briefs/2026-07-01-noos-shuttle-current-state.md` for the refreshed current-state snapshot.
 
 ## Coordination Protocol
 
@@ -105,8 +104,10 @@ When an agent finishes:
 
 ## Handoff Notes For Next Agent
 
-- Do not assume the recent-object list is enough for real Vault navigation.
-- Hub-owned Vault browse/search now exists. Next durable step is pagination/richer filters and surfacing the same object browser in Hub UI.
+- The only active handoff is `.noos/handoffs/active/2026-06-05-project-sources-and-reply-images.md`; its remaining gap is logged-in Chrome acceptance, not implementation.
+- Do not assume the recent-object list is enough for real Vault navigation; use Hub-owned browse/search for larger collections.
 - Avoid making physical path the user-facing identity. Use `lookup_key` and object metadata.
 - For ChatGPT Project Sources, prefer attaching Markdown files instead of pasting long content into the input box.
-- If improving the picker, add keyboard navigation, richer metadata rows, and server-side pagination before Vault object counts grow large.
+- If improving the picker, prioritize server-side pagination, richer filters/metadata, and keyboard navigation.
+- Do not apply or drop `stash@{0}` without inspecting it first.
+- Current architecture hotspots are `apps/noos-hub/src-tauri/src/main.rs` and `src/content/index.ts`; treat decomposition as planned product work, not opportunistic cleanup.
