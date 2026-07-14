@@ -6,11 +6,18 @@ coverage/
 .tmp/
 output/
 .claude/skills/
-.noos/local.json
-.noos/runtime/
 __pycache__/
 *.pyc
 target/
 apps/noos-hub/src-tauri/target-codex-*/
 apps/noos-hub/src-tauri/gen/
 apps/noos-hub/src-tauri/resources/noos-shuttle-extension/
+
+# Local Claude Code session state
+.claude/worktrees/
+.claude/settings.local.json
+
+# Local NOOS config (machine-specific paths)
+.noos/local.json
+.noos/config.json
+.noos/runtime/
