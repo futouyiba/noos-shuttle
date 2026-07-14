@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "@/commands/fs"
+import { readFile, writeFileAtomic } from "@/commands/fs"
 import { autoIngest } from "./ingest"
 import { useWikiStore } from "@/stores/wiki-store"
 import { normalizePath, isAbsolutePath } from "@/lib/path-utils"
@@ -51,9 +51,11 @@ function queueFilePath(projectPath: string): string {
 
 async function saveQueue(projectPath: string): Promise<void> {
   try {
-    // Only save pending and failed tasks (done tasks are removed)
+    // Only save pending and failed tasks (done tasks are removed). Atomic
+    // replacement prevents readers from observing a truncate-in-progress
+    // empty/partial JSON file while processing updates queue status.
     const toSave = queue.filter((t) => t.status !== "done")
-    await writeFile(queueFilePath(projectPath), JSON.stringify(toSave, null, 2))
+    await writeFileAtomic(queueFilePath(projectPath), JSON.stringify(toSave, null, 2))
   } catch {
     // non-critical
   }

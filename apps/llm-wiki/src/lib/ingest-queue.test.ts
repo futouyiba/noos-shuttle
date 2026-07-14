@@ -10,6 +10,7 @@ vi.mock("./ingest", () => ({
 vi.mock("@/commands/fs", () => ({
   readFile: vi.fn(),
   writeFile: vi.fn(),
+  writeFileAtomic: vi.fn(),
   listDirectory: vi.fn(),
   deleteFile: vi.fn(),
 }))
@@ -64,13 +65,13 @@ import {
   restoreQueue,
 } from "./ingest-queue"
 import { autoIngest } from "./ingest"
-import { readFile, writeFile } from "@/commands/fs"
+import { readFile, writeFileAtomic } from "@/commands/fs"
 import { sweepResolvedReviews } from "./sweep-reviews"
 import { useWikiStore } from "@/stores/wiki-store"
 
 const mockAutoIngest = vi.mocked(autoIngest)
 const mockReadFile = vi.mocked(readFile)
-const mockWriteFile = vi.mocked(writeFile)
+const mockWriteFile = vi.mocked(writeFileAtomic)
 const mockSweep = vi.mocked(sweepResolvedReviews)
 
 /** Simulate the app having opened `TEST_ID` at `TEST_PATH` so the queue
