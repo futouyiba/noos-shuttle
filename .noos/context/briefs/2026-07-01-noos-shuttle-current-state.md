@@ -57,16 +57,15 @@ Always check `git status --short --branch` at session start because this snapsho
 
 ## Active Handoffs
 
-Current active handoff:
+There are currently no active repository handoffs. The Project Sources export and reply-image handoff was accepted in headed Chromium on 2026-07-16 and moved to `done/`.
 
-- `.noos/handoffs/active/2026-06-05-project-sources-and-reply-images.md`
+Acceptance evidence covered:
 
-Keep it active for now. The implementation is present, but the recorded remaining acceptance gap is a real logged-in Chrome regression for:
+- real extension + Hub Project Sources import with a local Vault Handoff;
+- Project Sources export of two visible entries through the real extension/Hub path;
+- selected-reply image download with the non-selected reply excluded.
 
-- ChatGPT Project Sources export into NOOS;
-- selected/current-reply generated image download scope.
-
-Do not move it to `done/` until that acceptance gap is either completed or explicitly waived.
+A temporary local Vault Handoff remains as acceptance evidence. Its machine-local key and path are intentionally omitted from this tracked brief.
 
 ## Branch and Stash Hygiene
 

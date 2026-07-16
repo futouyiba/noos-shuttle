@@ -114,6 +114,22 @@ At handoff creation time, the latest full test run passed:
    - Confirm a context-pack-like folder appears in `Downloads/NOOS/vault/context-packs/chatgpt-project-sources/...` or local Vault if Hub import path is used.
 5. Consider next implementation step: direct Hub artifact ingest for binary files, so image artifacts can land in `~/.noos/vault/artifacts/files/...` without using Downloads mirror.
 
+## Acceptance Completion — 2026-07-16
+
+The remaining browser acceptance gap was completed on the current `main` baseline using headed Chromium with the built unpacked extension from `dist/`:
+
+1. **Project Sources import** — `npm run verify:extension-project` launched Chromium with the real extension, paired with the running Hub, selected a real local Vault Handoff, and attached `20260716-extension-acceptance-fixture-ee13.md` to the Project source file input. Result: passed.
+2. **Project Sources export** — a headed ChatGPT Project fixture exposed two visible sources (`Combat Rules.md`, `Economy Sheet.xlsx`); clicking `导出项目源到 NOOS` completed through the real extension/Hub messaging path and displayed `已导出 2 个 Project 源条目到 NOOS`. Result: passed.
+3. **Reply-scoped image download** — a headed ChatGPT conversation fixture contained a selected blue reply and a separate red reply; clicking `下载本条回复图` reported one downloaded image, and the temporary Chromium download directory contained exactly one completed download. Result: passed; the non-selected red reply was excluded.
+
+Additional issue discovered and fixed during acceptance:
+
+- `public/manifest.json` still reported extension version `0.1.4` while the repository release baseline was `0.1.6`. Commit `983f4d9 Align browser extension manifest with release version` corrected the packaged/unpacked extension metadata and was pushed to `main`.
+
+A clearly named temporary Handoff was created in the user's local Vault for the import acceptance. Its machine-local key and path are intentionally omitted from repository documentation.
+
+The implementation and acceptance work in this handoff are now complete. The open questions below remain possible future product enhancements, not blockers for closing this handoff.
+
 ## Open Questions
 
 1. Should generated image downloads get a sidecar metadata file per image in v1?

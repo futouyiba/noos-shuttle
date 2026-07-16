@@ -31,8 +31,8 @@ Make NOOS Shuttle and NOOS Hub reliable as a local-first context shuttle:
 | Workstream | Status | Owner Window | Notes |
 | --- | --- | --- | --- |
 | Shuttle Vault import picker | implemented | — | Virtual folders, search, multi-select, and shared feed action are on `main` |
-| ChatGPT Project Sources import/export | acceptance pending | — | Implementation is on `main`; logged-in Chrome export regression remains |
-| Reply-scoped generated image download | acceptance pending | — | Implementation is on `main`; verify selected/current-reply scope in logged-in Chrome |
+| ChatGPT Project Sources import/export | accepted | — | Headed Chromium verified import and export through the real extension/Hub path on 2026-07-16 |
+| Reply-scoped generated image download | accepted | — | Headed Chromium verified one selected-reply download and exclusion of another reply |
 | Hub ingest and local Vault | implemented | — | Hub saves, indexes, browses, and returns local Vault objects |
 | Runtime Projection for agents | smoke-tested | — | Selected context can be projected into `.noos/runtime/current/` |
 | Hub UX refactor | completed | — | Dashboard, four-section navigation, stacked adapters, toast/retry feedback are merged |
@@ -40,9 +40,9 @@ Make NOOS Shuttle and NOOS Hub reliable as a local-first context shuttle:
 
 ## Latest Context
 
-- Product release baseline is `v0.1.6` at `aa07af9`; later docs/ignore commits are on `main`.
-- The Hub UX refactor is merged and its handoff has moved to `done/`.
-- The remaining active handoff is the Project Sources export and reply image work because logged-in Chrome acceptance is not yet recorded.
+- Product release baseline is `v0.1.6` at `aa07af9`; later docs, ignore, atomic queue persistence, and extension manifest alignment commits are on `main`.
+- The Hub UX refactor and Project Sources/reply-image handoffs are complete and live under `done/`; there are currently no active repository handoffs.
+- Headed Chromium acceptance verified Project Sources import/export and selected-reply image download through the real unpacked extension; a clearly named temporary local Vault fixture remains as untracked acceptance evidence.
 - Hub owns local Vault browsing through `/v1/vault/recent` and `/v1/vault/browse`; Shuttle keeps a compact recent list plus the larger picker.
 - User-facing Vault organization continues to prefer virtual folders, search, tags, collections, latest lists, and source filters over arbitrary physical folder management.
 - `.noos/runtime/current/` is temporary agent context and may be absent when no runtime task is active.
@@ -104,7 +104,8 @@ When an agent finishes:
 
 ## Handoff Notes For Next Agent
 
-- The only active handoff is `.noos/handoffs/active/2026-06-05-project-sources-and-reply-images.md`; its remaining gap is logged-in Chrome acceptance, not implementation.
+- There are currently no active repository handoffs; only consume a handoff when a new one is added or the user explicitly selects one.
+- Headed Chromium acceptance for Project Sources import/export and selected-reply image download completed on 2026-07-16; do not reopen that work without a new regression.
 - Do not assume the recent-object list is enough for real Vault navigation; use Hub-owned browse/search for larger collections.
 - Avoid making physical path the user-facing identity. Use `lookup_key` and object metadata.
 - For ChatGPT Project Sources, prefer attaching Markdown files instead of pasting long content into the input box.
