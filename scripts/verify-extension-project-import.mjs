@@ -34,33 +34,79 @@ try {
     ]
   });
 
-  const page = context.pages()[0] ?? (await context.newPage());
-  await page.route("https://chatgpt.com/g/g-noos-e2e/project", (route) =>
-    route.fulfill({
-      contentType: "text/html",
-      body: projectFixtureHtml()
-    })
-  );
+  const existingPages = context.pages();
+  const page = await context.newPage();
+  await Promise.all(existingPages.map((existingPage) => existingPage.close().catch(() => undefined)));
+  await page.route("**/*", (route) => {
+    if (route.request().isNavigationRequest() && route.request().frame() === page.mainFrame()) {
+      return route.fulfill({
+        contentType: "text/html",
+        body: projectFixtureHtml()
+      });
+    }
+    return route.abort();
+  });
 
-  await page.goto("https://chatgpt.com/g/g-noos-e2e/project");
+  await page.goto("https://chatgpt.com/g/g-noos-e2e/project", {
+    waitUntil: "domcontentloaded",
+    timeout: 15_000
+  });
   await page.waitForFunction(
     () => Boolean(document.querySelector("#noos-shuttle-root")?.shadowRoot?.querySelector(".shuttle")),
     null,
     { timeout: 10_000 }
   );
+  const floatingControls = await page.evaluate(() => {
+    const root = document.querySelector("#noos-shuttle-root")?.shadowRoot;
+    const primary = root?.querySelector(".fab");
+    const surface = root?.querySelector(".surface-fab.surface-fab--chatgpt");
+    if (!(primary instanceof HTMLElement) || !(surface instanceof HTMLElement)) {
+      return {
+        primaryVisible: false,
+        surfaceVisible: false,
+        surfaceLabel: surface?.textContent?.trim() ?? ""
+      };
+    }
+    const isVisible = (element) => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+    };
+    return {
+      primaryVisible: isVisible(primary),
+      surfaceVisible: isVisible(surface),
+      surfaceLabel: surface.textContent?.trim() ?? ""
+    };
+  });
+  if (!floatingControls.primaryVisible || !floatingControls.surfaceVisible || floatingControls.surfaceLabel !== "AI") {
+    fail(`NOOS floating controls are incomplete: ${JSON.stringify(floatingControls)}`);
+  }
   await page.waitForSelector(".noos-project-import-button", { timeout: 10_000 });
   await page.locator(".noos-project-import-button").click();
 
-  await page.waitForFunction(
-    () => {
+  try {
+    await page.waitForFunction(
+      () => {
+        const root = document.querySelector("#noos-shuttle-root")?.shadowRoot;
+        const button = root?.querySelector("button[data-action='feed-selected-vault-object']");
+        return button instanceof HTMLButtonElement && !button.disabled;
+      },
+      null,
+      { timeout: 10_000 }
+    );
+  } catch (error) {
+    const debug = await page.evaluate(() => {
       const root = document.querySelector("#noos-shuttle-root")?.shadowRoot;
-      const text = root?.querySelector(".shuttle")?.textContent ?? "";
       const button = root?.querySelector("button[data-action='feed-selected-vault-object']");
-      return text.includes("Project") && button instanceof HTMLButtonElement && !button.disabled;
-    },
-    null,
-    { timeout: 10_000 }
-  );
+      return {
+        shadowText: root?.querySelector(".shuttle")?.textContent ?? "",
+        feedButtonFound: button instanceof HTMLButtonElement,
+        feedButtonDisabled: button instanceof HTMLButtonElement ? button.disabled : null
+      };
+    });
+    console.error(JSON.stringify({ ok: false, stage: "vault-selection", debug }, null, 2));
+    throw error;
+  }
 
   await page.evaluate(() => {
     const root = document.querySelector("#noos-shuttle-root")?.shadowRoot;
@@ -103,6 +149,7 @@ try {
       {
         ok: true,
         verified: "extension_project_import",
+        floatingControls,
         sourceObject: {
           type: first.object_type,
           key: first.lookup_key ?? first.key,

@@ -219,8 +219,19 @@ const viewState: ViewState = {
 bootstrap();
 
 function bootstrap(): void {
-  if (document.getElementById("noos-shuttle-root")) {
-    return;
+  const existingHost = document.getElementById("noos-shuttle-root");
+  if (existingHost) {
+    const existingShadow = existingHost.shadowRoot;
+    const expectedSurface = getCurrentSurface();
+    const hasHealthyShell = Boolean(
+      existingShadow?.querySelector(".shuttle") &&
+        existingShadow.querySelector(".fab") &&
+        (expectedSurface === "none" || existingShadow.querySelector(`.surface-fab--${expectedSurface}`))
+    );
+    if (hasHealthyShell) {
+      return;
+    }
+    existingHost.remove();
   }
 
   const host = document.createElement("div");
@@ -2306,6 +2317,10 @@ function checkPageContext(app: HTMLElement): void {
   const nextContext = getPageContext();
   if (nextContext.signature === currentPageContext.signature) {
     currentPageContext = nextContext;
+    const surface = getCurrentSurface();
+    if (surface !== "none" && !app.querySelector(`.surface-fab--${surface}`)) {
+      render(app);
+    }
     upsertProjectImportButton(app);
     return;
   }

@@ -17,6 +17,42 @@ afterAll(async () => {
 });
 
 describe("content script smoke flow", () => {
+  it("keeps both ChatGPT floating controls visible across SPA navigation", async () => {
+    const page = await newMockChatPage({ startWithHandoffs: false });
+
+    expect(await shuttleElementCount(page, ".fab")).toBe(1);
+    expect(await shuttleElementCount(page, ".surface-fab.surface-fab--chatgpt")).toBe(1);
+    expect(await shuttleElementText(page, ".surface-fab")).toBe("AI");
+    expect(await shuttleElementIsInViewport(page, ".fab")).toBe(true);
+    expect(await shuttleElementIsInViewport(page, ".surface-fab")).toBe(true);
+
+    await page.evaluate(() => window.history.pushState({}, "", "/c/noos-second-conversation"));
+    await page.waitForTimeout(400);
+
+    expect(await shuttleElementCount(page, ".fab")).toBe(1);
+    expect(await shuttleElementCount(page, ".surface-fab.surface-fab--chatgpt")).toBe(1);
+    expect(await shuttleElementText(page, ".surface-fab")).toBe("AI");
+    await page.close();
+  });
+
+  it("replaces an incomplete Shuttle root and restores both ChatGPT orbs", async () => {
+    const page = await newMockChatPage({ startWithHandoffs: false, injectContentScript: false });
+    await page.evaluate(() => {
+      const stale = document.createElement("div");
+      stale.id = "noos-shuttle-root";
+      stale.attachShadow({ mode: "open" }).innerHTML = `<div class="shuttle"><button class="fab"></button></div>`;
+      document.documentElement.append(stale);
+    });
+
+    await page.addScriptTag({ content: contentScript });
+
+    expect(await page.locator("#noos-shuttle-root").count()).toBe(1);
+    expect(await shuttleElementCount(page, ".fab")).toBe(1);
+    expect(await shuttleElementCount(page, ".surface-fab.surface-fab--chatgpt")).toBe(1);
+    expect(await shuttleElementText(page, ".surface-fab")).toBe("AI");
+    await page.close();
+  });
+
   it("scans handoffs, prefers the latest candidate, and saves through the vault action", async () => {
     const page = await newMockChatPage();
 
@@ -474,6 +510,7 @@ async function newMockChatPage(
     startWithCrystals?: boolean;
     vaultBackend?: "hub_local" | "downloads_mirror";
     withFileInput?: boolean;
+    injectContentScript?: boolean;
   } = {}
 ): Promise<Page> {
   const page = await browser.newPage();
@@ -586,7 +623,9 @@ async function newMockChatPage(
     })
   );
   await page.goto("https://chatgpt.com/c/noos-content-smoke");
-  await page.addScriptTag({ content: contentScript });
+  if (options.injectContentScript !== false) {
+    await page.addScriptTag({ content: contentScript });
+  }
   return page;
 }
 
@@ -974,6 +1013,18 @@ async function waitForShuttleText(page: Page, text: string): Promise<void> {
 
 async function shuttleText(page: Page): Promise<string> {
   return page.evaluate(() => document.querySelector("#noos-shuttle-root")?.shadowRoot?.querySelector(".shuttle")?.textContent ?? "");
+}
+
+async function shuttleElementCount(page: Page, selector: string): Promise<number> {
+  return page.evaluate((targetSelector) => {
+    return document.querySelector("#noos-shuttle-root")?.shadowRoot?.querySelectorAll(targetSelector).length ?? 0;
+  }, selector);
+}
+
+async function shuttleElementText(page: Page, selector: string): Promise<string> {
+  return page.evaluate((targetSelector) => {
+    return document.querySelector("#noos-shuttle-root")?.shadowRoot?.querySelector(targetSelector)?.textContent?.trim() ?? "";
+  }, selector);
 }
 
 async function shuttleElementIsInViewport(page: Page, selector: string): Promise<boolean> {
