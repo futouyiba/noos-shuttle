@@ -2,6 +2,8 @@
 
 > Working confirmation；不修改或重新设计 frozen Review Candidate v4，也不扩展 V2。
 
+Durable phase status is tracked in [V1 Current](v1-primary-design-current.md); curated rationale and negative knowledge are in the [Primary Design Companion / Decision Memory](v1-primary-design-companion-decision-memory-v0.md).
+
 ## 1. Authority and evidence boundary
 
 Design authority is the `futouyiba/noos_docs` snapshot at [`a49303cabf436f3398a596685d36d2792e6a08a1`](https://github.com/futouyiba/noos_docs/tree/a49303cabf436f3398a596685d36d2792e6a08a1). It includes the self-bootstrap, browser observation, command idempotency, logical binding, child lifecycle, current-conversation binding v1, and reducer extension contracts. The Child Result Delivery target is pinned separately to the exact same commit and exact target blob [`36c427d3ea0378ef466f794b71c6a1c3f3a046a4`](https://github.com/futouyiba/noos_docs/blob/a49303cabf436f3398a596685d36d2792e6a08a1/docs/deliberation-harness/child-result-delivery-idempotency-contract-v0.md).
