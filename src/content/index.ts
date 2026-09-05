@@ -12,6 +12,7 @@ import { DownloadAdapter } from "../storage/DownloadAdapter";
 import { NoosVaultAdapter } from "../storage/NoosVaultAdapter";
 import { attachMarkdownFilesToChatInput, getPageText, insertIntoChatInput, isChatbotGenerating, submitChatInput } from "./chatgpt-dom";
 import { captureChatGptTranscriptWithScroll, captureRenderedChatGptTranscript } from "./chatgpt-transcript";
+import { RuntimeObservationLedger, type CarrierObservation } from "./runtime-observer";
 import styles from "./styles.css?inline";
 
 type ShuttleState = "idle" | "prompt-ready" | "waiting" | "captured" | "needs-choice" | "warning" | "saved" | "error";
@@ -188,6 +189,7 @@ let shuttlePosition = getStoredPosition();
 let suppressNextFabClick = false;
 let vaultFeedTarget: VaultFeedTarget = "chat";
 let preferredVaultAttachRoot: HTMLElement | null = null;
+const runtimeObservationLedger = new RuntimeObservationLedger();
 
 const viewState: ViewState = {
   open: false,
@@ -1882,7 +1884,10 @@ function installConversationWatcher(app: HTMLElement): void {
       scheduleContextCheck();
     }
   });
-  window.addEventListener("pagehide", () => cancelActiveWait());
+  window.addEventListener("pagehide", () => {
+    cancelActiveWait();
+    publishRuntimeObservation(runtimeObservationLedger.suspend());
+  });
   window.setInterval(() => checkPageContext(app), PAGE_CONTEXT_POLL_MS);
 }
 
@@ -2315,6 +2320,7 @@ function wrapHistoryMethod(method: "pushState" | "replaceState", onChange: () =>
 
 function checkPageContext(app: HTMLElement): void {
   const nextContext = getPageContext();
+  publishRuntimeObservation(observeRuntimePage(nextContext));
   if (nextContext.signature === currentPageContext.signature) {
     currentPageContext = nextContext;
     const surface = getCurrentSurface();
@@ -2327,6 +2333,37 @@ function checkPageContext(app: HTMLElement): void {
 
   currentPageContext = nextContext;
   resetForConversationChange(app);
+}
+
+function observeRuntimePage(context: PageContext): CarrierObservation {
+  const composer = Array.from(document.querySelectorAll<HTMLElement>("textarea, div[contenteditable='true'], [role='textbox']"))
+    .find((candidate) => isVisibleForObservation(candidate));
+  const stopControl = Array.from(document.querySelectorAll<HTMLElement>("[data-testid*='stop'], button[aria-label*='Stop'], button[aria-label*='停止']"))
+    .some((candidate) => isVisibleForObservation(candidate));
+  return runtimeObservationLedger.observe({
+    provider: context.origin,
+    routeRef: context.pathname,
+    providerConversationRef: context.conversationId || undefined,
+    composerPresent: Boolean(composer),
+    composerInteractive: Boolean(composer && !(composer as HTMLInputElement).disabled && composer.getAttribute("aria-disabled") !== "true"),
+    stopGenerationControlPresent: stopControl || isChatbotGenerating(),
+    assistantOutputMutating: false,
+    assistantMessageCount: document.querySelectorAll("[data-message-author-role='assistant'], article").length,
+    userMessageCount: document.querySelectorAll("[data-message-author-role='user']").length,
+    providerErrorSurfacePresent: context.pageKind === "login" || context.pageKind === "unavailable",
+    routeStable: true
+  });
+}
+
+function publishRuntimeObservation(observation: CarrierObservation | null): void {
+  if (!observation) return;
+  window.dispatchEvent(new CustomEvent("noos:runtime-observation", { detail: observation }));
+}
+
+function isVisibleForObservation(element: HTMLElement): boolean {
+  const rect = element.getBoundingClientRect();
+  const style = window.getComputedStyle(element);
+  return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
 }
 
 function resetForConversationChange(app: HTMLElement): void {
