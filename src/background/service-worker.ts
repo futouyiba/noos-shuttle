@@ -13,6 +13,10 @@ const HUB_ACTION_URL = "http://127.0.0.1:17642/v1/actions";
 const HUB_TOKEN_STORAGE_KEY = "noosHubShuttleToken";
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === "NOOS_OBSERVATION_CARRIER" && sender.frameId === 0 && sender.tab?.id !== undefined) {
+    sendResponse({ carrierRef: `browser-tab:${sender.tab.id}`, windowId: sender.tab.windowId, documentId: sender.documentId });
+    return false;
+  }
   if (isVaultSaveMessage(message)) {
     saveMarkdownToVault(message.filename, message.content, "handoff", sender.tab?.url)
       .then(sendResponse)

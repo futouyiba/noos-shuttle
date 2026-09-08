@@ -190,6 +190,10 @@ let suppressNextFabClick = false;
 let vaultFeedTarget: VaultFeedTarget = "chat";
 let preferredVaultAttachRoot: HTMLElement | null = null;
 const runtimeObservationLedger = new RuntimeObservationLedger();
+let observationRoute = "";
+let observationRouteSince = 0;
+let observationOutput = "";
+let observationOutputChangedAt = 0;
 
 const viewState: ViewState = {
   open: false,
@@ -1863,6 +1867,10 @@ function installConversationWatcher(app: HTMLElement): void {
   }
 
   conversationWatcherInstalled = true;
+  void sendExtensionMessage<{ type: string }, { carrierRef?: string }>({ type: "NOOS_OBSERVATION_CARRIER" })
+    .then(response => {
+      if (response?.carrierRef) runtimeObservationLedger.attachCarrier(response.carrierRef);
+    }).catch(() => { /* A missing handshake remains an execution-local observation. */ });
   const scheduleContextCheck = () => {
     if (pageContextDebounceId !== null) {
       window.clearTimeout(pageContextDebounceId);
@@ -1879,6 +1887,7 @@ function installConversationWatcher(app: HTMLElement): void {
   window.addEventListener("hashchange", scheduleContextCheck);
   window.addEventListener("focus", scheduleContextCheck);
   window.addEventListener("pageshow", scheduleContextCheck);
+  window.addEventListener("pageshow", () => runtimeObservationLedger.resume());
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
       scheduleContextCheck();
@@ -1888,7 +1897,28 @@ function installConversationWatcher(app: HTMLElement): void {
     cancelActiveWait();
     publishRuntimeObservation(runtimeObservationLedger.suspend());
   });
-  window.setInterval(() => checkPageContext(app), PAGE_CONTEXT_POLL_MS);
+  window.setInterval(() => {
+    const nextRoot = document.querySelector("main");
+    if (nextRoot !== outputRoot) {
+      outputObserver.disconnect();
+      outputRoot = nextRoot;
+      if (outputRoot) outputObserver.observe(outputRoot, { childList: true, subtree: true, characterData: true });
+    }
+    checkPageContext(app);
+  }, PAGE_CONTEXT_POLL_MS);
+  // Sample only provider output mutations. Callbacks read the current route
+  // synchronously; they never apply a captured route or event payload.
+  const outputObserver = new MutationObserver(records => {
+    const relevant = records.some(record => {
+      const element = record.target instanceof Element ? record.target : record.target.parentElement;
+      return Boolean(element?.closest("[data-message-author-role='assistant']") ||
+        Array.from(record.addedNodes).some(node => node instanceof Element &&
+          (node.matches("[data-message-author-role='assistant']") || node.querySelector("[data-message-author-role='assistant']"))));
+    });
+    if (relevant) checkPageContext(app);
+  });
+  let outputRoot = document.querySelector("main");
+  if (outputRoot) outputObserver.observe(outputRoot, { childList: true, subtree: true, characterData: true });
 }
 
 function installProjectImportBridge(app: HTMLElement): void {
@@ -2320,7 +2350,9 @@ function wrapHistoryMethod(method: "pushState" | "replaceState", onChange: () =>
 
 function checkPageContext(app: HTMLElement): void {
   const nextContext = getPageContext();
-  publishRuntimeObservation(observeRuntimePage(nextContext));
+  if (["chatgpt.com", "chat.openai.com"].includes(location.hostname)) {
+    publishRuntimeObservation(observeRuntimePage(nextContext));
+  }
   if (nextContext.signature === currentPageContext.signature) {
     currentPageContext = nextContext;
     const surface = getCurrentSurface();
@@ -2336,6 +2368,19 @@ function checkPageContext(app: HTMLElement): void {
 }
 
 function observeRuntimePage(context: PageContext): CarrierObservation {
+  const now = Date.now();
+  const route = `${context.origin}${context.pathname}`;
+  const output = Array.from(document.querySelectorAll("[data-message-author-role='assistant']"))
+    .map(node => node.textContent ?? "").join("\n");
+  if (route !== observationRoute) {
+    observationRoute = route;
+    observationRouteSince = now;
+    observationOutput = output;
+    observationOutputChangedAt = now;
+  } else if (output !== observationOutput) {
+    observationOutput = output;
+    observationOutputChangedAt = now;
+  }
   const composer = Array.from(document.querySelectorAll<HTMLElement>("textarea, div[contenteditable='true'], [role='textbox']"))
     .find((candidate) => isVisibleForObservation(candidate));
   const stopControl = Array.from(document.querySelectorAll<HTMLElement>("[data-testid*='stop'], button[aria-label*='Stop'], button[aria-label*='停止']"))
@@ -2347,11 +2392,13 @@ function observeRuntimePage(context: PageContext): CarrierObservation {
     composerPresent: Boolean(composer),
     composerInteractive: Boolean(composer && !(composer as HTMLInputElement).disabled && composer.getAttribute("aria-disabled") !== "true"),
     stopGenerationControlPresent: stopControl || isChatbotGenerating(),
-    assistantOutputMutating: false,
-    assistantMessageCount: document.querySelectorAll("[data-message-author-role='assistant'], article").length,
+    assistantOutputMutating: now - observationOutputChangedAt < 1_000,
+    assistantMessageCount: document.querySelectorAll("[data-message-author-role='assistant']").length,
     userMessageCount: document.querySelectorAll("[data-message-author-role='user']").length,
-    providerErrorSurfacePresent: context.pageKind === "login" || context.pageKind === "unavailable",
-    routeStable: true
+    providerErrorSurfacePresent: Array.from(document.querySelectorAll<HTMLElement>("[role='alert'], [data-testid='conversation-error']"))
+      .some(element => isVisibleForObservation(element) && !element.closest("[data-message-author-role]") &&
+        /error|unable to load|not found|出错|无法加载|找不到/i.test(element.textContent ?? "")),
+    routeStable: now - observationRouteSince >= 2_000
   });
 }
 

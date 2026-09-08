@@ -9,7 +9,7 @@ let contentScript: string;
 beforeAll(async () => {
   await build({ configFile: "vite.config.ts", logLevel: "silent" });
   contentScript = await readFile("dist/assets/content.js", "utf8");
-  browser = await chromium.launch({ headless: true });
+  browser = await chromium.launch({ headless: true, executablePath: process.env.NOOS_TEST_BROWSER_EXECUTABLE });
 });
 
 afterAll(async () => {
@@ -17,6 +17,38 @@ afterAll(async () => {
 });
 
 describe("content script smoke flow", () => {
+  it("observes output changes and stabilizes again after same-tab navigation", async () => {
+    const page = await newMockChatPage({ startWithHandoffs: false, injectContentScript: false });
+    await page.evaluate(() => {
+      (window as unknown as { observations: unknown[] }).observations = [];
+      window.addEventListener("noos:runtime-observation", event => {
+        (window as unknown as { observations: unknown[] }).observations.push((event as CustomEvent).detail);
+      });
+    });
+    await page.addScriptTag({ content: contentScript });
+    const state = () => page.evaluate(() => {
+      const observations = (window as unknown as { observations: { state: string }[] }).observations;
+      return observations.at(-1)?.state;
+    });
+    await expect.poll(state, { timeout: 10000 }).toBe("READY");
+    await page.evaluate(() => {
+      const output = document.createElement("div");
+      output.dataset.messageAuthorRole = "assistant";
+      output.textContent = "rendering";
+      document.querySelector("main")!.append(output);
+    });
+    await expect.poll(state).toBe("GENERATING");
+    await expect.poll(state, { timeout: 10000 }).toBe("READY");
+    await page.evaluate(() => history.pushState({}, "", "/c/observer-second"));
+    await expect.poll(() => page.evaluate(() => {
+      const items = (window as unknown as { observations: { providerConversationRef: string }[] }).observations;
+      return items.at(-1)?.providerConversationRef;
+    })).toBe("observer-second");
+    expect(await state()).not.toBe("READY");
+    await expect.poll(state, { timeout: 10000 }).toBe("READY");
+    await page.close();
+  }, 30000);
+
   it("keeps both ChatGPT floating controls visible across SPA navigation", async () => {
     const page = await newMockChatPage({ startWithHandoffs: false });
 
