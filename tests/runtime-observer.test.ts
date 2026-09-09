@@ -14,6 +14,36 @@ const base = {
 };
 
 describe("runtime observation", () => {
+  it("invalidates READY when a route or generation signal changes in the same millisecond", () => {
+    const ledger = new RuntimeObservationLedger();
+    ledger.observe(base, 1);
+    expect(ledger.observe(base, 2001).state).toBe("READY");
+    expect(ledger.observe({ ...base, stopGenerationControlPresent: true }, 2001).state).toBe("GENERATING");
+    expect(ledger.observe({ ...base, routeRef: "/c/c2", providerConversationRef: "c2" }, 2001))
+      .toMatchObject({ state: "STABILIZING", providerConversationRef: "c2", sourceEpoch: 1 });
+    expect(ledger.observe(base, 2000).providerConversationRef).toBe("c2");
+  });
+  it("records identity provenance and distinguishes a failed handshake from a confirmed tab", () => {
+    const ledger = new RuntimeObservationLedger();
+    expect(ledger.observe(base, 1)).toMatchObject({
+      carrierIdentityState: "execution-local", conversationIdentitySource: "provider-route"
+    });
+    ledger.attachCarrier("browser-tab:21");
+    expect(ledger.observe(base, 2).carrierIdentityState).toBe("browser-tab");
+    expect(ledger.observe({ ...base, providerConversationRef: undefined }, 3)).toMatchObject({
+      conversationIdentityState: "unresolved", conversationIdentitySource: "unavailable"
+    });
+  });
+
+  it.each([{ providerConversationRef: 42 }, { provider: "" }, { routeRef: undefined }])(
+    "does not crash or become READY with malformed identity probes: %j", invalid => {
+      const ledger = new RuntimeObservationLedger();
+      const probe = { ...base, ...invalid } as unknown as typeof base;
+      expect(ledger.observe(probe, 1).state).toBe("RECOVERING");
+      expect(ledger.observe(probe, 5001).state).toBe("RECOVERING");
+    }
+  );
+
   it("waits for repeated error observations and separates reload instances on one carrier", () => {
     const a = new RuntimeObservationLedger();
     a.attachCarrier("browser-tab:12");

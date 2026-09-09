@@ -1,0 +1,14 @@
+{
+  "at": "2026-09-09T02:34:34.247Z",
+  "kind": "provider-access-probe",
+  "promptSent": false,
+  "scenarios": {
+    "authenticatedProviderExperiments": "NOT_VERIFIED"
+  },
+  "traces": {},
+  "browser": "147.0.7727.15",
+  "httpStatus": 403,
+  "route": "/",
+  "title": "请稍候…",
+  "visibleComposerCount": 0
+}
