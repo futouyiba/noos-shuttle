@@ -17,6 +17,41 @@ afterAll(async () => {
 });
 
 describe("content script smoke flow", () => {
+  it("keeps a provisional ChatGPT WEB route unresolved until provider identity arrives", async () => {
+    const page = await newMockChatPage({ startWithHandoffs: false, injectContentScript: false });
+    await page.evaluate(() => {
+      history.replaceState({}, "", "/c/WEB:temporary-client-id");
+      window.addEventListener("noos:runtime-observation", event => {
+        (window as unknown as { observed: unknown }).observed = (event as CustomEvent).detail;
+      });
+    });
+    await page.addScriptTag({ content: contentScript });
+    const observed = () => page.evaluate(() => (window as unknown as {
+      observed: { state: string; conversationIdentityState: string; providerConversationRef?: string; sourceEpoch: number }
+    }).observed);
+    await page.waitForTimeout(4500);
+    expect(await observed()).toMatchObject({ state: "ATTACHING", conversationIdentityState: "unresolved" });
+    expect((await observed()).providerConversationRef).toBeUndefined();
+    await page.evaluate(() => {
+      const stop = document.createElement("button");
+      stop.dataset.testid = "stop-button";
+      stop.textContent = "Stop";
+      document.querySelector("main")!.append(stop);
+    });
+    await expect.poll(async () => (await observed()).state).toBe("GENERATING");
+    expect((await observed()).conversationIdentityState).toBe("unresolved");
+    const epoch = (await observed()).sourceEpoch;
+    await page.evaluate(() => {
+      document.querySelector("[data-testid='stop-button']")!.remove();
+      history.replaceState({}, "", "/c/provider-established-id");
+    });
+    await expect.poll(async () => (await observed()).providerConversationRef).toBe("provider-established-id");
+    expect((await observed()).sourceEpoch).toBeGreaterThan(epoch);
+    expect((await observed()).state).not.toBe("READY");
+    await expect.poll(async () => (await observed()).state, { timeout: 8000 }).toBe("READY");
+    await page.close();
+  }, 20000);
+
   it("retries a failed carrier handshake without inventing a confirmed tab", async () => {
     const page = await newMockChatPage({ startWithHandoffs: false, injectContentScript: false });
     await page.evaluate(() => {
