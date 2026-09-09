@@ -2411,7 +2411,9 @@ function observeRuntimePage(context: PageContext): CarrierObservation {
   return runtimeObservationLedger.observe({
     provider: context.origin,
     routeRef: context.pathname,
-    providerConversationRef: context.conversationId || undefined,
+    // ChatGPT briefly exposes WEB: routes during first submission. They are
+    // provisional client identities, replaced by the provider conversation ID.
+    providerConversationRef: context.conversationId.startsWith("WEB:") ? undefined : context.conversationId || undefined,
     composerPresent: Boolean(composer),
     composerInteractive: Boolean(composer && !composer.matches(":disabled") &&
       !(composer as HTMLInputElement).readOnly && composer.getAttribute("aria-readonly") !== "true" &&
