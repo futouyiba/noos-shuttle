@@ -3,7 +3,7 @@ import { SubmissionOperationLedger, SUBMISSION_OPERATIONS_KEY, createChromeSubmi
 
 function baseline() { return { routeRef: "route:a", assistantMessageCount: 1, userMessageCount: 1, lastUserMessageFingerprint: "u1", lastAssistantMessageFingerprint: "a1", headFingerprint: "h1", observedAt: 1 }; }
 function input(operationId: string, carrier = "browser-tab:1") { return { operationId, operationKind: "GO" as const, workItemId: "w1", logicalThreadId: "t1", targetCarrierRef: carrier, payloadFingerprint: "p1", payload: "go", preSubmitBaseline: baseline() }; }
-function memoryStore() { let value: unknown; return { get: async () => value, set: async (next: Record<string, unknown>) => { value = next; } }; }
+function memoryStore() { let value: unknown; return { get: async (_key?: string) => value, set: async (next: Record<string, unknown>) => { value = next; } }; }
 
 describe("SubmissionOperationLedger", () => {
   it("persists PREPARED before claim and is idempotent by operation id", async () => {
