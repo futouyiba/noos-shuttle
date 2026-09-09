@@ -85,6 +85,7 @@ describe("content script smoke flow", () => {
     const page = await newMockChatPage({ startWithHandoffs: false, injectContentScript: false });
     await page.evaluate(() => {
       const composer = document.createElement("textarea");
+      composer.id = "prompt-textarea";
       composer.readOnly = true;
       document.querySelector("[contenteditable='true']")!.replaceWith(composer);
       (window as unknown as { states: string[] }).states = [];
@@ -108,6 +109,66 @@ describe("content script smoke flow", () => {
       { timeout: 5000 }).toBe("READY");
     await page.close();
   }, 15000);
+
+  it("does not substitute a historical editor for a read-only or missing main composer", async () => {
+    const page = await newMockChatPage({ startWithHandoffs: false, injectContentScript: false });
+    await page.evaluate(() => {
+      document.querySelector("#prompt-textarea")!.setAttribute("aria-readonly", "true");
+      document.body.prepend(document.createElement("textarea"));
+      (window as unknown as { samples: { state: string; composerInteractive: boolean }[] }).samples = [];
+      window.addEventListener("noos:runtime-observation", event => {
+        (window as unknown as { samples: unknown[] }).samples.push((event as CustomEvent).detail);
+      });
+    });
+    await page.addScriptTag({ content: contentScript });
+    await page.waitForTimeout(4500);
+    const samples = () => page.evaluate(() =>
+      (window as unknown as { samples: { state: string; composerInteractive: boolean; composerPresent: boolean }[] }).samples);
+    const blocked = await samples();
+    expect(blocked.length).toBeGreaterThanOrEqual(4);
+    expect(blocked.every(item => item.state !== "READY" && !item.composerInteractive)).toBe(true);
+    await page.evaluate(() => { document.querySelector("#prompt-textarea")!.id = "unknown-editor"; });
+    await expect.poll(async () => (await samples()).at(-1)?.composerPresent).toBe(false);
+    await page.evaluate(() => {
+      const composer = document.querySelector("#unknown-editor")!;
+      composer.id = "prompt-textarea";
+      composer.removeAttribute("aria-readonly");
+    });
+    await expect.poll(async () => (await samples()).at(-1)?.state, { timeout: 5000 }).toBe("READY");
+    await page.close();
+  }, 15000);
+
+  it("restarts the quiet window when the output root is repeatedly replaced with identical content", async () => {
+    const page = await newMockChatPage({ startWithHandoffs: false, injectContentScript: false });
+    await page.evaluate(() => {
+      document.querySelector("main")!.innerHTML = '<div data-message-author-role="assistant">unchanged</div>';
+      (window as unknown as { samples: unknown[] }).samples = [];
+      window.addEventListener("noos:runtime-observation", event => {
+        (window as unknown as { samples: unknown[] }).samples.push((event as CustomEvent).detail);
+      });
+    });
+    await page.addScriptTag({ content: contentScript });
+    const samples = () => page.evaluate(() =>
+      (window as unknown as { samples: { state: string; quietSince: number | null }[] }).samples);
+    await expect.poll(async () => (await samples()).at(-1)?.state, { timeout: 7000 }).toBe("READY");
+    await page.evaluate(async () => {
+      (window as unknown as { samples: unknown[] }).samples = [];
+      const replaceRoot = () => {
+        const root = document.querySelector("main")!;
+        root.replaceWith(root.cloneNode(true));
+      };
+      replaceRoot();
+      const timer = window.setInterval(replaceRoot, 100);
+      await new Promise(resolve => window.setTimeout(resolve, 4500));
+      window.clearInterval(timer);
+    });
+    const active = await samples();
+    expect(active.length).toBeGreaterThanOrEqual(4);
+    expect(active.every(item => item.state !== "READY" && item.quietSince === null)).toBe(true);
+    await expect.poll(async () => (await samples()).at(-1)?.state, { timeout: 6000 }).toBe("STABILIZING");
+    await expect.poll(async () => (await samples()).at(-1)?.state, { timeout: 5000 }).toBe("READY");
+    await page.close();
+  }, 20000);
 
   it("keeps both ChatGPT floating controls visible across SPA navigation", async () => {
     const page = await newMockChatPage({ startWithHandoffs: false });
@@ -974,7 +1035,7 @@ function createMockChatHtml(startWithHandoffs: boolean, startWithCrystals: boole
       }
       ${startWithCrystals ? `<article><pre>${escapeHtml(createCrystal())}</pre></article>` : ""}
     </main>
-    <div role="textbox" contenteditable="true"></div>
+    <div id="prompt-textarea" role="textbox" contenteditable="true"></div>
     ${withFileInput ? `<input type="file" />` : ""}
     <button aria-label="发送">send</button>
   </body>

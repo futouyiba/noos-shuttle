@@ -39,8 +39,8 @@ These four files are unchanged between the pinned snapshot and the implementatio
 ## Changes in this continuation
 
 - Initial static assistant content establishes a baseline instead of producing a false GENERATING event. Initial observation is published immediately.
-- Assistant subtree structural mutations reset the generation/quiet heartbeat even when text is unchanged. This conservatively includes provider post-processing.
-- Read-only, disabled, inert, non-editable and accessibility-hidden composer candidates cannot make READY true.
+- Assistant subtree structural mutations and replacement of the entire observed `main` root reset the generation/quiet heartbeat even when text is unchanged. This conservatively includes provider post-processing and remounts; initial static attach still establishes a baseline.
+- Only the known ChatGPT main composer (`#prompt-textarea`) contributes readiness evidence. Read-only, disabled, inert, non-editable, hidden or missing main composers cannot be replaced by historical editors or other textboxes. Unknown provider markup stays non-READY until supported by adapter evidence.
 - Missing/malformed identity probes cannot crash normalization or yield READY.
 - Two callbacks in the same millisecond can invalidate READY on changed route/generation evidence; they cannot advance the quiet timer. Older timestamps remain rejected.
 - Added `conversationIdentitySource` (`provider-route` / `unavailable`) and `carrierIdentityState` (`execution-local` / `browser-tab`). Failed handshakes remain explicitly provisional and retry at most once per five seconds while unattached.
@@ -68,13 +68,14 @@ Executed from repository root:
 ```sh
 npm run typecheck
 NOOS_TEST_BROWSER_EXECUTABLE="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" npm test
-NOOS_TEST_BROWSER_EXECUTABLE="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" npx vitest run tests/content-ui-smoke.test.ts -t 'retries a failed carrier'
+NOOS_TEST_BROWSER_EXECUTABLE="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" npx vitest run tests/content-ui-smoke.test.ts
+npx vitest run --exclude tests/content-ui-smoke.test.ts
 npm run build
 node --check scripts/slice-0-observation-experiment.mjs
 git diff --check
 ```
 
-The full suite passed **87 tests in 14 files**; the subsequently added handshake retry regression passed separately, for **88 verified tests**. Typecheck and extension build passed. Observer tests cover timed state transitions, malformed/missing probes, unresolved generation, same-millisecond changes, older/duplicate observations, source changes, duplicate representation, suspension, error recovery and execution reconstruction. Background tests exercise real handler registration with trusted sender fixtures, duplicate tabs, worker-module reconstruction, and rejection of missing-tab/subframe attachment. Browser tests cover static attach, structural output activity, route changes, read-only composer, debug-copy isolation and failed-handshake retry.
+Before independent review, the full suite passed **88 tests in 14 files** on `102750c`. After the two review fixes, the content browser suite passed **21 tests**, and the other 13 test files passed **69 tests**, for **90 verified tests** on the corrected tree. Typecheck and extension build passed. Observer tests cover timed state transitions, malformed/missing probes, unresolved generation, same-millisecond changes, older/duplicate observations, source changes, duplicate representation, suspension, error recovery and execution reconstruction. Background tests exercise real handler registration with trusted sender fixtures, duplicate tabs, worker-module reconstruction, and rejection of missing-tab/subframe attachment. Browser tests cover static attach, structural output activity, route changes, read-only composer, debug-copy isolation, failed-handshake retry, decoy editors beside a blocked/missing main composer, and repeated identical-content root replacement.
 
 The initial read-only test failed because the existing fixture uses contenteditable rather than textarea; the test now explicitly replaces that composer with a read-only textarea and passed. This was test setup, not evidence about ChatGPT.
 
@@ -142,6 +143,15 @@ Attach sanitized traces and per-scenario PASS/FAIL/NOT_VERIFIED findings to Issu
 | IMPLEMENTATION_DETAIL | Real provider page required for semantic timing evidence; both fresh-browser probes returned HTTP 403/no composer. Reproduce with `--provider`; evidence JSON. | Mark provider scenarios NOT_VERIFIED and supply manual steps. | No demonstrated contract contradiction. |
 
 No new authenticated provider facts were established. No evidence-backed CONTRACT_MISMATCH or PRODUCT_TRADEOFF requires reopening Primary Design. Automated evidence validates observation identity separation, conservative local stabilization and reconstructible runtime attachment within the tested fixture boundaries, not provider durability, safe preactivation or future dispatch safety.
+
+## Independent review corrections
+
+An independent reviewer, starting from Issue/authority inputs without the implementation conversation, reviewed exact commit `102750c8c9ff5775ce46064398c58279a60c4a1a` and returned **REQUEST_CHANGES** with two P2 findings. The [full first-round review](https://github.com/futouyiba/noos-shuttle/pull/2#issuecomment-5595758986) is preserved in the PR.
+
+- A leading historical textarea could be chosen instead of a read-only main composer, falsely preserving READY. The adapter now uses only the known main-composer marker; absent or unsupported markup remains non-READY. The new regression covers read-only and missing main composer with another editable textarea present, then recovery.
+- Replacing `main` with an identical clone every 100 ms preserved the old quiet window even across multiple polls. Root replacement now invalidates that window through the output heartbeat. The new regression requires non-READY throughout 4.5 seconds of repeated remounts, followed by STABILIZING and a new quiet window before READY.
+
+Both were `IMPLEMENTATION_BUG`, not provider facts or contract mismatches. These are uncovered gaps in the previous Slice 0 hardening, not claims that the reviewed commit introduced both bugs. The original fixtures did not cover these cases; their PASS does not negate the counterexamples. The final independent review disposition is recorded against the exact corrected commit in the PR comments; it does not upgrade missing provider evidence or constitute a different GitHub account's native approval.
 
 ## Acceptance assessment and next boundary
 

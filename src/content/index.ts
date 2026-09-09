@@ -1915,6 +1915,8 @@ function installConversationWatcher(app: HTMLElement): void {
     if (nextRoot !== outputRoot) {
       outputObserver.disconnect();
       outputRoot = nextRoot;
+      // A new root invalidates output quiet even when it has identical text.
+      observationOutputChangedAt = Date.now();
       if (outputRoot) outputObserver.observe(outputRoot, { childList: true, subtree: true, characterData: true });
     }
     checkPageContext(app);
@@ -2400,8 +2402,10 @@ function observeRuntimePage(context: PageContext): CarrierObservation {
     observationOutput = output;
     observationOutputChangedAt = now;
   }
-  const composer = Array.from(document.querySelectorAll<HTMLElement>("textarea, div[contenteditable='true'], [role='textbox']"))
-    .find((candidate) => isVisibleForObservation(candidate));
+  // Only the provider's main composer is readiness evidence. Historical-message
+  // editors and search/dialog inputs must never substitute for it.
+  const mainComposer = document.getElementById("prompt-textarea");
+  const composer = mainComposer && isVisibleForObservation(mainComposer) ? mainComposer : null;
   const stopControl = Array.from(document.querySelectorAll<HTMLElement>("[data-testid*='stop'], button[aria-label*='Stop'], button[aria-label*='停止']"))
     .some((candidate) => isVisibleForObservation(candidate));
   return runtimeObservationLedger.observe({
