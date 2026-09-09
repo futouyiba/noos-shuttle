@@ -193,7 +193,7 @@ const runtimeObservationLedger = new RuntimeObservationLedger();
 let observationRoute = "";
 let observationRouteSince = 0;
 let observationOutput = "";
-let observationOutputChangedAt = 0;
+let observationOutputChangedAt: number | null = null;
 
 const viewState: ViewState = {
   open: false,
@@ -1867,10 +1867,22 @@ function installConversationWatcher(app: HTMLElement): void {
   }
 
   conversationWatcherInstalled = true;
-  void sendExtensionMessage<{ type: string }, { carrierRef?: string }>({ type: "NOOS_OBSERVATION_CARRIER" })
-    .then(response => {
-      if (response?.carrierRef) runtimeObservationLedger.attachCarrier(response.carrierRef);
-    }).catch(() => { /* A missing handshake remains an execution-local observation. */ });
+  let handshakePending = false;
+  let handshakeAttemptAt = -Infinity;
+  const attachCarrier = () => {
+    if (handshakePending || runtimeObservationLedger.value?.carrierIdentityState === "browser-tab" ||
+      Date.now() - handshakeAttemptAt < 5_000) return;
+    handshakePending = true;
+    handshakeAttemptAt = Date.now();
+    void sendExtensionMessage<{ type: string }, { carrierRef?: string }>({ type: "NOOS_OBSERVATION_CARRIER" })
+      .then(response => {
+        if (typeof response?.carrierRef === "string" && /^browser-tab:\d+$/.test(response.carrierRef)) {
+          runtimeObservationLedger.attachCarrier(response.carrierRef);
+        }
+      }).catch(() => { /* Retry the read-only handshake after a transient failure. */ })
+      .finally(() => { handshakePending = false; });
+  };
+  attachCarrier();
   const scheduleContextCheck = () => {
     if (pageContextDebounceId !== null) {
       window.clearTimeout(pageContextDebounceId);
@@ -1898,10 +1910,13 @@ function installConversationWatcher(app: HTMLElement): void {
     publishRuntimeObservation(runtimeObservationLedger.suspend());
   });
   window.setInterval(() => {
+    attachCarrier();
     const nextRoot = document.querySelector("main");
     if (nextRoot !== outputRoot) {
       outputObserver.disconnect();
       outputRoot = nextRoot;
+      // A new root invalidates output quiet even when it has identical text.
+      observationOutputChangedAt = Date.now();
       if (outputRoot) outputObserver.observe(outputRoot, { childList: true, subtree: true, characterData: true });
     }
     checkPageContext(app);
@@ -1915,10 +1930,16 @@ function installConversationWatcher(app: HTMLElement): void {
         Array.from(record.addedNodes).some(node => node instanceof Element &&
           (node.matches("[data-message-author-role='assistant']") || node.querySelector("[data-message-author-role='assistant']"))));
     });
-    if (relevant) checkPageContext(app);
+    if (relevant) {
+      // Structural post-processing also breaks quiet, even when text is unchanged.
+      // A route change below resets this heartbeat against the new DOM baseline.
+      observationOutputChangedAt = Date.now();
+      checkPageContext(app);
+    }
   });
   let outputRoot = document.querySelector("main");
   if (outputRoot) outputObserver.observe(outputRoot, { childList: true, subtree: true, characterData: true });
+  checkPageContext(app);
 }
 
 function installProjectImportBridge(app: HTMLElement): void {
@@ -2376,13 +2397,15 @@ function observeRuntimePage(context: PageContext): CarrierObservation {
     observationRoute = route;
     observationRouteSince = now;
     observationOutput = output;
-    observationOutputChangedAt = now;
+    observationOutputChangedAt = null;
   } else if (output !== observationOutput) {
     observationOutput = output;
     observationOutputChangedAt = now;
   }
-  const composer = Array.from(document.querySelectorAll<HTMLElement>("textarea, div[contenteditable='true'], [role='textbox']"))
-    .find((candidate) => isVisibleForObservation(candidate));
+  // Only the provider's main composer is readiness evidence. Historical-message
+  // editors and search/dialog inputs must never substitute for it.
+  const mainComposer = document.getElementById("prompt-textarea");
+  const composer = mainComposer && isVisibleForObservation(mainComposer) ? mainComposer : null;
   const stopControl = Array.from(document.querySelectorAll<HTMLElement>("[data-testid*='stop'], button[aria-label*='Stop'], button[aria-label*='停止']"))
     .some((candidate) => isVisibleForObservation(candidate));
   return runtimeObservationLedger.observe({
@@ -2390,9 +2413,12 @@ function observeRuntimePage(context: PageContext): CarrierObservation {
     routeRef: context.pathname,
     providerConversationRef: context.conversationId || undefined,
     composerPresent: Boolean(composer),
-    composerInteractive: Boolean(composer && !(composer as HTMLInputElement).disabled && composer.getAttribute("aria-disabled") !== "true"),
+    composerInteractive: Boolean(composer && !composer.matches(":disabled") &&
+      !(composer as HTMLInputElement).readOnly && composer.getAttribute("aria-readonly") !== "true" &&
+      !composer.closest("[inert], [aria-disabled='true']") &&
+      (composer instanceof HTMLTextAreaElement || composer.isContentEditable)),
     stopGenerationControlPresent: stopControl || isChatbotGenerating(),
-    assistantOutputMutating: now - observationOutputChangedAt < 1_000,
+    assistantOutputMutating: observationOutputChangedAt !== null && now - observationOutputChangedAt < 1_000,
     assistantMessageCount: document.querySelectorAll("[data-message-author-role='assistant']").length,
     userMessageCount: document.querySelectorAll("[data-message-author-role='user']").length,
     providerErrorSurfacePresent: Array.from(document.querySelectorAll<HTMLElement>("[role='alert'], [data-testid='conversation-error']"))
@@ -2404,13 +2430,15 @@ function observeRuntimePage(context: PageContext): CarrierObservation {
 
 function publishRuntimeObservation(observation: CarrierObservation | null): void {
   if (!observation) return;
-  window.dispatchEvent(new CustomEvent("noos:runtime-observation", { detail: observation }));
+  // Debug listeners receive a copy and cannot mutate the ledger through detail.
+  window.dispatchEvent(new CustomEvent("noos:runtime-observation", { detail: { ...observation } }));
 }
 
 function isVisibleForObservation(element: HTMLElement): boolean {
   const rect = element.getBoundingClientRect();
   const style = window.getComputedStyle(element);
-  return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+  return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden" &&
+    !element.closest("[aria-hidden='true'], [hidden]");
 }
 
 function resetForConversationChange(app: HTMLElement): void {

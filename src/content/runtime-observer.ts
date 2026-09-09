@@ -24,6 +24,8 @@ export interface CarrierObservation extends RuntimeProbeSnapshot {
   carrierRef: string;
   executionInstanceRef: string;
   conversationIdentityState: "resolved" | "unresolved";
+  conversationIdentitySource: "provider-route" | "unavailable";
+  carrierIdentityState: "execution-local" | "browser-tab";
   state: RuntimeState;
   observedAt: number;
   sourceEpoch: number;
@@ -34,12 +36,15 @@ export interface CarrierObservation extends RuntimeProbeSnapshot {
 export const OBSERVATION_QUIET_MS = 2_000;
 
 export function normalizeObservation(input: RuntimeProbeSnapshot, previous?: CarrierObservation, now = Date.now()): CarrierObservation {
-  const providerConversationRef = input.providerConversationRef?.trim() || undefined;
+  const providerConversationRef = typeof input.providerConversationRef === "string" ? input.providerConversationRef.trim() || undefined : undefined;
   const carrierRef = previous?.carrierRef ?? `carrier-${randomToken()}`;
   const sourceEpoch = previous && (previous.provider !== input.provider || previous.routeRef !== input.routeRef || previous.providerConversationRef !== providerConversationRef)
     ? previous.sourceEpoch + 1
     : previous?.sourceEpoch ?? 0;
-  const probesValid = [input.composerPresent, input.composerInteractive, input.stopGenerationControlPresent,
+  const probesValid = typeof input.provider === "string" && Boolean(input.provider.trim()) &&
+    typeof input.routeRef === "string" && input.routeRef.startsWith("/") &&
+    (input.providerConversationRef == null || typeof input.providerConversationRef === "string") &&
+    [input.composerPresent, input.composerInteractive, input.stopGenerationControlPresent,
     input.assistantOutputMutating, input.providerErrorSurfacePresent, input.routeStable].every(value => typeof value === "boolean");
   const quiet = probesValid && input.composerPresent && input.composerInteractive && input.routeStable &&
     Boolean(providerConversationRef) && !input.stopGenerationControlPresent && !input.assistantOutputMutating && !input.providerErrorSurfacePresent;
@@ -53,6 +58,8 @@ export function normalizeObservation(input: RuntimeProbeSnapshot, previous?: Car
     carrierRef,
     executionInstanceRef: previous?.executionInstanceRef ?? `observer-${randomToken()}`,
     conversationIdentityState: providerConversationRef ? "resolved" : "unresolved",
+    conversationIdentitySource: providerConversationRef ? "provider-route" : "unavailable",
+    carrierIdentityState: previous?.carrierIdentityState ?? "execution-local",
     state,
     observedAt: now,
     sourceEpoch,
@@ -66,8 +73,7 @@ export function deriveRuntimeState(probe: RuntimeProbeSnapshot, previous?: Runti
   if (probe.stopGenerationControlPresent || probe.assistantOutputMutating) return "GENERATING";
   if (!probe.routeStable || !probe.providerConversationRef) return previous === "SUSPENDED" ? "RECOVERING" : "ATTACHING";
   if (!probe.composerPresent || !probe.composerInteractive) return "STABILIZING";
-  // A quiet observation is required before READY. The first quiet sample is
-  // deliberately STABILIZING; callers promote only after a subsequent sample.
+  // normalizeObservation supplies STABILIZING only after the timed quiet window.
   return previous === "STABILIZING" || previous === "READY" ? "READY" : "STABILIZING";
 }
 
@@ -78,13 +84,15 @@ export class RuntimeObservationLedger {
 
   attachCarrier(carrierRef: string): void {
     this.carrierRef = carrierRef;
-    if (this.current) this.current = { ...this.current, carrierRef };
+    if (this.current) this.current = { ...this.current, carrierRef, carrierIdentityState: "browser-tab" };
   }
 
   observe(input: RuntimeProbeSnapshot, now = Date.now()): CarrierObservation {
-    if (this.current && (this.suspended || now <= this.current.observedAt)) return this.current;
+    // Multiple synchronous DOM callbacks can share a millisecond. They cannot
+    // advance quiet time, but must still invalidate READY on changed evidence.
+    if (this.current && (this.suspended || now < this.current.observedAt)) return this.current;
     this.current = normalizeObservation(input, this.current ?? undefined, now);
-    if (this.carrierRef) this.current = { ...this.current, carrierRef: this.carrierRef };
+    if (this.carrierRef) this.current = { ...this.current, carrierRef: this.carrierRef, carrierIdentityState: "browser-tab" };
     return this.current;
   }
 
