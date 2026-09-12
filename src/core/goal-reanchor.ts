@@ -2,10 +2,17 @@
  * Sparse, durable Goal Re-anchor lifecycle state.
  *
  * This module deliberately does not decide whether an anchor is semantically
- * correct or approved. It only records substantive design generations,
- * raises a deduplicated lifecycle operation, and resets the sparse counter
- * after the operation has completed.
+ * correct or approved. It records completed, evidence-backed Design
+ * generations, raises a deduplicated lifecycle operation, and resets the
+ * sparse counter only after transport completion has been observed.
  */
+
+import type {
+  SubmissionBaseline,
+  SubmissionOperation,
+  SubmissionOperationLedger,
+  SubmissionObservation
+} from "./submission-operation";
 
 export type GoalReanchorTrigger =
   | "experimental_n"
@@ -25,6 +32,7 @@ export interface GoalReanchorOperation {
   requestedAt: number;
   completedAt?: number;
   status: GoalReanchorOperationStatus;
+  submissionState?: SubmissionOperation["state"];
 }
 
 export interface GoalReanchorState {
@@ -40,6 +48,24 @@ export interface GoalReanchorState {
 export interface GoalReanchorStore {
   load(): GoalReanchorState | undefined;
   save(state: GoalReanchorState): void;
+}
+
+export interface DesignGenerationEvidence {
+  generationId: string;
+  role: "design";
+  status: "COMPLETED";
+  substantive: boolean;
+  evidenceFingerprint: string;
+  completedAt: number;
+}
+
+export interface GoalReanchorRuntime {
+  carrierState: "READY" | "ATTACHING" | "STABILIZING" | "GENERATING" | "SUSPENDED" | "RECOVERING" | "BROKEN";
+  logicalControl: "CONTINUE" | "WAIT_WORKER" | "WAIT_REVIEW" | "BOUNDARY_REACHED";
+  targetCarrierRef: string;
+  providerConversationRef?: string;
+  baseline: SubmissionBaseline;
+  dispatch(operation: SubmissionOperation): Promise<SubmissionObservation>;
 }
 
 export interface RecordDesignGenerationResult {
@@ -70,8 +96,6 @@ export interface GoalReanchorLedgerOptions {
   now?: () => number;
 }
 
-const MAX_GENERATION_IDS = 256;
-
 export class GoalReanchorLedger {
   private readonly logicalThreadId: string;
   private readonly store?: GoalReanchorStore;
@@ -97,18 +121,18 @@ export class GoalReanchorLedger {
     return operation && { ...operation };
   }
 
-  recordDesignGeneration(generationId: string, substantive = true): RecordDesignGenerationResult {
-    assertNonEmpty(generationId, "generationId");
-    if (!substantive) {
+  recordDesignGeneration(evidence: DesignGenerationEvidence): RecordDesignGenerationResult {
+    validateGenerationEvidence(evidence);
+    if (!evidence.substantive) {
       return { accepted: false, duplicate: false, state: this.state };
     }
-    if (this.current.completedGenerationIds.includes(generationId)) {
+    if (this.current.completedGenerationIds.includes(evidence.generationId)) {
       return { accepted: false, duplicate: true, state: this.state };
     }
     this.current = {
       ...this.current,
       designTurnsSinceAnchor: this.current.designTurnsSinceAnchor + 1,
-      completedGenerationIds: [...this.current.completedGenerationIds, generationId].slice(-MAX_GENERATION_IDS)
+      completedGenerationIds: [...this.current.completedGenerationIds, evidence.generationId]
     };
     this.persist();
     return { accepted: true, duplicate: false, state: this.state };
@@ -171,6 +195,12 @@ export class GoalReanchorLedger {
     if (operation.status === "COMPLETED") {
       return { completed: true, duplicate: true, operation: { ...operation }, state: this.state };
     }
+    if (operation.sourceAnchorRevision !== this.current.anchorRevision) {
+      throw new Error("Goal Re-anchor operation is stale for the current anchor revision.");
+    }
+    if (operation.targetAnchorRevision !== operation.sourceAnchorRevision + 1) {
+      throw new Error("Goal Re-anchor operation revision sequence is invalid.");
+    }
 
     const completedOperation: GoalReanchorOperation = { ...operation, status: "COMPLETED", completedAt };
     this.current = {
@@ -189,6 +219,56 @@ export class GoalReanchorLedger {
     occurredAt = this.now()
   ): RequestReanchorResult {
     return this.requestReanchor(event, operationId, occurredAt);
+  }
+
+  async executeReanchor(
+    trigger: GoalReanchorTrigger,
+    operationId: string,
+    runtime: GoalReanchorRuntime,
+    submissionLedger: SubmissionOperationLedger,
+    details: {
+      workItemId: string;
+      payload: string;
+      payloadFingerprint: string;
+      now?: number;
+    }
+  ): Promise<CompleteReanchorResult | RequestReanchorResult> {
+    const requested = this.requestReanchor(trigger, operationId, details.now);
+    if (!requested.operation || !requested.created && requested.operation.status === "COMPLETED") return requested;
+    if (runtime.carrierState !== "READY" || runtime.logicalControl !== "CONTINUE") return requested;
+
+    const operation = requested.operation;
+    const durable = await submissionLedger.prepare({
+      operationId,
+      operationKind: "REANCHOR_GOAL",
+      workItemId: details.workItemId,
+      logicalThreadId: this.logicalThreadId,
+      targetCarrierRef: runtime.targetCarrierRef,
+      providerConversationRef: runtime.providerConversationRef,
+      payloadFingerprint: details.payloadFingerprint,
+      payload: details.payload,
+      preSubmitBaseline: runtime.baseline,
+      parentEpoch: operation.sourceAnchorRevision,
+      now: details.now
+    });
+    const claimed = await submissionLedger.claim(operationId, details.now);
+    if (!claimed || claimed.state !== "DISPATCHING") return requested;
+    try {
+      const observation = await runtime.dispatch(claimed);
+      const reconciled = await submissionLedger.reconcile(operationId, observation);
+      if (reconciled.outcome !== "PROVEN_ACCEPTED") return requested;
+      await submissionLedger.record(operationId, "COMPLETED", {
+        now: observation.observedAt ?? details.now,
+        resultingTurnRef: observation.headFingerprint
+      });
+      return this.completeReanchor(operationId, observation.observedAt ?? details.now);
+    } catch (error) {
+      await submissionLedger.record(operationId, "UNCERTAIN", {
+        now: details.now,
+        error: error instanceof Error ? error.message : "reanchor dispatch failed"
+      });
+      return requested;
+    }
   }
 
   private persist(): void {
@@ -230,15 +310,31 @@ function normalizeState(input: GoalReanchorState | undefined, logicalThreadId: s
     if (operation.status !== "PENDING" && operation.status !== "COMPLETED") {
       throw new Error("Goal Re-anchor operation status is invalid.");
     }
+    assertTimestamp(operation.requestedAt, "requestedAt");
+    if (operation.status === "COMPLETED") {
+      if (operation.completedAt === undefined) throw new Error("Completed Goal Re-anchor operation needs completedAt.");
+      assertTimestamp(operation.completedAt, "completedAt");
+      if (operation.completedAt < operation.requestedAt) {
+        throw new Error("Goal Re-anchor completion cannot precede request.");
+      }
+    }
     return [id, { ...operation }];
   }));
+  for (const operation of Object.values(operations)) {
+    if (operation.status === "PENDING" && operation.sourceAnchorRevision !== input.anchorRevision) {
+      throw new Error("Pending Goal Re-anchor operation is stale for the current anchor revision.");
+    }
+    if (operation.status === "COMPLETED" && operation.targetAnchorRevision > input.anchorRevision) {
+      throw new Error("Completed Goal Re-anchor operation is ahead of the current anchor revision.");
+    }
+  }
   return {
     version: 1,
     logicalThreadId,
     designTurnsSinceAnchor: input.designTurnsSinceAnchor,
     anchorRevision: input.anchorRevision,
     experimentalN: input.experimentalN,
-    completedGenerationIds: [...input.completedGenerationIds].slice(-MAX_GENERATION_IDS),
+    completedGenerationIds: [...input.completedGenerationIds],
     operations
   };
 }
@@ -261,4 +357,14 @@ function assertPositiveInteger(value: number, name: string): void {
 
 function assertTimestamp(value: number, name: string): void {
   if (!Number.isFinite(value) || value < 0) throw new Error(`${name} must be a finite non-negative number.`);
+}
+
+function validateGenerationEvidence(evidence: DesignGenerationEvidence): void {
+  assertNonEmpty(evidence.generationId, "generationId");
+  if (evidence.role !== "design" || evidence.status !== "COMPLETED") {
+    throw new Error("Only completed Design generations can advance the re-anchor counter.");
+  }
+  if (typeof evidence.substantive !== "boolean") throw new Error("Generation substantive flag is invalid.");
+  assertNonEmpty(evidence.evidenceFingerprint, "evidenceFingerprint");
+  assertTimestamp(evidence.completedAt, "completedAt");
 }

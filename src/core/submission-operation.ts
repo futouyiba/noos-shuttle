@@ -1,10 +1,10 @@
 /** Durable transport-only SubmissionOperation ledger. Persist PREPARED before provider actuation. */
-export type SubmissionOperationKind = "GO" | "BOOTSTRAP" | "REVIEW_DISPATCH" | "SEDIMENT" | "DELIVER_CHILD_RESULT";
+export type SubmissionOperationKind = "GO" | "BOOTSTRAP" | "REVIEW_DISPATCH" | "SEDIMENT" | "DELIVER_CHILD_RESULT" | "REANCHOR_GOAL";
 export type SubmissionOperationState = "PREPARED" | "DISPATCHING" | "OBSERVED_ACCEPTED" | "COMPLETED" | "UNCERTAIN" | "FAILED_SAFE" | "CANCELLED";
 export interface SubmissionBaseline { conversationRef?: string; routeRef: string; assistantMessageCount: number; userMessageCount: number; lastUserMessageFingerprint?: string; lastAssistantMessageFingerprint?: string; headFingerprint?: string; observedAt: number; }
 export interface SubmissionObservation extends Omit<SubmissionBaseline, "observedAt"> { observedAt?: number; generationActive?: boolean; }
 export interface SubmissionOperation { operationId: string; operationKind: SubmissionOperationKind; workItemId: string; logicalThreadId: string; targetCarrierRef: string; providerConversationRef?: string; payloadFingerprint: string; payload?: string; parentEpoch?: number; preSubmitBaseline: SubmissionBaseline; state: SubmissionOperationState; createdAt: number; lastObservedAt: number; dispatchClaimedAt?: number; resultingTurnRef?: string; error?: string; }
-export interface SubmissionOperationStore { get(key: string): Promise<unknown>; set(value: Record<string, unknown>): Promise<void>; }
+export interface SubmissionOperationStore { get(key: string): Promise<unknown>; set(value: Record<string, unknown>): Promise<unknown>; }
 export const SUBMISSION_OPERATIONS_KEY = "noosSubmissionOperations";
 const terminalStates = new Set<SubmissionOperationState>(["COMPLETED", "FAILED_SAFE", "CANCELLED"]);
 const executionOwningStates = new Set<SubmissionOperationState>(["DISPATCHING", "UNCERTAIN", "OBSERVED_ACCEPTED"]);
@@ -34,7 +34,15 @@ export class SubmissionOperationLedger {
   private async save(records: SubmissionOperation[]): Promise<void> { await this.store.set({ [SUBMISSION_OPERATIONS_KEY]: records }); }
   private async serialized<T>(work: () => Promise<T>): Promise<T> { const previous = this.queue; let release!: () => void; this.queue = new Promise(resolve => { release = resolve; }); await previous; try { return await work(); } finally { release(); } }
 }
-export function createChromeSubmissionStore(chromeStorage: { get(key: string): Promise<unknown>; set(value: Record<string, unknown>): Promise<void> }): SubmissionOperationStore { return { get: key => chromeStorage.get(key), set: value => chromeStorage.set(value) }; }
+export function createChromeSubmissionStore(chromeStorage: { get(key: string): Promise<unknown>; set(value: Record<string, unknown>): Promise<unknown> }): SubmissionOperationStore {
+  return {
+    get: async key => {
+      const value = await chromeStorage.get(key);
+      return value && typeof value === "object" && key in (value as object) ? value : { [key]: value };
+    },
+    set: value => chromeStorage.set(value)
+  };
+}
 function fingerprintsChanged(observation: SubmissionObservation, baseline: SubmissionBaseline): boolean { return (observation.headFingerprint !== undefined && observation.headFingerprint !== baseline.headFingerprint) || (observation.lastUserMessageFingerprint !== undefined && observation.lastUserMessageFingerprint !== baseline.lastUserMessageFingerprint) || (observation.lastAssistantMessageFingerprint !== undefined && observation.lastAssistantMessageFingerprint !== baseline.lastAssistantMessageFingerprint); }
 function isAllowedTransition(from: SubmissionOperationState, to: SubmissionOperationState): boolean { if (from === to) return true; if (terminalStates.has(from)) return false; if (from === "PREPARED") return to === "CANCELLED"; if (from === "DISPATCHING") return ["OBSERVED_ACCEPTED", "UNCERTAIN", "FAILED_SAFE", "CANCELLED"].includes(to); if (from === "OBSERVED_ACCEPTED") return ["COMPLETED", "UNCERTAIN"].includes(to); if (from === "UNCERTAIN") return ["OBSERVED_ACCEPTED", "FAILED_SAFE", "CANCELLED"].includes(to); return false; }
 function isSubmissionOperation(value: unknown): value is SubmissionOperation { if (!value || typeof value !== "object") return false; const item = value as Partial<SubmissionOperation>; return typeof item.operationId === "string" && typeof item.targetCarrierRef === "string" && typeof item.payloadFingerprint === "string" && typeof item.state === "string" && Boolean(item.preSubmitBaseline && typeof item.preSubmitBaseline === "object"); }
