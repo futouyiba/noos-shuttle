@@ -1,3 +1,21 @@
+import {
+  WorkItemInbox,
+  InMemoryWorkItemStore,
+  createChromeWorkItemStore,
+  WorkItemConflictError,
+  WorkItemValidationError,
+  type AbsorbOptions,
+  type CreateWorkItemInput,
+  type WorkItemBinding,
+  type ColdStartApprovalEvent,
+  type WorkItemAdoptionEvent
+} from "../core/work-item-inbox";
+import type { CandidateProposal } from "../core/work-item-inbox";
+import { createChromeWorkItemCoordinator } from "../core/work-item-coordinator";
+import type { NoosCrystal } from "../core/noos-crystal";
+import type { NoosThread } from "../core/noos-thread";
+import { extractProviderConversationId } from "../shared/provider-identity";
+
 chrome.runtime.onInstalled.addListener(() => {
   console.info("NOOS Shuttle installed.");
 });
@@ -11,8 +29,29 @@ const HUB_VAULT_OBJECT_URL = "http://127.0.0.1:17642/v1/vault/object";
 const HUB_WIKI_TARGET_URL = "http://127.0.0.1:17642/v1/wiki/default-target";
 const HUB_ACTION_URL = "http://127.0.0.1:17642/v1/actions";
 const HUB_TOKEN_STORAGE_KEY = "noosHubShuttleToken";
+const workItemStorage = {
+  get: (key: string) => chrome.storage.local.get(key) as Promise<Record<string, unknown>>,
+  set: (value: Record<string, unknown>) => chrome.storage.local.set(value)
+};
+const workItemCoordinator = createChromeWorkItemCoordinator(workItemStorage);
+const workItemInbox = chrome.storage?.local
+  ? new WorkItemInbox(createChromeWorkItemStore(workItemStorage, workItemCoordinator))
+  : new WorkItemInbox(new InMemoryWorkItemStore());
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (isWorkItemMessage(message)) {
+    handleWorkItemMessage(message, sender)
+      .then(sendResponse)
+      .catch((error) =>
+        sendResponse({
+          ok: false,
+          errorCode: error instanceof Error && "code" in error ? String(error.code) : "work_item_failed",
+          message: error instanceof Error ? error.message : "Work Item action failed."
+        })
+      );
+    return true;
+  }
+
   if (message?.type === "NOOS_OBSERVATION_CARRIER" && sender.frameId === 0 && sender.tab?.id !== undefined) {
     sendResponse({ carrierRef: `browser-tab:${sender.tab.id}`, windowId: sender.tab.windowId, documentId: sender.documentId });
     return false;
@@ -165,6 +204,387 @@ interface VaultSaveMessage {
   type: "NOOS_SAVE_HANDOFF_TO_VAULT";
   filename: string;
   content: string;
+}
+
+type WorkItemAction =
+  | "snapshot"
+  | "challenge"
+  | "confirm-authorization"
+  | "cancel-authorization"
+  | "create"
+  | "capture-thread"
+  | "capture-crystal"
+  | "accept-absorb"
+  | "save-candidate-proposal"
+  | "reject-candidate-diff"
+  | "update-review"
+  | "prepare-cold-start"
+  | "reject"
+  | "cancel"
+  | "discard"
+  | "promote"
+  | "activate";
+
+interface WorkItemMessage {
+  type: "NOOS_WORK_ITEM";
+  action: WorkItemAction;
+  workItemId?: string;
+  inboxItemId?: string;
+  expectedRevision?: number;
+  inboxItemIds?: string[];
+  reason?: string;
+  input?: CreateWorkItemInput;
+  thread?: NoosThread;
+  crystal?: NoosCrystal;
+  options?: AbsorbOptions;
+  changes?: { reviewNotes?: string[]; openQuestions?: string[]; blockingOpenQuestions?: string[] };
+  candidate?: { baseRevision: number; diff: string };
+  proposal?: Omit<CandidateProposal, "proposalId" | "workItemId" | "updatedAt" | "state">;
+  proposalId?: string;
+  conversationId?: string;
+  carrierRef?: string;
+  authorizationToken?: string;
+  challengeToken?: string;
+  confirmed?: true;
+  authorizationAction?: "activate" | "prepare-cold-start";
+}
+
+interface WorkItemAuthorization {
+  token: string;
+  action: "activate" | "prepare-cold-start";
+  workItemId: string;
+  expectedRevision: number;
+  conversationId: string;
+  tabId: number;
+  expiresAt: number;
+  state: "CHALLENGED" | "AVAILABLE" | "CLAIMED";
+}
+
+const workItemAuthorizations = new Map<string, WorkItemAuthorization>();
+const WORK_ITEM_AUTHORIZATION_TTL_MS = 60_000;
+
+function senderConversationId(sender?: chrome.runtime.MessageSender): string | undefined {
+  return extractProviderConversationId(sender?.tab?.url);
+}
+
+function requireSenderConversation(
+  message: WorkItemMessage,
+  sender?: chrome.runtime.MessageSender
+): string {
+  const observed = senderConversationId(sender);
+  if (!observed) {
+    const error = new Error("The sender tab has no confirmed provider conversation.");
+    Object.assign(error, { code: "conversation_identity_required" });
+    throw error;
+  }
+  if (message.conversationId !== observed) {
+    const error = new Error("The message conversation does not match the sender tab.");
+    Object.assign(error, { code: "conversation_binding_mismatch" });
+    throw error;
+  }
+  return observed;
+}
+
+function requireCreateBindingFromSender(
+  input: CreateWorkItemInput | undefined,
+  sender?: chrome.runtime.MessageSender
+): void {
+  const requested = input?.binding;
+  if (!requested?.conversationId) return;
+  const observed = senderConversationId(sender);
+  const expectedCarrier = sender?.tab?.id === undefined ? undefined : `browser-tab:${sender.tab.id}`;
+  if (
+    !observed ||
+    requested.conversationId !== observed ||
+    (requested.carrierRef !== undefined && requested.carrierRef !== expectedCarrier)
+  ) {
+    const error = new Error("The Work Item binding does not match the sender tab.");
+    Object.assign(error, { code: "conversation_binding_mismatch" });
+    throw error;
+  }
+}
+
+function authorizationToken(): string {
+  return globalThis.crypto?.randomUUID?.() ?? `work-item-auth-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function purgeExpiredAuthorizations(now = Date.now()): void {
+  for (const [token, authorization] of workItemAuthorizations) {
+    if (authorization.expiresAt <= now) workItemAuthorizations.delete(token);
+  }
+}
+
+function isWorkItemMessage(value: unknown): value is WorkItemMessage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const message = value as Partial<WorkItemMessage>;
+  return (
+    message.type === "NOOS_WORK_ITEM" &&
+    typeof message.action === "string" &&
+    [
+      "snapshot",
+      "challenge",
+      "confirm-authorization",
+      "cancel-authorization",
+      "create",
+      "capture-thread",
+      "capture-crystal",
+      "accept-absorb",
+      "save-candidate-proposal",
+      "reject-candidate-diff",
+      "update-review",
+      "prepare-cold-start",
+      "reject",
+      "cancel",
+      "discard",
+      "promote",
+      "activate"
+    ].includes(message.action)
+  );
+}
+
+async function handleWorkItemMessage(
+  message: WorkItemMessage,
+  sender?: chrome.runtime.MessageSender
+): Promise<{ ok: true; data: unknown }> {
+  purgeExpiredAuthorizations();
+  const activeId = message.workItemId ?? (await workItemInbox.snapshot()).activeWorkItemId;
+  if (message.action !== "snapshot" && message.action !== "create" && !activeId) {
+    throw new Error("No active Work Item is selected.");
+  }
+  if (message.action === "create") {
+    requireCreateBindingFromSender(message.input, sender);
+  }
+  const needsConversation = message.action !== "snapshot" && message.action !== "create";
+  const conversationId = needsConversation ? requireSenderConversation(message, sender) : undefined;
+  const binding: WorkItemBinding = {
+    conversationId,
+    carrierRef: sender?.tab?.id === undefined ? undefined : `browser-tab:${sender.tab.id}`
+  };
+
+  if (message.action === "challenge") {
+    if (
+      sender?.tab?.id === undefined ||
+      (message.authorizationAction !== "activate" && message.authorizationAction !== "prepare-cold-start") ||
+      message.expectedRevision === undefined
+    ) {
+      throw new WorkItemValidationError("authorization_challenge_invalid", "An authorization challenge needs a tab, action, and revision.");
+    }
+    const snapshot = await workItemInbox.snapshot();
+    const target = snapshot.workItems.find((item) => item.workItemId === activeId);
+    if (!target || target.revision !== message.expectedRevision) {
+      throw new WorkItemConflictError();
+    }
+    if (message.authorizationAction === "prepare-cold-start") {
+      await workItemInbox.validateBinding(target.workItemId, binding);
+    } else if (
+      target.binding &&
+      (target.binding.conversationId !== binding.conversationId || target.binding.carrierRef !== binding.carrierRef)
+    ) {
+      throw new WorkItemValidationError("conversation_binding_mismatch", "This Work Item is bound to a different conversation.");
+    }
+    const token = authorizationToken();
+    workItemAuthorizations.set(token, {
+      token,
+      action: message.authorizationAction,
+      workItemId: target.workItemId,
+      expectedRevision: target.revision,
+      conversationId: conversationId as string,
+      tabId: sender.tab.id,
+      expiresAt: Date.now() + WORK_ITEM_AUTHORIZATION_TTL_MS,
+      state: "CHALLENGED"
+    });
+    return {
+      ok: true,
+      data: { challengeToken: token, workItemId: target.workItemId, expectedRevision: target.revision, action: message.authorizationAction }
+    };
+  }
+
+  if (message.action === "confirm-authorization") {
+    const challenge = message.challengeToken ? workItemAuthorizations.get(message.challengeToken) : undefined;
+    const now = Date.now();
+    if (
+      message.confirmed !== true ||
+      !challenge ||
+      challenge.state !== "CHALLENGED" ||
+      challenge.expiresAt <= now ||
+      challenge.action !== message.authorizationAction ||
+      challenge.workItemId !== activeId ||
+      challenge.expectedRevision !== message.expectedRevision ||
+      challenge.tabId !== sender?.tab?.id ||
+      challenge.conversationId !== conversationId
+    ) {
+      if (challenge?.expiresAt !== undefined && challenge.expiresAt <= now && message.challengeToken) {
+        workItemAuthorizations.delete(message.challengeToken);
+      }
+      throw new WorkItemValidationError("authorization_confirmation_required", "A confirmed background authorization is required.");
+    }
+    workItemAuthorizations.delete(challenge.token);
+    const token = authorizationToken();
+    workItemAuthorizations.set(token, { ...challenge, token, state: "AVAILABLE", expiresAt: now + WORK_ITEM_AUTHORIZATION_TTL_MS });
+    return {
+      ok: true,
+      data: { authorizationToken: token, workItemId: challenge.workItemId, expectedRevision: challenge.expectedRevision, action: challenge.action }
+    };
+  }
+
+  if (message.action === "cancel-authorization") {
+    const challenge = message.challengeToken ? workItemAuthorizations.get(message.challengeToken) : undefined;
+    if (
+      !challenge ||
+      challenge.state !== "CHALLENGED" ||
+      challenge.action !== message.authorizationAction ||
+      challenge.workItemId !== activeId ||
+      challenge.expectedRevision !== message.expectedRevision ||
+      challenge.tabId !== sender?.tab?.id ||
+      challenge.conversationId !== conversationId
+    ) {
+      throw new WorkItemValidationError("authorization_confirmation_required", "The authorization challenge is no longer available.");
+    }
+    workItemAuthorizations.delete(challenge.token);
+    return { ok: true, data: { cancelled: true } };
+  }
+
+  if (message.action !== "snapshot" && message.action !== "create") {
+    if (message.action !== "activate" && message.action !== "prepare-cold-start") {
+      await workItemInbox.validateBinding(activeId as string, binding);
+    }
+  }
+
+  let authorization: WorkItemAuthorization | undefined;
+  if (message.action === "activate" || message.action === "prepare-cold-start") {
+    const token = message.authorizationToken;
+    authorization = token ? workItemAuthorizations.get(token) : undefined;
+    const now = Date.now();
+    if (authorization?.state === "CLAIMED") {
+      throw new WorkItemValidationError("authorization_in_flight", "This authorization is already being consumed.");
+    }
+    if (
+      !authorization ||
+      authorization.expiresAt <= now ||
+      authorization.state !== "AVAILABLE" ||
+      authorization.action !== message.action ||
+      authorization.workItemId !== activeId ||
+      authorization.expectedRevision !== message.expectedRevision ||
+      authorization.tabId !== sender?.tab?.id ||
+      authorization.conversationId !== conversationId
+    ) {
+      if (authorization?.expiresAt !== undefined && authorization.expiresAt <= now && token) {
+        workItemAuthorizations.delete(token);
+      }
+      throw new WorkItemValidationError("authorization_required", "A valid one-time background authorization is required.");
+    }
+    authorization.state = "CLAIMED";
+  }
+  switch (message.action) {
+    case "snapshot":
+      return { ok: true, data: await workItemInbox.snapshot() };
+    case "create":
+      return { ok: true, data: await workItemInbox.createWorkItem(message.input as CreateWorkItemInput) };
+    case "capture-thread":
+      return { ok: true, data: await workItemInbox.captureThread(activeId as string, message.thread as NoosThread, undefined, binding) };
+    case "capture-crystal":
+      return { ok: true, data: await workItemInbox.captureCrystal(activeId as string, message.crystal as NoosCrystal, undefined, binding) };
+    case "accept-absorb":
+      return {
+        ok: true,
+        data: await workItemInbox.acceptAbsorb(
+          activeId as string,
+          message.inboxItemIds ?? [],
+          message.expectedRevision as number,
+          { ...message.options, candidate: message.candidate ?? message.options?.candidate }
+        )
+      };
+    case "save-candidate-proposal":
+      return {
+        ok: true,
+        data: await workItemInbox.saveCandidateProposal(
+          activeId as string,
+          message.expectedRevision as number,
+          message.proposal as Omit<CandidateProposal, "proposalId" | "workItemId" | "updatedAt" | "state">
+        )
+      };
+    case "reject-candidate-diff":
+      return {
+        ok: true,
+        data: await workItemInbox.rejectCandidateDiff(
+          activeId as string,
+          message.proposalId as string,
+          message.reason as string,
+          message.expectedRevision as number
+        )
+      };
+    case "update-review":
+      return {
+        ok: true,
+        data: await workItemInbox.updateReview(
+          activeId as string,
+          message.expectedRevision as number,
+          message.changes ?? {}
+        )
+      };
+    case "prepare-cold-start":
+      try {
+        const result = await workItemInbox.prepareColdStart(
+          activeId as string,
+          message.expectedRevision as number,
+          {
+            confirmed: true,
+            eventId: authorization!.token,
+            issuedAt: new Date().toISOString(),
+            issuedBy: "background-human-confirmation",
+            ...(sender?.tab?.id === undefined ? {} : { tabId: sender.tab.id })
+          } as ColdStartApprovalEvent
+        );
+        workItemAuthorizations.delete(authorization!.token);
+        return { ok: true, data: result };
+      } catch (error) {
+        authorization!.state = "AVAILABLE";
+        throw error;
+      }
+    case "reject":
+    case "cancel":
+    case "discard":
+      return {
+        ok: true,
+        data: await workItemInbox[message.action](
+          activeId as string,
+          message.inboxItemId as string,
+          message.reason as string,
+          message.expectedRevision as number
+        )
+      };
+    case "promote":
+      return {
+        ok: true,
+        data: await workItemInbox.promote(
+          activeId as string,
+          message.expectedRevision as number,
+          message.reason as string
+        )
+      };
+    case "activate":
+      try {
+        const result = await workItemInbox.activate(
+          activeId as string,
+          message.expectedRevision as number,
+          binding,
+          {
+            confirmed: true,
+            eventId: authorization!.token,
+            issuedAt: new Date().toISOString(),
+            issuedBy: "background-human-adoption",
+            ...(sender?.tab?.id === undefined ? {} : { tabId: sender.tab.id })
+          } as WorkItemAdoptionEvent
+        );
+        workItemAuthorizations.delete(authorization!.token);
+        return { ok: true, data: result };
+      } catch (error) {
+        authorization!.state = "AVAILABLE";
+        throw error;
+      }
+  }
 }
 
 interface CrystalSaveMessage {

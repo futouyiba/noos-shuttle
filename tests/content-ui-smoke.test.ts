@@ -5,10 +5,12 @@ import { readFile } from "node:fs/promises";
 
 let browser: Browser;
 let contentScript: string;
+let serviceWorkerScript: string;
 
 beforeAll(async () => {
   await build({ configFile: "vite.config.ts", logLevel: "silent" });
   contentScript = await readFile("dist/assets/content.js", "utf8");
+  serviceWorkerScript = await readFile("dist/assets/service-worker.js", "utf8");
   browser = await chromium.launch({ headless: true, executablePath: process.env.NOOS_TEST_BROWSER_EXECUTABLE });
 });
 
@@ -17,6 +19,41 @@ afterAll(async () => {
 });
 
 describe("content script smoke flow", () => {
+  it("keeps a provisional ChatGPT WEB route unresolved until provider identity arrives", async () => {
+    const page = await newMockChatPage({ startWithHandoffs: false, injectContentScript: false });
+    await page.evaluate(() => {
+      history.replaceState({}, "", "/c/WEB%3Atemporary-client-id");
+      window.addEventListener("noos:runtime-observation", event => {
+        (window as unknown as { observed: unknown }).observed = (event as CustomEvent).detail;
+      });
+    });
+    await page.addScriptTag({ content: contentScript });
+    const observed = () => page.evaluate(() => (window as unknown as {
+      observed: { state: string; conversationIdentityState: string; providerConversationRef?: string; sourceEpoch: number }
+    }).observed);
+    await page.waitForTimeout(4500);
+    expect(await observed()).toMatchObject({ state: "ATTACHING", conversationIdentityState: "unresolved" });
+    expect((await observed()).providerConversationRef).toBeUndefined();
+    await page.evaluate(() => {
+      const stop = document.createElement("button");
+      stop.dataset.testid = "stop-button";
+      stop.textContent = "Stop";
+      document.querySelector("main")!.append(stop);
+    });
+    await expect.poll(async () => (await observed()).state).toBe("GENERATING");
+    expect((await observed()).conversationIdentityState).toBe("unresolved");
+    const epoch = (await observed()).sourceEpoch;
+    await page.evaluate(() => {
+      document.querySelector("[data-testid='stop-button']")!.remove();
+      history.replaceState({}, "", "/c/provider-established-id");
+    });
+    await expect.poll(async () => (await observed()).providerConversationRef).toBe("provider-established-id");
+    expect((await observed()).sourceEpoch).toBeGreaterThan(epoch);
+    expect((await observed()).state).not.toBe("READY");
+    await expect.poll(async () => (await observed()).state, { timeout: 8000 }).toBe("READY");
+    await page.close();
+  }, 20000);
+
   it("retries a failed carrier handshake without inventing a confirmed tab", async () => {
     const page = await newMockChatPage({ startWithHandoffs: false, injectContentScript: false });
     await page.evaluate(() => {
@@ -234,6 +271,305 @@ describe("content script smoke flow", () => {
     expect(await shuttleText(page)).toContain("Saved to local NOOS Vault: /tmp/latest-browser-capture.md");
     await page.close();
   });
+
+  it("captures into the active Work Item and completes Accept after checkbox rerender", async () => {
+    const page = await newMockChatPage({ injectContentScript: false });
+    page.on("dialog", (dialog) => void dialog.accept());
+    await page.evaluate(() => {
+      const state: any = {
+        revision: 1,
+        activeWorkItemId: "work-1",
+        workItems: [{
+          workItemId: "work-1",
+          primaryLogicalThreadId: "logical-1",
+          title: "Active Work",
+          goal: "Review captured work",
+          scope: "Manual Inbox",
+          nonGoals: [],
+          status: "ACTIVE",
+          revision: 1,
+          candidateRevision: 0,
+          candidateBaseRevision: 0,
+          candidateDiff: "",
+          reviewNotes: [],
+          openQuestions: [],
+          blockingOpenQuestions: [],
+          readiness: { goalSet: true, scopeSet: true, reviewNotesReviewed: false, openQuestionsReviewed: false, coldStartReady: false },
+          coldStart: { state: "NEEDS_BOOTSTRAP", preparedFromInboxItemIds: [] },
+          absorbedInboxItemIds: [],
+          createdAt: "2026-09-11T00:00:00.000Z",
+          updatedAt: "2026-09-11T00:00:00.000Z"
+        }],
+        inboxItems: []
+      };
+      (globalThis as unknown as { workItemTestState: any }).workItemTestState = state;
+      const send = chrome.runtime.sendMessage;
+      chrome.runtime.sendMessage = (async (message: any) => {
+        if (message.type !== "NOOS_WORK_ITEM") return send(message);
+        if (message.action === "snapshot") return { ok: true, data: state };
+        if (message.action === "challenge") {
+          return { ok: true, data: { challengeToken: "content-smoke-challenge" } };
+        }
+        if (message.action === "confirm-authorization") {
+          return { ok: true, data: { authorizationToken: "content-smoke-authorization" } };
+        }
+        if (message.action === "cancel-authorization") {
+          return { ok: true, data: { cancelled: true } };
+        }
+        if (message.action === "capture-thread") {
+          const thread = message.thread;
+          state.inboxItems.push({
+            inboxItemId: "inbox-1",
+            workItemId: "work-1",
+            sourceKind: "thread",
+            capturedId: thread.id,
+            title: thread.title,
+            rawMarkdown: thread.rawMarkdown,
+            bodyMarkdown: thread.bodyMarkdown,
+            sourceUrl: "https://chatgpt.com/c/noos-content-smoke",
+            capturedAt: "2026-09-11T00:00:01.000Z",
+            state: "PENDING",
+            revision: 1
+          });
+          state.revision += 1;
+          return { ok: true, data: state.inboxItems[0] };
+        }
+        if (message.action === "accept-absorb") {
+          for (const inboxItemId of message.inboxItemIds ?? []) {
+            const item = state.inboxItems.find((candidate: any) => candidate.inboxItemId === inboxItemId);
+            if (item) item.state = "ACCEPTED";
+          }
+          state.workItems[0].absorbedInboxItemIds = state.inboxItems
+            .filter((item: any) => item.state === "ACCEPTED")
+            .map((item: any) => item.inboxItemId);
+          state.workItems[0].candidateRevision += 1;
+          state.workItems[0].candidateBaseRevision = message.options?.candidate?.baseRevision ?? 0;
+          state.workItems[0].candidateDiff = message.options?.candidate?.diff ?? "";
+          state.workItems[0].revision += 1;
+          state.revision += 1;
+          return { ok: true, data: state.workItems[0] };
+        }
+        if (message.action === "activate") {
+          const target = state.workItems.find((item: any) => item.workItemId === message.workItemId);
+          if (target) {
+            state.workItems.forEach((item: any) => {
+              if (item.workItemId === target.workItemId) item.status = "ACTIVE";
+              else if (item.status === "ACTIVE") item.status = "DRAFT";
+            });
+            state.activeWorkItemId = target.workItemId;
+            target.revision += 1;
+            state.revision += 1;
+          }
+          return { ok: true, data: target };
+        }
+        return { ok: false, message: "unsupported test action" };
+      }) as typeof chrome.runtime.sendMessage;
+    });
+    await page.addScriptTag({ content: contentScript });
+    await clickShuttle(page, ".fab");
+    await waitForShuttleText(page, "Active Work");
+    await clickShuttle(page, ".surface-fab");
+    await clickShuttle(page, "[data-action='capture']");
+    await clickShuttle(page, "[data-action='choose-thread-0']");
+    await clickShuttle(page, "[data-action='capture-thread-inbox']");
+    await clickShuttle(page, ".fab");
+    await waitForShuttleText(page, "Work Item 收件箱");
+    await clickShuttle(page, "input[data-work-item-inbox-select='inbox-1']");
+    expect(await page.evaluate(() => {
+      const root = document.querySelector("#noos-shuttle-root")?.shadowRoot;
+      return !(root?.querySelector("button[data-action='work-item-accept-absorb']") as HTMLButtonElement)?.disabled;
+    })).toBe(true);
+    await clickShuttle(page, "input[data-work-item-inbox-incorporate='inbox-1']");
+    await clickShuttle(page, "[data-action='work-item-accept-absorb']");
+    await expect.poll(() => page.evaluate(() =>
+      (globalThis as unknown as { workItemTestState: any }).workItemTestState.inboxItems[0].state
+    )).toBe("ACCEPTED");
+    expect(await shuttleText(page)).toContain("Work Item 收件箱");
+    expect(await page.evaluate(() => {
+      const root = document.querySelector("#noos-shuttle-root")?.shadowRoot;
+      return {
+        selected: (root?.querySelector("input[data-work-item-inbox-select='inbox-1']") as HTMLInputElement)?.checked,
+        incorporated: (root?.querySelector("input[data-work-item-inbox-incorporate='inbox-1']") as HTMLInputElement)?.checked,
+        acceptDisabled: (root?.querySelector("button[data-action='work-item-accept-absorb']") as HTMLButtonElement)?.disabled
+      };
+    })).toEqual({ selected: undefined, incorporated: undefined, acceptDisabled: true });
+    await page.evaluate(() => {
+      const state = (globalThis as unknown as { workItemTestState: any }).workItemTestState;
+      state.inboxItems.push({
+        ...state.inboxItems[0],
+        inboxItemId: "inbox-2",
+        capturedId: "captured-thread-2",
+        title: "Second capture",
+        state: "PENDING",
+        revision: 1
+      });
+    });
+    await clickShuttle(page, "[data-action='refresh-work-item']");
+    await clickShuttle(page, "input[data-work-item-inbox-select='inbox-2']");
+    await clickShuttle(page, "input[data-work-item-inbox-incorporate='inbox-2']");
+    await clickShuttle(page, "[data-action='work-item-accept-absorb']");
+    await expect.poll(() => page.evaluate(() =>
+      (globalThis as unknown as { workItemTestState: any }).workItemTestState.inboxItems
+        .find((item: any) => item.inboxItemId === "inbox-2").state
+    )).toBe("ACCEPTED");
+    await page.evaluate(() => {
+      const state = (globalThis as unknown as { workItemTestState: any }).workItemTestState;
+      state.activeWorkItemId = undefined;
+      state.workItems[0].status = "PROMOTED";
+      state.workItems.push({
+        ...state.workItems[0],
+        workItemId: "work-2",
+        title: "Saved Draft",
+        status: "DRAFT",
+        revision: 1,
+        promotedAt: undefined
+      });
+    });
+    await clickShuttle(page, "[data-action='refresh-work-item']");
+    await waitForShuttleText(page, "创建 Work Item");
+    await clickShuttle(page, "select[data-action='select-work-item']");
+    await page.evaluate(() => {
+      const root = document.querySelector("#noos-shuttle-root")?.shadowRoot;
+      const select = root?.querySelector("select[data-action='select-work-item']") as HTMLSelectElement;
+      if (select) {
+        select.value = "work-2";
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    });
+    await expect.poll(() => page.evaluate(() => {
+      const state = (globalThis as unknown as { workItemTestState: any }).workItemTestState;
+      return state.activeWorkItemId;
+    })).toBe("work-2");
+    expect(await page.evaluate(() => Boolean(
+      document.querySelector("#noos-shuttle-root")?.shadowRoot?.querySelector("[data-action='create-work-item']")
+    ))).toBe(false);
+    expect(await shuttleText(page)).toContain("Saved Draft");
+    await page.close();
+  });
+
+  it("persists a Work Item through the real content to background and Chrome storage path", async () => {
+    const page = await newMockChatPage({ injectContentScript: false });
+    const acceptDialog = (dialog: any) => void dialog.accept();
+    page.on("dialog", acceptDialog);
+    await page.evaluate(() => {
+      const chromeApi = chrome as any;
+      const listeners: Array<(message: any, sender: any, sendResponse: (value: any) => void) => boolean> = [];
+      const backing: Record<string, unknown> = {};
+      (globalThis as any).chromeStorageBacking = backing;
+      let lockTail = Promise.resolve();
+      chromeApi.runtime.onInstalled = { addListener: () => undefined };
+      chromeApi.runtime.onMessage = { addListener: (listener: any) => listeners.push(listener) };
+      chromeApi.runtime.sendMessage = (message: any) =>
+        new Promise((resolve) => {
+          let handled = false;
+          for (const listener of listeners) {
+            handled = listener(message, { frameId: 0, tab: { id: 7, url: location.href } }, resolve) || handled;
+          }
+          if (!handled) resolve(undefined);
+        });
+      chromeApi.storage = {
+        local: {
+          get: async (key: string) => ({ [key]: backing[key] }),
+          set: async (value: Record<string, unknown>) => Object.assign(backing, value)
+        }
+      };
+      Object.defineProperty(navigator, "locks", {
+        configurable: true,
+        value: {
+          request: async (_name: string, _options: unknown, callback: () => Promise<unknown>) => {
+            const previous = lockTail;
+            let release!: () => void;
+            lockTail = new Promise<void>((resolve) => {
+              release = resolve;
+            });
+            await previous;
+            try {
+              return await callback();
+            } finally {
+              release();
+            }
+          }
+        }
+      });
+    });
+    await page.addScriptTag({ content: `(function () {\n${serviceWorkerScript}\n})();` });
+    await page.addScriptTag({ content: contentScript });
+    await clickShuttle(page, ".fab");
+    await waitForShuttleText(page, "Work Item 收件箱");
+    await setShuttleInputValue(page, "input[data-work-item-title]", "Browser persisted item");
+    await setShuttleInputValue(page, "textarea[data-work-item-goal]", "Persist through Chrome storage");
+    await setShuttleInputValue(page, "textarea[data-work-item-scope]", "Content to background");
+    await clickShuttle(page, "[data-action='create-work-item']");
+    await expect.poll(() => page.evaluate(() => {
+      const stored = (globalThis as any).chromeStorageBacking?.noosWorkItemInbox;
+      return stored?.workItems?.[0]?.title;
+    })).toBe("Browser persisted item");
+    const persisted = await page.evaluate(() => (globalThis as any).chromeStorageBacking?.noosWorkItemInbox);
+    expect(persisted.workItems?.[0]?.title).toBe("Browser persisted item");
+    expect(persisted.activeWorkItemId).toBe(persisted.workItems?.[0]?.workItemId);
+    await clickShuttle(page, ".surface-fab");
+    await clickShuttle(page, "[data-action='capture']");
+    await clickShuttle(page, "[data-action='choose-thread-0']");
+    await clickShuttle(page, "[data-action='capture-thread-inbox']");
+    await clickShuttle(page, ".fab");
+    await waitForShuttleText(page, "Browser persisted item");
+    await expect.poll(() => page.evaluate(() => {
+      const stored = (globalThis as any).chromeStorageBacking?.noosWorkItemInbox;
+      return stored?.inboxItems?.length ?? 0;
+    })).toBe(1);
+    const captured = await page.evaluate(() => (globalThis as any).chromeStorageBacking?.noosWorkItemInbox);
+    const capturedId = captured.inboxItems[0].inboxItemId;
+    await clickShuttle(page, `input[data-work-item-inbox-select='${capturedId}']`);
+    await clickShuttle(page, `input[data-work-item-inbox-incorporate='${capturedId}']`);
+    await clickShuttle(page, "[data-action='work-item-save-candidate']");
+    await expect.poll(() => page.evaluate(() => {
+      const stored = (globalThis as any).chromeStorageBacking?.noosWorkItemInbox;
+      return stored?.workItems?.[0]?.candidateProposal?.state;
+    })).toBe("DRAFT");
+    await clickShuttle(page, "[data-action='work-item-accept-absorb']");
+    await expect.poll(() => page.evaluate(() => {
+      const stored = (globalThis as any).chromeStorageBacking?.noosWorkItemInbox;
+      return stored?.inboxItems?.[0]?.state;
+    })).toBe("ACCEPTED");
+    expect(await page.evaluate(() => {
+      const stored = (globalThis as any).chromeStorageBacking?.noosWorkItemInbox;
+      return stored?.workItems?.[0]?.candidateProposal?.state;
+    })).toBe("ACCEPTED");
+
+    await setShuttleInputValue(page, "textarea[data-work-item-review-notes]", "Human reviewed the captured material.");
+    await setShuttleInputValue(page, "textarea[data-work-item-open-questions]", "No unresolved questions.");
+    await clickShuttle(page, "[data-action='work-item-update-review']");
+    const beforeDismiss = await page.evaluate(() => {
+      const stored = (globalThis as any).chromeStorageBacking?.noosWorkItemInbox;
+      const active = stored?.workItems?.find((item: any) => item.status === "ACTIVE");
+      return { revision: stored?.revision, workItemRevision: active?.revision, coldStart: active?.coldStart?.state };
+    });
+    page.off("dialog", acceptDialog);
+    page.once("dialog", (dialog) => void dialog.dismiss());
+    await clickShuttle(page, "[data-action='work-item-cold-start']");
+    await page.waitForTimeout(100);
+    expect(await page.evaluate(() => {
+      const stored = (globalThis as any).chromeStorageBacking?.noosWorkItemInbox;
+      const active = stored?.workItems?.find((item: any) => item.status === "ACTIVE");
+      return { revision: stored?.revision, workItemRevision: active?.revision, coldStart: active?.coldStart?.state };
+    })).toEqual(beforeDismiss);
+    page.on("dialog", acceptDialog);
+    await clickShuttle(page, "[data-action='work-item-cold-start']");
+    await expect.poll(() => page.evaluate(() => {
+      const stored = (globalThis as any).chromeStorageBacking?.noosWorkItemInbox;
+      return stored?.workItems?.find((item: any) => item.status === "ACTIVE")?.coldStart?.state;
+    })).toBe("READY");
+    await setShuttleInputValue(page, "input[data-work-item-reason]", "Human approved promotion.");
+    await clickShuttle(page, "[data-action='work-item-promote']");
+    await expect.poll(() => page.evaluate(() => {
+      const stored = (globalThis as any).chromeStorageBacking?.noosWorkItemInbox;
+      return {
+        promoted: stored?.workItems?.some((item: any) => item.status === "PROMOTED"),
+        active: stored?.workItems?.find((item: any) => item.status === "ACTIVE")
+      };
+    })).toMatchObject({ promoted: true, active: { status: "ACTIVE", binding: undefined } });
+    await page.close();
+  }, 30000);
 
   it("waits for chatbot generation to finish before auto-saving a generated handoff", async () => {
     const page = await newMockChatPage({ autoVault: true, startWithHandoffs: false });

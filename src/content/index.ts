@@ -5,8 +5,10 @@ import { captureNoosThreads } from "../core/thread-capture";
 import { captureNoosCrystals } from "../core/crystal-capture";
 import type { NoosThread } from "../core/noos-thread";
 import type { NoosCrystal } from "../core/noos-crystal";
+import type { CandidateProposal, InboxItem, WorkItem, WorkItemInboxState } from "../core/work-item-inbox";
 import { EXTENSION_CONTEXT_INVALID, sendExtensionMessage } from "../shared/extension-runtime";
 import { COPY, type ShuttleLocale, getStoredLocale, storeLocale } from "../shared/i18n";
+import { isSupportedProviderHost, normalizeProviderConversationId } from "../shared/provider-identity";
 import { ClipboardAdapter } from "../storage/ClipboardAdapter";
 import { DownloadAdapter } from "../storage/DownloadAdapter";
 import { NoosVaultAdapter } from "../storage/NoosVaultAdapter";
@@ -22,6 +24,7 @@ type VaultFeedTarget = "chat" | "project" | "feishu_publish";
 type SurfaceKind = "chatgpt" | "feishu" | "none";
 type FeishuPageContextKind = "doc" | "drive_root" | "drive_folder";
 type FeishuPublishMode = "create" | "overwrite";
+type InboxFilter = "all" | "pending" | "absorbed";
 type FeishuPublishDestinationKind = "current_doc" | "drive_root" | "drive_folder";
 type FeishuWikiAction =
   | "export_md"
@@ -71,6 +74,17 @@ interface ViewState {
   vaultBrowseQuery: string;
   selectedVaultObjectKeys: string[];
   selectedPublishSource: VaultObjectContent | null;
+  workItemState: WorkItemInboxState | null;
+  selectedInboxItemIds: string[];
+  incorporatedInboxItemIds: string[];
+  inboxFilter: InboxFilter;
+  workItemDraftReviewNotes?: string;
+  workItemDraftOpenQuestions?: string;
+  workItemDraftBlockingOpenQuestions?: string;
+  workItemDraftCandidateDiff?: string;
+  workItemDraftCandidateBaseRevision?: number;
+  workItemDraftProposalId?: string;
+  workItemDraftReason?: string;
   wikiProjectPath: string;
   wikiCategoryPath: string;
   recentCategoryPaths: string[];
@@ -216,6 +230,14 @@ const viewState: ViewState = {
   vaultBrowseQuery: "",
   selectedVaultObjectKeys: [],
   selectedPublishSource: null,
+  workItemState: null,
+  selectedInboxItemIds: [],
+  incorporatedInboxItemIds: [],
+  inboxFilter: "pending",
+  workItemDraftReviewNotes: undefined,
+  workItemDraftOpenQuestions: undefined,
+  workItemDraftCandidateDiff: undefined,
+  workItemDraftReason: undefined,
   wikiProjectPath: "",
   wikiCategoryPath: "",
   recentCategoryPaths: [],
@@ -258,6 +280,7 @@ function bootstrap(): void {
   installConversationWatcher(app);
   installProjectImportBridge(app);
   void refreshVaultStatus(app);
+  void refreshWorkItemState(app);
   window.addEventListener("resize", () => {
     shuttlePosition = clampPosition(shuttlePosition);
     applyShuttlePosition(app, shuttlePosition);
@@ -293,6 +316,7 @@ function render(app: HTMLElement): void {
             </header>
             ${renderVaultRoute(copy)}
             ${renderVaultImport()}
+            ${renderWorkItemInbox(copy)}
             <div class="settings">
               <button class="settings-toggle" type="button" data-action="settings">${copy.settings}</button>
               ${
@@ -332,6 +356,7 @@ function render(app: HTMLElement): void {
     if (viewState.open) {
       void refreshVaultStatus(app);
       void refreshVaultObjects(app);
+      void refreshWorkItemState(app);
     }
   });
   app.querySelector(".surface-fab")?.addEventListener("click", () => {
@@ -375,6 +400,50 @@ function render(app: HTMLElement): void {
     }
     render(app);
   });
+
+  app.querySelectorAll<HTMLInputElement>("input[data-work-item-inbox-select]").forEach((input) => {
+    input.addEventListener("change", () => {
+      captureWorkItemDraft(app);
+      const inboxItemId = input.dataset.workItemInboxSelect;
+      if (!inboxItemId) {
+        return;
+      }
+      viewState.selectedInboxItemIds = input.checked
+        ? [...new Set([...viewState.selectedInboxItemIds, inboxItemId])]
+        : viewState.selectedInboxItemIds.filter((id) => id !== inboxItemId);
+      if (!input.checked) {
+        viewState.incorporatedInboxItemIds = viewState.incorporatedInboxItemIds.filter((id) => id !== inboxItemId);
+      }
+      viewState.workItemDraftProposalId = undefined;
+      render(app);
+    });
+  });
+
+  app.querySelectorAll<HTMLInputElement>("input[data-work-item-inbox-incorporate]").forEach((input) => {
+    input.addEventListener("change", () => {
+      captureWorkItemDraft(app);
+      const inboxItemId = input.dataset.workItemInboxIncorporate;
+      if (!inboxItemId) return;
+      viewState.incorporatedInboxItemIds = input.checked
+        ? [...new Set([...viewState.incorporatedInboxItemIds, inboxItemId])]
+        : viewState.incorporatedInboxItemIds.filter((id) => id !== inboxItemId);
+      if (input.checked && !viewState.selectedInboxItemIds.includes(inboxItemId)) {
+        viewState.selectedInboxItemIds = [...viewState.selectedInboxItemIds, inboxItemId];
+      }
+      viewState.workItemDraftProposalId = undefined;
+      render(app);
+    });
+  });
+
+  app.querySelector<HTMLSelectElement>("select[data-action='select-work-item']")?.addEventListener("change", () => {
+    void handleAction("select-work-item", app);
+  });
+
+  app.querySelector<HTMLTextAreaElement>("[data-work-item-review-notes]")?.addEventListener("input", () => captureWorkItemDraft(app));
+  app.querySelector<HTMLTextAreaElement>("[data-work-item-open-questions]")?.addEventListener("input", () => captureWorkItemDraft(app));
+  app.querySelector<HTMLTextAreaElement>("[data-work-item-blocking-open-questions]")?.addEventListener("input", () => captureWorkItemDraft(app));
+  app.querySelector<HTMLTextAreaElement>("[data-work-item-candidate-diff]")?.addEventListener("input", () => captureWorkItemDraft(app));
+  app.querySelector<HTMLInputElement>("[data-work-item-reason]")?.addEventListener("input", () => captureWorkItemDraft(app));
 }
 
 function renderPreservingPopoverScroll(app: HTMLElement): void {
@@ -602,6 +671,197 @@ function renderVaultImport(): string {
   </section>`;
 }
 
+function currentWorkItem(): WorkItem | undefined {
+  const state = viewState.workItemState;
+  if (!state) return undefined;
+  return (
+    state.workItems.find((item) => item.workItemId === state.activeWorkItemId && item.status === "ACTIVE") ??
+    state.workItems.find((item) => item.status === "ACTIVE")
+  );
+}
+
+function clearWorkItemDrafts(): void {
+  viewState.selectedInboxItemIds = [];
+  viewState.incorporatedInboxItemIds = [];
+  viewState.workItemDraftReviewNotes = undefined;
+  viewState.workItemDraftOpenQuestions = undefined;
+  viewState.workItemDraftBlockingOpenQuestions = undefined;
+  viewState.workItemDraftCandidateDiff = undefined;
+  viewState.workItemDraftCandidateBaseRevision = undefined;
+  viewState.workItemDraftProposalId = undefined;
+  viewState.workItemDraftReason = undefined;
+}
+
+function proposalStateLabel(state: CandidateProposal["state"], copy: (typeof COPY)[ShuttleLocale]): string {
+  return {
+    DRAFT: copy.proposalDraft,
+    SUBMITTED: copy.proposalSubmitted,
+    ACCEPTED: copy.proposalAccepted,
+    STALE: copy.proposalStale,
+    DISCARDED: copy.proposalDiscarded
+  }[state];
+}
+
+function workItemStatusLabel(status: WorkItem["status"], copy: (typeof COPY)[ShuttleLocale]): string {
+  return {
+    DRAFT: copy.statusDraft,
+    ACTIVE: copy.statusActive,
+    PROMOTED: copy.statusPromoted,
+    ARCHIVED: copy.statusArchived
+  }[status];
+}
+
+function inboxStateLabel(state: InboxItem["state"], copy: (typeof COPY)[ShuttleLocale]): string {
+  return {
+    PENDING: copy.statusPending,
+    ACCEPTED: copy.statusAccepted,
+    REJECTED: copy.statusRejected,
+    CANCELLED: copy.statusCancelled,
+    DISCARDED: copy.statusDiscarded
+  }[state];
+}
+
+function sourceKindLabel(kind: InboxItem["sourceKind"], copy: (typeof COPY)[ShuttleLocale]): string {
+  return kind === "thread" ? copy.sourceThread : copy.sourceCrystal;
+}
+
+function readinessLabel(key: string, copy: (typeof COPY)[ShuttleLocale]): string {
+  return {
+    goalSet: copy.goalReady,
+    scopeSet: copy.scopeReady,
+    reviewNotesReviewed: copy.reviewNotesReady,
+    openQuestionsReviewed: copy.openQuestionsReady,
+    coldStartReady: copy.coldStartReady
+  }[key] ?? key;
+}
+
+function renderWorkItemInbox(copy: (typeof COPY)[ShuttleLocale]): string {
+  const workItem = currentWorkItem();
+  const allWorkItems = viewState.workItemState?.workItems.filter((item) => item.status !== "ARCHIVED") ?? [];
+  const inboxItems = workItem
+    ? (viewState.workItemState?.inboxItems
+        .filter((item) => item.workItemId === workItem.workItemId)
+        .filter((item) => viewState.inboxFilter === "all" || (viewState.inboxFilter === "pending" ? item.state === "PENDING" : item.state === "ACCEPTED"))
+        .sort((a, b) => b.capturedAt.localeCompare(a.capturedAt)) ?? [])
+    : [];
+
+  if (!workItem) {
+    const draftWorkItems = allWorkItems.filter((item) => item.status === "DRAFT");
+    return `<section class="vault-import work-item-inbox" aria-label="${escapeAttribute(copy.workItemInbox)}">
+      <header><div><strong>${escapeHtml(copy.workItemInbox)}</strong><span>${escapeHtml(copy.createWorkItem)}</span></div></header>
+      ${
+        draftWorkItems.length
+          ? `<label class="work-item-field"><span>${escapeHtml(copy.selectWorkItem)}</span>
+        <select data-action="select-work-item">
+          <option value="">${escapeHtml(copy.selectWorkItem)}</option>
+          ${draftWorkItems
+            .map(
+              (item) =>
+                `<option value="${escapeAttribute(item.workItemId)}">${escapeHtml(item.title)} · ${escapeHtml(
+                  workItemStatusLabel(item.status, copy)
+                )}</option>`
+            )
+            .join("")}
+        </select>
+      </label>`
+          : ""
+      }
+      <label class="work-item-field"><span>${escapeHtml(copy.workItemTitle)}</span><input type="text" data-work-item-title placeholder="${escapeAttribute(copy.workItemTitle)}" /></label>
+      <label class="work-item-field"><span>${escapeHtml(copy.workItemGoal)}</span><textarea data-work-item-goal placeholder="${escapeAttribute(copy.workItemGoal)}"></textarea></label>
+      <label class="work-item-field"><span>${escapeHtml(copy.workItemScope)}</span><textarea data-work-item-scope placeholder="${escapeAttribute(copy.workItemScope)}"></textarea></label>
+      <button class="primary-action" type="button" data-action="create-work-item">${escapeHtml(copy.createWorkItem)}</button>
+    </section>`;
+  }
+
+  const readiness = Object.entries(workItem.readiness)
+    .map(([key, value]) => `${readinessLabel(key, copy)}: ${value ? copy.readySymbol : copy.notReadySymbol}`)
+    .join(" · ");
+  return `<section class="vault-import work-item-inbox" aria-label="${escapeAttribute(copy.workItemInbox)}">
+    <header>
+      <div>
+        <strong>${escapeHtml(copy.workItemInbox)}</strong>
+        <span>${escapeHtml(workItem.title)} · ${escapeHtml(workItemStatusLabel(workItem.status, copy))} · ${escapeHtml(copy.revision)} ${workItem.revision}</span>
+      </div>
+      <button type="button" data-action="refresh-work-item">${escapeHtml(copy.vaultStatusRefresh)}</button>
+    </header>
+    <label class="work-item-field"><span>${escapeHtml(copy.selectWorkItem)}</span>
+      <select data-action="select-work-item">
+        ${allWorkItems.map((item) => `<option value="${escapeAttribute(item.workItemId)}" ${item.workItemId === viewState.workItemState?.activeWorkItemId ? "selected" : ""}>${escapeHtml(item.title)} · ${escapeHtml(workItemStatusLabel(item.status, copy))}</option>`).join("")}
+      </select>
+    </label>
+    <div class="work-item-summary">
+      <span>${escapeHtml(copy.readiness)}: ${escapeHtml(readiness)}</span>
+      <span>${escapeHtml(copy.blockingOpenQuestions)}: ${escapeHtml(workItem.blockingOpenQuestions.length ? copy.notReadySymbol : copy.readySymbol)}</span>
+      <span>${escapeHtml(copy.coldStart)}: ${escapeHtml(workItem.coldStart.state === "READY" ? copy.coldStartReady : copy.statusPending)}</span>
+      <span>${escapeHtml(copy.candidateRevision)}: ${workItem.candidateRevision} · ${escapeHtml(copy.candidateBaseRevision)}: ${workItem.candidateBaseRevision}</span>
+      ${workItem.candidateProposal ? `<span>${escapeHtml(copy.candidateProposal)}: ${escapeHtml(proposalStateLabel(workItem.candidateProposal.state, copy))}</span>` : ""}
+      ${workItem.candidateDiff ? `<span>${escapeHtml(copy.candidateDiff)}: ${escapeHtml(workItem.candidateDiff.slice(0, 180))}</span>` : ""}
+    </div>
+    <div class="work-item-filters" role="group" aria-label="${escapeAttribute(copy.workItemInbox)}">
+      ${(["pending", "absorbed", "all"] as const).map((filter) => `<button type="button" data-action="work-item-filter-${filter}" aria-pressed="${viewState.inboxFilter === filter}">${escapeHtml(filter === "pending" ? copy.pendingItems : filter === "absorbed" ? copy.absorbedItems : copy.allItems)}</button>`).join("")}
+    </div>
+    <div class="work-item-inbox-list">
+      ${
+        inboxItems.length
+          ? inboxItems
+              .map(
+                (item) => `<label class="work-item-inbox-row">
+                  <input type="checkbox" data-work-item-inbox-select="${escapeAttribute(item.inboxItemId)}" ${
+                    viewState.selectedInboxItemIds.includes(item.inboxItemId) ? "checked" : ""
+                  } ${item.state === "PENDING" ? "" : "disabled"} />
+                  <input type="checkbox" data-work-item-inbox-incorporate="${escapeAttribute(item.inboxItemId)}" ${
+                    viewState.incorporatedInboxItemIds.includes(item.inboxItemId) ? "checked" : ""
+                  } ${item.state === "PENDING" ? "" : "disabled"} aria-label="${escapeAttribute(copy.incorporate)}" />
+                  <span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(sourceKindLabel(item.sourceKind, copy))} · ${escapeHtml(inboxStateLabel(item.state, copy))} · ${escapeHtml(item.capturedId)}</small>${item.sourceUrl ? `<a href="${escapeAttribute(item.sourceUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.sourceUrl)}</a>` : ""}</span>
+                  <span class="work-item-row-actions">
+                    ${
+                      item.state === "PENDING"
+                        ? `<button type="button" data-action="work-item-reject-${escapeAttribute(item.inboxItemId)}">${escapeHtml(copy.rejectInboxItem)}</button>
+                           <button type="button" data-action="work-item-cancel-${escapeAttribute(item.inboxItemId)}">${escapeHtml(copy.cancelInboxItem)}</button>
+                           <button type="button" data-action="work-item-discard-${escapeAttribute(item.inboxItemId)}">${escapeHtml(copy.discardInboxItem)}</button>`
+                        : ""
+                    }
+                  </span>
+                </label>`
+              )
+              .join("")
+          : `<div class="vault-import-empty">${escapeHtml(copy.noCapturedHandoff)}</div>`
+      }
+    </div>
+    <label class="work-item-field"><span>${escapeHtml(copy.reviewNotes)}</span><textarea data-work-item-review-notes placeholder="${escapeAttribute(
+      copy.reviewNotes
+    )}">${escapeHtml(viewState.workItemDraftReviewNotes ?? workItem.reviewNotes.join("\n"))}</textarea></label>
+    <label class="work-item-field"><span>${escapeHtml(copy.openQuestions)}</span><textarea data-work-item-open-questions placeholder="${escapeAttribute(
+      copy.openQuestions
+    )}">${escapeHtml(viewState.workItemDraftOpenQuestions ?? workItem.openQuestions.join("\n"))}</textarea></label>
+    <label class="work-item-field"><span>${escapeHtml(copy.blockingOpenQuestions)}</span><textarea data-work-item-blocking-open-questions placeholder="${escapeAttribute(
+      copy.blockingOpenQuestions
+    )}">${escapeHtml(viewState.workItemDraftBlockingOpenQuestions ?? workItem.blockingOpenQuestions.join("\n"))}</textarea></label>
+    <label class="work-item-field"><span>${escapeHtml(copy.candidateDiff)}</span><textarea data-work-item-candidate-diff placeholder="${escapeAttribute(
+      copy.candidateDiff
+    )}">${escapeHtml(viewState.workItemDraftCandidateDiff ?? workItem.candidateDiff)}</textarea></label>
+    <label class="work-item-field"><span>${escapeHtml(copy.decisionReason)}</span><input type="text" data-work-item-reason placeholder="${escapeAttribute(
+      copy.decisionReason
+    )}" value="${escapeAttribute(viewState.workItemDraftReason ?? "")}" /></label>
+    <footer class="work-item-actions">
+      <button class="primary-action" type="button" data-action="work-item-accept-absorb" ${
+        viewState.selectedInboxItemIds.length ? "" : "disabled"
+      }>${escapeHtml(copy.acceptAbsorb)}</button>
+      <button type="button" data-action="work-item-save-candidate" ${
+        viewState.selectedInboxItemIds.length ? "" : "disabled"
+      }>${escapeHtml(copy.saveCandidateProposal)}</button>
+      ${
+        workItem.candidateProposal?.state === "DRAFT" || workItem.candidateProposal?.state === "SUBMITTED"
+          ? `<button type="button" data-action="work-item-reject-candidate">${escapeHtml(copy.rejectCandidateDiff)}</button>`
+          : ""
+      }
+      <button type="button" data-action="work-item-update-review">${escapeHtml(copy.reviewNotes)}</button>
+      <button type="button" data-action="work-item-cold-start">${escapeHtml(copy.coldStart)}</button>
+      <button type="button" data-action="work-item-promote">${escapeHtml(copy.humanPromote)}</button>
+    </footer>
+  </section>`;
+}
+
 function vaultTargetLabel(copy: (typeof COPY)[ShuttleLocale]): string {
   if (vaultFeedTarget === "project") {
     return copy.attachToProjectSources;
@@ -667,6 +927,7 @@ function renderThreads(selectedThread: NoosThread | undefined): string {
         <button type="button" data-action="copy">${copy.copyText}</button>
         <button type="button" data-action="download">${copy.downloadFile}</button>
         <button type="button" data-action="vault">${copy.saveToVault}</button>
+        <button type="button" data-action="capture-thread-inbox">${copy.manualCapture}</button>
       </footer>
       ${warnings}
       <pre>${escapeHtml(selectedThread?.rawMarkdown ?? "")}</pre>
@@ -757,11 +1018,14 @@ function renderModal(): string {
           ${viewState.crystals
             .map(
               (crystal, index) =>
-                `<button type="button" data-action="choose-crystal-${index}" aria-pressed="${index === viewState.selectedCrystalIndex}">
-                  <strong>${escapeHtml(crystal.title)}</strong>
-                  <span>${escapeHtml(crystalChoiceSummary(crystal, copy))}</span>
-                  <small>${escapeHtml(crystalPreview(crystal))}</small>
-                </button>`
+                `<div class="thread-choice">
+                  <button type="button" data-action="choose-crystal-${index}" aria-pressed="${index === viewState.selectedCrystalIndex}">
+                    <strong>${escapeHtml(crystal.title)}</strong>
+                    <span>${escapeHtml(crystalChoiceSummary(crystal, copy))}</span>
+                    <small>${escapeHtml(crystalPreview(crystal))}</small>
+                  </button>
+                  <button type="button" data-action="capture-crystal-inbox-${index}">${escapeHtml(copy.manualCapture)}</button>
+                </div>`
             )
             .join("")}
         </div>
@@ -1081,6 +1345,105 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
     return;
   }
 
+  if (action === "refresh-work-item") {
+    await refreshWorkItemState(app);
+    return;
+  }
+
+  if (action.startsWith("work-item-filter-")) {
+    viewState.inboxFilter = action.replace("work-item-filter-", "") as InboxFilter;
+    render(app);
+    return;
+  }
+
+  if (action === "select-work-item") {
+    const select = app.querySelector<HTMLSelectElement>("select[data-action='select-work-item']");
+    const target = viewState.workItemState?.workItems.find((item) => item.workItemId === select?.value);
+    if (!target || target.workItemId === viewState.workItemState?.activeWorkItemId) return;
+    try {
+      const challengeToken = await requestWorkItemAuthorization(target.workItemId, target.revision, "activate");
+      if (
+        typeof window !== "undefined" &&
+        !window.confirm("Confirm adopting this Work Item into the current conversation.")
+      ) {
+        await cancelWorkItemAuthorization(target.workItemId, target.revision, "activate", challengeToken);
+        return;
+      }
+      const authorizationToken = await confirmWorkItemAuthorization(
+        target.workItemId,
+        target.revision,
+        "activate",
+        challengeToken
+      );
+      await workItemRpc({
+        type: "NOOS_WORK_ITEM",
+        action: "activate",
+        workItemId: target.workItemId,
+        expectedRevision: target.revision,
+        authorizationToken
+      });
+      clearWorkItemDrafts();
+      await refreshWorkItemState(app);
+    } catch (error) {
+      viewState.message = workItemErrorMessage(error);
+      render(app);
+    }
+    return;
+  }
+
+  if (action === "create-work-item") {
+    await createWorkItemFromForm(app);
+    return;
+  }
+
+  if (action === "capture-thread-inbox") {
+    await captureSelectedThreadToInbox(app);
+    return;
+  }
+
+  if (action.startsWith("capture-crystal-inbox-")) {
+    await captureCrystalToInbox(app, Number(action.replace("capture-crystal-inbox-", "")));
+    return;
+  }
+
+  if (action === "work-item-accept-absorb") {
+    await acceptSelectedInboxItems(app);
+    return;
+  }
+
+  if (action === "work-item-save-candidate") {
+    await saveCandidateProposal(app);
+    return;
+  }
+
+  if (action === "work-item-reject-candidate") {
+    await rejectCandidateDiff(app);
+    return;
+  }
+
+  if (action === "work-item-update-review") {
+    await updateWorkItemReview(app);
+    return;
+  }
+
+  if (action === "work-item-cold-start") {
+    await prepareWorkItemColdStart(app);
+    return;
+  }
+
+  if (action === "work-item-promote") {
+    await promoteWorkItem(app);
+    return;
+  }
+
+  for (const decision of ["reject", "cancel", "discard"] as const) {
+    const prefix = `work-item-${decision}-`;
+    if (action.startsWith(prefix)) {
+      await decideWorkItemInboxItem(app, decision, action.slice(prefix.length));
+      return;
+    }
+  }
+
   if (action === "feed-selected-vault-object") {
     await feedSelectedVaultObject(app);
     return;
@@ -1243,6 +1606,449 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
 
   if (action === "vault") {
     await deliverSelectedThread("vault", app);
+  }
+}
+
+interface WorkItemRpcResponse {
+  ok?: boolean;
+  data?: unknown;
+  errorCode?: string;
+  message?: string;
+}
+
+function workItemErrorMessage(error: unknown): string {
+  const copy = COPY[viewState.locale];
+  const code = error instanceof Error && "code" in error ? String((error as Error & { code?: unknown }).code) : "";
+  return (
+    {
+      stale_revision: copy.staleRevision,
+      work_item_not_active: copy.workItemNotActive,
+      atomic_coordinator_unavailable: copy.atomicCoordinatorUnavailable,
+      work_item_not_ready: copy.workItemNotReady,
+      atomic_store_required: copy.workItemAtomicStoreRequired,
+      selection_required: copy.workItemSelectionRequired,
+      inbox_item_not_found: copy.workItemItemUnavailable,
+      inbox_item_not_pending: copy.workItemItemNotPending,
+      incorporated_not_selected: copy.workItemItemUnavailable,
+      candidate_diff_required: copy.candidateDiffRequired,
+      decision_reason_required: copy.workItemReasonRequired,
+      promotion_reason_required: copy.workItemReasonRequired,
+      title_required: copy.workItemFieldRequired,
+      goal_required: copy.workItemFieldRequired,
+      scope_required: copy.workItemFieldRequired,
+      work_item_not_found: copy.workItemActionFailed,
+      conversation_identity_required: copy.conversationIdentityRequired,
+      conversation_binding_mismatch: copy.conversationBindingMismatch
+    }[code] ??
+    copy.workItemActionFailed
+  );
+}
+
+async function workItemRpc(message: Record<string, unknown>): Promise<unknown> {
+  const context = getPageContext();
+  const routedMessage = {
+    ...message,
+    conversationId:
+      context.conversationId && !context.conversationId.startsWith("WEB:")
+        ? context.conversationId
+        : undefined
+  };
+  const response = await sendExtensionMessage<Record<string, unknown>, WorkItemRpcResponse>(routedMessage);
+  if (!response?.ok) {
+    const error = new Error(response?.message ?? response?.errorCode ?? "Work Item action failed.");
+    Object.assign(error, { code: response?.errorCode });
+    throw error;
+  }
+  return response.data;
+}
+
+async function requestWorkItemAuthorization(
+  workItemId: string,
+  expectedRevision: number,
+  action: "activate" | "prepare-cold-start"
+): Promise<string> {
+  const response = (await workItemRpc({
+    type: "NOOS_WORK_ITEM",
+    action: "challenge",
+    workItemId,
+    expectedRevision,
+    authorizationAction: action
+  })) as { challengeToken?: string };
+  if (!response.challengeToken) {
+    throw new Error("The background authorization challenge did not return a nonce.");
+  }
+  return response.challengeToken;
+}
+
+async function confirmWorkItemAuthorization(
+  workItemId: string,
+  expectedRevision: number,
+  action: "activate" | "prepare-cold-start",
+  challengeToken: string
+): Promise<string> {
+  const response = (await workItemRpc({
+    type: "NOOS_WORK_ITEM",
+    action: "confirm-authorization",
+    workItemId,
+    expectedRevision,
+    authorizationAction: action,
+    challengeToken,
+    confirmed: true
+  })) as { authorizationToken?: string };
+  if (!response.authorizationToken) {
+    throw new Error("The background authorization confirmation did not return a token.");
+  }
+  return response.authorizationToken;
+}
+
+async function cancelWorkItemAuthorization(
+  workItemId: string,
+  expectedRevision: number,
+  action: "activate" | "prepare-cold-start",
+  challengeToken: string
+): Promise<void> {
+  await workItemRpc({
+    type: "NOOS_WORK_ITEM",
+    action: "cancel-authorization",
+    workItemId,
+    expectedRevision,
+    authorizationAction: action,
+    challengeToken
+  });
+}
+
+async function refreshWorkItemState(app: HTMLElement): Promise<void> {
+  try {
+    const state = (await workItemRpc({ type: "NOOS_WORK_ITEM", action: "snapshot" })) as WorkItemInboxState;
+    viewState.workItemState = state;
+    const active = state.workItems.find(
+      (item) => item.workItemId === state.activeWorkItemId && item.status === "ACTIVE"
+    );
+    if (!active) {
+      clearWorkItemDrafts();
+    } else if (
+      viewState.workItemDraftCandidateBaseRevision !== undefined &&
+      viewState.workItemDraftCandidateBaseRevision !== active.candidateRevision
+    ) {
+      viewState.workItemDraftCandidateDiff = undefined;
+      viewState.workItemDraftCandidateBaseRevision = active.candidateRevision;
+      viewState.workItemDraftProposalId = undefined;
+      viewState.message = COPY[viewState.locale].candidateRebaseRequired;
+    } else if (viewState.workItemDraftCandidateBaseRevision === undefined) {
+      viewState.workItemDraftCandidateBaseRevision = active.candidateRevision;
+    }
+    const proposal = active?.candidateProposal;
+    if (
+      proposal &&
+      proposal.state === "DRAFT" &&
+      proposal.baseCandidateRevision === active.candidateRevision &&
+      viewState.workItemDraftProposalId === undefined
+    ) {
+      viewState.selectedInboxItemIds = [...proposal.selectedInboxItemIds];
+      viewState.incorporatedInboxItemIds = [...proposal.incorporatedInboxItemIds];
+      viewState.workItemDraftCandidateDiff = proposal.diff;
+      viewState.workItemDraftCandidateBaseRevision = proposal.baseCandidateRevision;
+      viewState.workItemDraftProposalId = proposal.proposalId;
+    }
+    const pendingIds = new Set(
+      state.inboxItems.filter((item) => item.state === "PENDING").map((item) => item.inboxItemId)
+    );
+    viewState.selectedInboxItemIds = viewState.selectedInboxItemIds.filter((id) => pendingIds.has(id));
+    viewState.incorporatedInboxItemIds = viewState.incorporatedInboxItemIds.filter((id) => pendingIds.has(id));
+  } catch (error) {
+    viewState.message = workItemErrorMessage(error);
+  }
+  render(app);
+}
+
+function candidateDiffForSelection(app: HTMLElement): string {
+  const entered = readWorkItemText(app, "[data-work-item-candidate-diff]");
+  if (entered) return entered;
+  const selected = new Set(viewState.incorporatedInboxItemIds);
+  return (viewState.workItemState?.inboxItems ?? [])
+    .filter((item) => selected.has(item.inboxItemId))
+    .map((item) => item.bodyMarkdown)
+    .join("\n\n---\n\n")
+    .trim();
+}
+
+function readWorkItemText(app: HTMLElement, selector: string): string {
+  return app.querySelector<HTMLInputElement | HTMLTextAreaElement>(selector)?.value.trim() ?? "";
+}
+
+function readWorkItemLines(app: HTMLElement, selector: string): string[] {
+  return readWorkItemText(app, selector)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function captureWorkItemDraft(app: HTMLElement): void {
+  const read = (selector: string): string | undefined =>
+    app.querySelector<HTMLInputElement | HTMLTextAreaElement>(selector)?.value;
+  viewState.workItemDraftReviewNotes = read("[data-work-item-review-notes]");
+  viewState.workItemDraftOpenQuestions = read("[data-work-item-open-questions]");
+  viewState.workItemDraftBlockingOpenQuestions = read("[data-work-item-blocking-open-questions]");
+  viewState.workItemDraftCandidateDiff = read("[data-work-item-candidate-diff]");
+  const workItem = currentWorkItem();
+  if (viewState.workItemDraftProposalId && read("[data-work-item-candidate-diff]") !== workItem?.candidateProposal?.diff) {
+    viewState.workItemDraftProposalId = undefined;
+  }
+  viewState.workItemDraftCandidateBaseRevision ??= workItem?.candidateRevision;
+  viewState.workItemDraftReason = read("[data-work-item-reason]");
+}
+
+async function createWorkItemFromForm(app: HTMLElement): Promise<void> {
+  try {
+    await workItemRpc({
+      type: "NOOS_WORK_ITEM",
+      action: "create",
+      input: {
+        title: readWorkItemText(app, "[data-work-item-title]"),
+        goal: readWorkItemText(app, "[data-work-item-goal]"),
+        scope: readWorkItemText(app, "[data-work-item-scope]")
+      }
+    });
+    viewState.message = COPY[viewState.locale].createWorkItem;
+    await refreshWorkItemState(app);
+  } catch (error) {
+    viewState.message = workItemErrorMessage(error);
+    render(app);
+  }
+}
+
+async function captureSelectedThreadToInbox(app: HTMLElement): Promise<void> {
+  const workItem = currentWorkItem();
+  const thread = viewState.threads[viewState.selectedIndex];
+  if (!workItem || !thread) {
+    viewState.message = COPY[viewState.locale].createWorkItem;
+    render(app);
+    return;
+  }
+  try {
+    await workItemRpc({ type: "NOOS_WORK_ITEM", action: "capture-thread", workItemId: workItem.workItemId, thread });
+    viewState.message = COPY[viewState.locale].manualCapture;
+    await refreshWorkItemState(app);
+  } catch (error) {
+    viewState.message = workItemErrorMessage(error);
+    render(app);
+  }
+}
+
+async function captureCrystalToInbox(app: HTMLElement, index: number): Promise<void> {
+  const workItem = currentWorkItem();
+  const crystal = viewState.crystals[index];
+  if (!workItem || !crystal) {
+    viewState.message = COPY[viewState.locale].createWorkItem;
+    render(app);
+    return;
+  }
+  try {
+    await workItemRpc({ type: "NOOS_WORK_ITEM", action: "capture-crystal", workItemId: workItem.workItemId, crystal });
+    viewState.message = COPY[viewState.locale].manualCapture;
+    await refreshWorkItemState(app);
+  } catch (error) {
+    viewState.message = workItemErrorMessage(error);
+    render(app);
+  }
+}
+
+async function saveCandidateProposal(app: HTMLElement): Promise<void> {
+  const workItem = currentWorkItem();
+  if (!workItem || viewState.selectedInboxItemIds.length === 0) return;
+  const diff = candidateDiffForSelection(app);
+  if (!diff) {
+    viewState.message = COPY[viewState.locale].candidateDiffRequired;
+    render(app);
+    return;
+  }
+  try {
+    const proposal = (await workItemRpc({
+      type: "NOOS_WORK_ITEM",
+      action: "save-candidate-proposal",
+      workItemId: workItem.workItemId,
+      expectedRevision: workItem.revision,
+      proposal: {
+        baseCandidateRevision: viewState.workItemDraftCandidateBaseRevision ?? workItem.candidateRevision,
+        selectedInboxItemIds: viewState.selectedInboxItemIds,
+        incorporatedInboxItemIds: viewState.incorporatedInboxItemIds,
+        diff
+      }
+    })) as CandidateProposal;
+    viewState.workItemDraftCandidateBaseRevision = proposal.baseCandidateRevision;
+    viewState.workItemDraftCandidateDiff = proposal.diff;
+    viewState.workItemDraftProposalId = proposal.proposalId;
+    viewState.message = COPY[viewState.locale].saveCandidateProposal;
+    await refreshWorkItemState(app);
+  } catch (error) {
+    viewState.message = workItemErrorMessage(error);
+    render(app);
+  }
+}
+
+async function rejectCandidateDiff(app: HTMLElement): Promise<void> {
+  const workItem = currentWorkItem();
+  const proposalId = workItem?.candidateProposal?.proposalId;
+  if (!workItem || !proposalId) return;
+  try {
+    await workItemRpc({
+      type: "NOOS_WORK_ITEM",
+      action: "reject-candidate-diff",
+      workItemId: workItem.workItemId,
+      proposalId,
+      expectedRevision: workItem.revision,
+      reason: readWorkItemText(app, "[data-work-item-reason]")
+    });
+    viewState.workItemDraftProposalId = undefined;
+    viewState.workItemDraftCandidateDiff = undefined;
+    viewState.message = COPY[viewState.locale].rejectCandidateDiff;
+    await refreshWorkItemState(app);
+  } catch (error) {
+    viewState.message = workItemErrorMessage(error);
+    render(app);
+  }
+}
+
+async function acceptSelectedInboxItems(app: HTMLElement): Promise<void> {
+  const workItem = currentWorkItem();
+  if (!workItem || viewState.selectedInboxItemIds.length === 0) {
+    return;
+  }
+  try {
+    await workItemRpc({
+      type: "NOOS_WORK_ITEM",
+      action: "accept-absorb",
+      workItemId: workItem.workItemId,
+      inboxItemIds: viewState.selectedInboxItemIds,
+      expectedRevision: workItem.revision,
+      options: {
+        reviewNotes: readWorkItemLines(app, "[data-work-item-review-notes]"),
+        openQuestions: readWorkItemLines(app, "[data-work-item-open-questions]"),
+        incorporatedInboxItemIds: viewState.incorporatedInboxItemIds,
+        candidate: {
+          baseRevision: viewState.workItemDraftCandidateBaseRevision ?? workItem.candidateRevision,
+          diff: candidateDiffForSelection(app)
+        },
+        ...(viewState.workItemDraftProposalId ? { proposalId: viewState.workItemDraftProposalId } : {})
+      }
+    });
+    viewState.selectedInboxItemIds = [];
+    viewState.incorporatedInboxItemIds = [];
+    viewState.message = COPY[viewState.locale].acceptAbsorb;
+    await refreshWorkItemState(app);
+  } catch (error) {
+    viewState.message = workItemErrorMessage(error);
+    render(app);
+  }
+}
+
+async function updateWorkItemReview(app: HTMLElement): Promise<void> {
+  const workItem = currentWorkItem();
+  if (!workItem) {
+    return;
+  }
+  try {
+    await workItemRpc({
+      type: "NOOS_WORK_ITEM",
+      action: "update-review",
+      workItemId: workItem.workItemId,
+      expectedRevision: workItem.revision,
+      changes: {
+        reviewNotes: readWorkItemLines(app, "[data-work-item-review-notes]"),
+        openQuestions: readWorkItemLines(app, "[data-work-item-open-questions]"),
+        blockingOpenQuestions: readWorkItemLines(app, "[data-work-item-blocking-open-questions]")
+      }
+    });
+    viewState.message = COPY[viewState.locale].reviewNotes;
+    await refreshWorkItemState(app);
+  } catch (error) {
+    viewState.message = workItemErrorMessage(error);
+    render(app);
+  }
+}
+
+async function prepareWorkItemColdStart(app: HTMLElement): Promise<void> {
+  const workItem = currentWorkItem();
+  if (!workItem) {
+    return;
+  }
+  try {
+    const authorizationToken = await requestWorkItemAuthorization(
+      workItem.workItemId,
+      workItem.revision,
+      "prepare-cold-start"
+    );
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm("Confirm that you have reviewed the Work Item and authorize Cold Start preparation.")
+    ) {
+      await cancelWorkItemAuthorization(workItem.workItemId, workItem.revision, "prepare-cold-start", authorizationToken);
+      return;
+    }
+    const confirmedAuthorizationToken = await confirmWorkItemAuthorization(
+      workItem.workItemId,
+      workItem.revision,
+      "prepare-cold-start",
+      authorizationToken
+    );
+    await workItemRpc({
+      type: "NOOS_WORK_ITEM",
+      action: "prepare-cold-start",
+      workItemId: workItem.workItemId,
+      expectedRevision: workItem.revision,
+      authorizationToken: confirmedAuthorizationToken
+    });
+    viewState.message = COPY[viewState.locale].coldStart;
+    await refreshWorkItemState(app);
+  } catch (error) {
+    viewState.message = workItemErrorMessage(error);
+    render(app);
+  }
+}
+
+async function promoteWorkItem(app: HTMLElement): Promise<void> {
+  const workItem = currentWorkItem();
+  if (!workItem) {
+    return;
+  }
+  try {
+    await workItemRpc({
+      type: "NOOS_WORK_ITEM",
+      action: "promote",
+      workItemId: workItem.workItemId,
+      expectedRevision: workItem.revision,
+      reason: readWorkItemText(app, "[data-work-item-reason]")
+    });
+    viewState.message = COPY[viewState.locale].humanPromote;
+    await refreshWorkItemState(app);
+  } catch (error) {
+    viewState.message = workItemErrorMessage(error);
+    render(app);
+  }
+}
+
+async function decideWorkItemInboxItem(
+  app: HTMLElement,
+  decision: "reject" | "cancel" | "discard",
+  inboxItemId: string
+): Promise<void> {
+  const workItem = currentWorkItem();
+  if (!workItem) {
+    return;
+  }
+  try {
+    await workItemRpc({
+      type: "NOOS_WORK_ITEM",
+      action: decision,
+      workItemId: workItem.workItemId,
+      inboxItemId: decodeURIComponent(inboxItemId),
+      expectedRevision: workItem.revision,
+      reason: readWorkItemText(app, "[data-work-item-reason]")
+    });
+    await refreshWorkItemState(app);
+  } catch (error) {
+    viewState.message = workItemErrorMessage(error);
+    render(app);
   }
 }
 
@@ -2411,7 +3217,9 @@ function observeRuntimePage(context: PageContext): CarrierObservation {
   return runtimeObservationLedger.observe({
     provider: context.origin,
     routeRef: context.pathname,
-    providerConversationRef: context.conversationId || undefined,
+    // ChatGPT briefly exposes WEB: routes during first submission. They are
+    // provisional client identities, replaced by the provider conversation ID.
+    providerConversationRef: context.conversationId.startsWith("WEB:") ? undefined : context.conversationId || undefined,
     composerPresent: Boolean(composer),
     composerInteractive: Boolean(composer && !composer.matches(":disabled") &&
       !(composer as HTMLInputElement).readOnly && composer.getAttribute("aria-readonly") !== "true" &&
@@ -2486,7 +3294,7 @@ function detectConversationId(url: URL): string {
   for (const pattern of patterns) {
     const match = url.pathname.match(pattern);
     if (match?.[1]) {
-      return match[1];
+      return normalizeProviderConversationId(match[1]);
     }
   }
 
@@ -2524,21 +3332,7 @@ function normalizedPathname(url: URL): string {
 }
 
 function isSupportedChatHost(host: string): boolean {
-  return [
-    "chatgpt.com",
-    "chat.openai.com",
-    "claude.ai",
-    "gemini.google.com",
-    "aistudio.google.com",
-    "chat.deepseek.com",
-    "kimi.moonshot.cn",
-    "yuanbao.tencent.com",
-    "www.doubao.com",
-    "chat.qwen.ai",
-    "grok.com",
-    "www.perplexity.ai",
-    "poe.com"
-  ].some((candidate) => host === candidate || host.endsWith(`.${candidate}`));
+  return isSupportedProviderHost(host);
 }
 
 function getCurrentSurface(): SurfaceKind {
