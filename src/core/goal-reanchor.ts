@@ -1,0 +1,264 @@
+/**
+ * Sparse, durable Goal Re-anchor lifecycle state.
+ *
+ * This module deliberately does not decide whether an anchor is semantically
+ * correct or approved. It only records substantive design generations,
+ * raises a deduplicated lifecycle operation, and resets the sparse counter
+ * after the operation has completed.
+ */
+
+export type GoalReanchorTrigger =
+  | "experimental_n"
+  | "compaction"
+  | "rollover"
+  | "review_return"
+  | "sedimentation_return"
+  | "scope_correction";
+
+export type GoalReanchorOperationStatus = "PENDING" | "COMPLETED";
+
+export interface GoalReanchorOperation {
+  operationId: string;
+  trigger: GoalReanchorTrigger;
+  sourceAnchorRevision: number;
+  targetAnchorRevision: number;
+  requestedAt: number;
+  completedAt?: number;
+  status: GoalReanchorOperationStatus;
+}
+
+export interface GoalReanchorState {
+  version: 1;
+  logicalThreadId: string;
+  designTurnsSinceAnchor: number;
+  anchorRevision: number;
+  experimentalN: number;
+  completedGenerationIds: string[];
+  operations: Record<string, GoalReanchorOperation>;
+}
+
+export interface GoalReanchorStore {
+  load(): GoalReanchorState | undefined;
+  save(state: GoalReanchorState): void;
+}
+
+export interface RecordDesignGenerationResult {
+  accepted: boolean;
+  duplicate: boolean;
+  state: GoalReanchorState;
+}
+
+export interface RequestReanchorResult {
+  eligible: boolean;
+  created: boolean;
+  operation?: GoalReanchorOperation;
+  state: GoalReanchorState;
+}
+
+export interface CompleteReanchorResult {
+  completed: boolean;
+  duplicate: boolean;
+  operation?: GoalReanchorOperation;
+  state: GoalReanchorState;
+}
+
+export interface GoalReanchorLedgerOptions {
+  logicalThreadId: string;
+  experimentalN: number;
+  store?: GoalReanchorStore;
+  initialState?: GoalReanchorState;
+  now?: () => number;
+}
+
+const MAX_GENERATION_IDS = 256;
+
+export class GoalReanchorLedger {
+  private readonly logicalThreadId: string;
+  private readonly store?: GoalReanchorStore;
+  private readonly now: () => number;
+  private current: GoalReanchorState;
+
+  constructor(options: GoalReanchorLedgerOptions) {
+    assertNonEmpty(options.logicalThreadId, "logicalThreadId");
+    assertPositiveInteger(options.experimentalN, "experimentalN");
+    this.logicalThreadId = options.logicalThreadId;
+    this.store = options.store;
+    this.now = options.now ?? Date.now;
+    this.current = normalizeState(options.store?.load() ?? options.initialState, options.logicalThreadId, options.experimentalN);
+    this.persist();
+  }
+
+  get state(): GoalReanchorState {
+    return cloneState(this.current);
+  }
+
+  get pendingOperation(): GoalReanchorOperation | undefined {
+    const operation = Object.values(this.current.operations).find(value => value.status === "PENDING");
+    return operation && { ...operation };
+  }
+
+  recordDesignGeneration(generationId: string, substantive = true): RecordDesignGenerationResult {
+    assertNonEmpty(generationId, "generationId");
+    if (!substantive) {
+      return { accepted: false, duplicate: false, state: this.state };
+    }
+    if (this.current.completedGenerationIds.includes(generationId)) {
+      return { accepted: false, duplicate: true, state: this.state };
+    }
+    this.current = {
+      ...this.current,
+      designTurnsSinceAnchor: this.current.designTurnsSinceAnchor + 1,
+      completedGenerationIds: [...this.current.completedGenerationIds, generationId].slice(-MAX_GENERATION_IDS)
+    };
+    this.persist();
+    return { accepted: true, duplicate: false, state: this.state };
+  }
+
+  requestReanchor(
+    trigger: GoalReanchorTrigger,
+    operationId: string,
+    requestedAt = this.now()
+  ): RequestReanchorResult {
+    assertNonEmpty(operationId, "operationId");
+    assertTimestamp(requestedAt, "requestedAt");
+
+    const known = this.current.operations[operationId];
+    if (known) {
+      if (known.trigger !== trigger) {
+        throw new Error("Goal Re-anchor operation identity was reused for a different trigger.");
+      }
+      return {
+        eligible: true,
+        created: false,
+        operation: { ...known },
+        state: this.state
+      };
+    }
+
+    const eligible = trigger !== "experimental_n" ||
+      this.current.designTurnsSinceAnchor >= this.current.experimentalN;
+    if (!eligible) return { eligible: false, created: false, state: this.state };
+
+    // One anchor can satisfy multiple lifecycle signals. Keeping one pending
+    // operation for the current source revision prevents restart/event races
+    // from producing duplicate provider submissions.
+    const pending = this.pendingOperation;
+    if (pending && pending.sourceAnchorRevision === this.current.anchorRevision) {
+      return { eligible: true, created: false, operation: pending, state: this.state };
+    }
+
+    const operation: GoalReanchorOperation = {
+      operationId,
+      trigger,
+      sourceAnchorRevision: this.current.anchorRevision,
+      targetAnchorRevision: this.current.anchorRevision + 1,
+      requestedAt,
+      status: "PENDING"
+    };
+    this.current = {
+      ...this.current,
+      operations: { ...this.current.operations, [operationId]: operation }
+    };
+    this.persist();
+    return { eligible: true, created: true, operation: { ...operation }, state: this.state };
+  }
+
+  completeReanchor(operationId: string, completedAt = this.now()): CompleteReanchorResult {
+    assertNonEmpty(operationId, "operationId");
+    assertTimestamp(completedAt, "completedAt");
+    const operation = this.current.operations[operationId];
+    if (!operation) return { completed: false, duplicate: false, state: this.state };
+    if (operation.status === "COMPLETED") {
+      return { completed: true, duplicate: true, operation: { ...operation }, state: this.state };
+    }
+
+    const completedOperation: GoalReanchorOperation = { ...operation, status: "COMPLETED", completedAt };
+    this.current = {
+      ...this.current,
+      anchorRevision: Math.max(this.current.anchorRevision, operation.targetAnchorRevision),
+      designTurnsSinceAnchor: 0,
+      operations: { ...this.current.operations, [operationId]: completedOperation }
+    };
+    this.persist();
+    return { completed: true, duplicate: false, operation: { ...completedOperation }, state: this.state };
+  }
+
+  onLifecycleEvent(
+    event: Exclude<GoalReanchorTrigger, "experimental_n">,
+    operationId: string,
+    occurredAt = this.now()
+  ): RequestReanchorResult {
+    return this.requestReanchor(event, operationId, occurredAt);
+  }
+
+  private persist(): void {
+    this.store?.save(this.state);
+  }
+}
+
+function normalizeState(input: GoalReanchorState | undefined, logicalThreadId: string, experimentalN: number): GoalReanchorState {
+  if (!input) {
+    return {
+      version: 1,
+      logicalThreadId,
+      designTurnsSinceAnchor: 0,
+      anchorRevision: 0,
+      experimentalN,
+      completedGenerationIds: [],
+      operations: {}
+    };
+  }
+  if (input.version !== 1) throw new Error("Unsupported Goal Re-anchor state version.");
+  if (input.logicalThreadId !== logicalThreadId) throw new Error("Goal Re-anchor logical thread identity mismatch.");
+  if (!Number.isInteger(input.designTurnsSinceAnchor) || input.designTurnsSinceAnchor < 0) {
+    throw new Error("Goal Re-anchor counter must be a non-negative integer.");
+  }
+  if (!Number.isInteger(input.anchorRevision) || input.anchorRevision < 0) {
+    throw new Error("Goal Re-anchor revision must be a non-negative integer.");
+  }
+  if (!Number.isInteger(input.experimentalN) || input.experimentalN <= 0) {
+    throw new Error("Goal Re-anchor experimental N must be a positive integer.");
+  }
+  const operations = Object.fromEntries(Object.entries(input.operations).map(([id, operation]) => {
+    assertNonEmpty(id, "operationId");
+    if (operation.operationId !== id) throw new Error("Goal Re-anchor operation identity mismatch.");
+    if (!Number.isInteger(operation.sourceAnchorRevision) || operation.sourceAnchorRevision < 0 ||
+      !Number.isInteger(operation.targetAnchorRevision) ||
+      operation.targetAnchorRevision !== operation.sourceAnchorRevision + 1) {
+      throw new Error("Goal Re-anchor operation revision sequence is invalid.");
+    }
+    if (operation.status !== "PENDING" && operation.status !== "COMPLETED") {
+      throw new Error("Goal Re-anchor operation status is invalid.");
+    }
+    return [id, { ...operation }];
+  }));
+  return {
+    version: 1,
+    logicalThreadId,
+    designTurnsSinceAnchor: input.designTurnsSinceAnchor,
+    anchorRevision: input.anchorRevision,
+    experimentalN: input.experimentalN,
+    completedGenerationIds: [...input.completedGenerationIds].slice(-MAX_GENERATION_IDS),
+    operations
+  };
+}
+
+function cloneState(state: GoalReanchorState): GoalReanchorState {
+  return {
+    ...state,
+    completedGenerationIds: [...state.completedGenerationIds],
+    operations: Object.fromEntries(Object.entries(state.operations).map(([id, operation]) => [id, { ...operation }]))
+  };
+}
+
+function assertNonEmpty(value: string, name: string): void {
+  if (typeof value !== "string" || !value.trim()) throw new Error(`${name} must be non-empty.`);
+}
+
+function assertPositiveInteger(value: number, name: string): void {
+  if (!Number.isInteger(value) || value <= 0) throw new Error(`${name} must be a positive integer.`);
+}
+
+function assertTimestamp(value: number, name: string): void {
+  if (!Number.isFinite(value) || value < 0) throw new Error(`${name} must be a finite non-negative number.`);
+}
