@@ -57,6 +57,8 @@ export interface DesignGenerationEvidence {
   substantive: boolean;
   evidenceFingerprint: string;
   completedAt: number;
+  /** Authority projection produced by the completed generation, never caller supplied. */
+  completionEvidence?: { source: "WORKER_RESULT" | "REPORT" | "SNAPSHOT"; id: string; verified: true };
 }
 
 export interface GoalReanchorRuntime {
@@ -94,12 +96,15 @@ export interface GoalReanchorLedgerOptions {
   store?: GoalReanchorStore;
   initialState?: GoalReanchorState;
   now?: () => number;
+  /** Runtime supplied authority verifier; when present the caller boolean is ignored. */
+  verifySubstantive?: (evidence: DesignGenerationEvidence) => boolean;
 }
 
 export class GoalReanchorLedger {
   private readonly logicalThreadId: string;
   private readonly store?: GoalReanchorStore;
   private readonly now: () => number;
+  private readonly verifySubstantive?: (evidence: DesignGenerationEvidence) => boolean;
   private current: GoalReanchorState;
 
   constructor(options: GoalReanchorLedgerOptions) {
@@ -108,6 +113,7 @@ export class GoalReanchorLedger {
     this.logicalThreadId = options.logicalThreadId;
     this.store = options.store;
     this.now = options.now ?? Date.now;
+    this.verifySubstantive = options.verifySubstantive;
     this.current = normalizeState(options.store?.load() ?? options.initialState, options.logicalThreadId, options.experimentalN);
     this.persist();
   }
@@ -123,7 +129,9 @@ export class GoalReanchorLedger {
 
   recordDesignGeneration(evidence: DesignGenerationEvidence): RecordDesignGenerationResult {
     validateGenerationEvidence(evidence);
-    if (!evidence.substantive) {
+    // The legacy boolean is only a hint; advancement requires an authority-backed
+    // completion projection from the runtime.
+    if (!(this.verifySubstantive ? this.verifySubstantive(evidence) : evidence.substantive)) {
       return { accepted: false, duplicate: false, state: this.state };
     }
     if (this.current.completedGenerationIds.includes(evidence.generationId)) {
@@ -367,4 +375,10 @@ function validateGenerationEvidence(evidence: DesignGenerationEvidence): void {
   if (typeof evidence.substantive !== "boolean") throw new Error("Generation substantive flag is invalid.");
   assertNonEmpty(evidence.evidenceFingerprint, "evidenceFingerprint");
   assertTimestamp(evidence.completedAt, "completedAt");
+  if (evidence.completionEvidence !== undefined) {
+    if (!evidence.completionEvidence.verified || !["WORKER_RESULT", "REPORT", "SNAPSHOT"].includes(evidence.completionEvidence.source)) {
+      throw new Error("Generation completion evidence is not authority-backed.");
+    }
+    assertNonEmpty(evidence.completionEvidence.id, "completionEvidence.id");
+  }
 }
