@@ -2,15 +2,16 @@
  * Crash-consistent durable wrapper for HarnessReducer.
  *
  * A mutation is applied to a staged copy of the state and the resulting state is
- * persisted BEFORE it is committed in memory. A crash (or a failing store) can
- * therefore only lose an unacknowledged mutation, never leave the durable state
- * ahead of or behind the in-memory state.
+ * persisted BEFORE it is committed in memory, so a failing store leaves the
+ * in-memory state untouched. If the process dies after the write lands but
+ * before the result is acknowledged, the durable state may be ahead by that one
+ * unacknowledged mutation — the standard write-ahead window; every mutation
+ * carries an expectation fence, so reconciling on restart is safe.
  * See docs: v1-final-e2e-readiness-confirmation.md §5 (crash-consistent ApplyResults).
  */
 
 import {
   HarnessReducer,
-  type ActuationLease,
   type CurrentConversationBinding,
   type HarnessReducerState,
   type ReducerResult
@@ -47,10 +48,6 @@ export class DurableHarnessReducer {
 
   getBinding(logicalThreadId: string): CurrentConversationBinding | undefined {
     return this.reducer.getBinding(logicalThreadId);
-  }
-
-  getLease(logicalThreadId: string): ActuationLease | undefined {
-    return this.reducer.getLease(logicalThreadId);
   }
 
   /**

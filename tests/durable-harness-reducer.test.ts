@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   DurableHarnessReducer,
+  HARNESS_REDUCER_KEY,
+  createChromeHarnessReducerStore,
   type HarnessReducerStore,
 } from "../src/core/durable-harness-reducer";
 import type { HarnessReducer, HarnessReducerState } from "../src/core/harness-reducer";
@@ -76,5 +78,41 @@ describe("durable harness reducer", () => {
     expect(reducer.getBinding("t2")).toBeDefined();
     expect(store.saved[store.saved.length - 1].bindings).toHaveProperty("t1");
     expect(store.saved[store.saved.length - 1].bindings).toHaveProperty("t2");
+  });
+
+  it("keeps serving mutations after a persistence failure", async () => {
+    let failNext = true;
+    const saved: HarnessReducerState[] = [];
+    const store: HarnessReducerStore = {
+      load: async () => undefined,
+      save: async state => { if (failNext) { failNext = false; throw new Error("disk_full"); } saved.push(state); }
+    };
+    const reducer = await DurableHarnessReducer.restore(store);
+    await expect(reducer.applyResult(commit("t1", "c1"))).rejects.toThrow("disk_full");
+    const retry = await reducer.applyResult(commit("t1", "c1"));
+    expect(retry.ok).toBe(true);
+    expect(reducer.getBinding("t1")).toMatchObject({ providerConversationRef: "c1" });
+    expect(saved).toHaveLength(1);
+  });
+
+  it("leaves state and storage untouched when the mutation callback throws", async () => {
+    const store = memoryStore();
+    const reducer = await DurableHarnessReducer.restore(store);
+    await expect(reducer.applyResult(() => { throw new Error("boom"); })).rejects.toThrow("boom");
+    expect(store.saved).toHaveLength(0);
+    expect(reducer.snapshot().bindings).toEqual({});
+  });
+
+  it("round-trips through the chrome storage adapter", async () => {
+    const backing: Record<string, unknown> = {};
+    const adapter = createChromeHarnessReducerStore({
+      get: async (key: string) => ({ [key]: backing[key] }),
+      set: async (value: Record<string, unknown>) => { Object.assign(backing, value); }
+    });
+    const reducer = await DurableHarnessReducer.restore(adapter);
+    await reducer.applyResult(commit("t1", "c1"));
+    expect(backing[HARNESS_REDUCER_KEY]).toBeDefined();
+    const restarted = await DurableHarnessReducer.restore(adapter);
+    expect(restarted.getBinding("t1")).toMatchObject({ providerConversationRef: "c1" });
   });
 });
