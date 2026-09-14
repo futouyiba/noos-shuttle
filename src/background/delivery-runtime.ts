@@ -101,8 +101,17 @@ async function dispatchOnce(
     });
     claimed = await deps.submissions.claim(prepared.operation.operationId, context, Date.now());
   } else if (existing.state === "PREPARED") {
-    if (existing.providerConversationRef !== context.providerConversationRef) {
-      // Rolled over before the claim: re-fence to the current destination.
+    const fence = existing.dispatchFence;
+    const fenceIsCurrent = fence &&
+      fence.providerConversationRef === context.providerConversationRef &&
+      fence.targetCarrierRef === context.targetCarrierRef &&
+      fence.bindingEpoch === context.bindingEpoch &&
+      fence.leaseGeneration === context.leaseGeneration &&
+      fence.leaseOwnerRef === context.leaseOwnerRef;
+    if (!fenceIsCurrent) {
+      // The claim never happened, so the old fence is provisional — whether the
+      // conversation rolled over or the page reloaded with a fresh execution
+      // instance, re-fence to the current authority instead of wedging.
       await retargetChildDeliveryTransport(deps, {
         childThreadId: child.childThreadId, destination: context, baseline, now: context.sourceObservedAt
       });
@@ -148,24 +157,33 @@ async function recoverOnce(
       conversationRef: context.providerConversationRef,
       sourceEpoch: context.sourceEpoch,
       generationActive: false,
+      // Stability anchors at the probe's observation point; the ledger still
+      // demands the full quiet window after the claim before completion.
+      stableSince: context.sourceObservedAt,
       dispatchFence: operation.dispatchFence
     }).catch(() => undefined);
   }
   const settled = await deps.submissions.get(operationId);
   if (!settled || (settled.state !== "OBSERVED_ACCEPTED" && settled.state !== "COMPLETED") || !settled.providerConversationRef) return false;
+  // Non-GO transports do not fingerprint-check acceptance inside the ledger;
+  // this runtime tightens it: only evidence whose last user message IS the
+  // payload may mint, so an unrelated manual message cannot be read as
+  // "result inserted".
+  if (settled.lastReconciliationEvidence?.lastUserMessageFingerprint !== settled.payloadFingerprint) return false;
   const minted = await mintInsertedOnAcceptance(deps, {
     childThreadId: child.childThreadId,
     deliveredTo: settled.providerConversationRef,
-    now: Date.now()
+    now: settled.lastObservedAt
   }).catch(() => undefined);
   if (!minted || minted.delivery.receiptState !== "INSERTED") return false;
-  // Close only once the result-bearing turn is durably complete.
+  // Close only once the result-bearing turn is durably complete; timestamped
+  // from the evidence observation so a probe never races the ledger's clock.
   if (settled.state === "OBSERVED_ACCEPTED") {
-    const completed = await deps.submissions.record(operationId, "COMPLETED", { now: Date.now() }).catch(() => undefined);
+    const completed = await deps.submissions.record(operationId, "COMPLETED", { now: settled.lastObservedAt }).catch(() => undefined);
     if (!completed || completed.state !== "COMPLETED") return false;
   }
   await deps.deliveries.completeDelivery(resultDeliveryKey({
     parentThreadId: child.parentThreadId, childThreadId: child.childThreadId, resultRef: child.resultRef!
-  }), { resultingParentTurnRef: settled.resultingTurnRef }, Date.now()).catch(() => undefined);
+  }), { resultingParentTurnRef: settled.resultingTurnRef }, settled.lastObservedAt).catch(() => undefined);
   return true;
 }
