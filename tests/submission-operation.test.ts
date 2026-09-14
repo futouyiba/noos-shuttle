@@ -728,6 +728,35 @@ describe("SubmissionOperationLedger", () => {
     expect((await backwards.retarget("rt-4", rolledOver, baseline(), 150))?.providerConversationRef).toBe("conversation:b");
   });
 
+  it("backfills the acceptance stamp when a matching observation follows a foreign acceptance", async () => {
+    const ledger = new SubmissionOperationLedger(memoryStore());
+    const fingerprint = fingerprintSubmissionPayload("delivered result");
+    const foreign = fingerprintSubmissionPayload("operator typed first");
+    await ledger.prepare({ ...input("patha-1"), operationKind: "DELIVER_CHILD_RESULT", payload: "delivered result", payloadFingerprint: fingerprint });
+    await ledger.claim("patha-1", context(), 10);
+    await ledger.record("patha-1", "DISPATCHING", {
+      now: 11, dispatchReceipt: { claimedAt: 10, attemptedAt: 11, outcome: "dispatched", fence: context() }
+    });
+    // Acceptance is proven while the operator's message is the latest user
+    // message (foreign fingerprint): accepted, but no stamp yet.
+    const foreignAccepted = await ledger.reconcile("patha-1", {
+      ...baseline(), conversationRef: "conversation:a", userMessageCount: 2,
+      lastUserMessageFingerprint: foreign, observedAt: 20, sourceEpoch: 0,
+      generationActive: false, dispatchFence: context()
+    });
+    expect(foreignAccepted.outcome).toBe("PROVEN_ACCEPTED");
+    expect(foreignAccepted.operation?.acceptedPayloadFingerprint).toBeUndefined();
+    // A later observation whose last user message IS the payload backfills
+    // the stamp through the already-accepted replay path.
+    const backfilled = await ledger.reconcile("patha-1", {
+      ...baseline(), conversationRef: "conversation:a", userMessageCount: 2,
+      lastUserMessageFingerprint: fingerprint, observedAt: 30, sourceEpoch: 0,
+      generationActive: false, dispatchFence: context()
+    });
+    expect(backfilled.outcome).toBe("PROVEN_ACCEPTED");
+    expect(backfilled.operation?.acceptedPayloadFingerprint).toBe(fingerprint);
+  });
+
   it("re-arm clears a stale acceptance stamp with the evidence", async () => {
     const ledger = new SubmissionOperationLedger(memoryStore());
     const fingerprint = fingerprintSubmissionPayload("delivered result");
