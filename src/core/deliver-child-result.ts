@@ -114,7 +114,15 @@ export async function prepareChildDeliveryTransport(
     logicalThreadId: child.parentThreadId,
     targetCarrierRef: input.destination.targetCarrierRef,
     providerConversationRef: input.destination.providerConversationRef,
-    dispatchFence: input.destination,
+    // Only the five authority fields belong on the fence; the claim context's
+    // readiness fields (explicitGo, sourceEpoch, …) are claim-time, not fence.
+    dispatchFence: {
+      providerConversationRef: input.destination.providerConversationRef,
+      bindingEpoch: input.destination.bindingEpoch,
+      leaseGeneration: input.destination.leaseGeneration,
+      leaseOwnerRef: input.destination.leaseOwnerRef,
+      targetCarrierRef: input.destination.targetCarrierRef
+    },
     payloadFingerprint: fingerprintSubmissionPayload(payload),
     payload,
     preSubmitBaseline: input.baseline,
@@ -145,6 +153,11 @@ export async function mintInsertedOnAcceptance(
   if (!operation) throw new Error(`delivery_transport_not_prepared:${submissionOperationId}`);
   if (operation.state !== "OBSERVED_ACCEPTED") {
     throw new Error(`delivery_not_accepted:${operation.state}`);
+  }
+  // The transport must be this child's: even a hash-collided operation id
+  // cannot mint a receipt for the wrong payload.
+  if (operation.payloadFingerprint !== fingerprintSubmissionPayload(resultRef)) {
+    throw new Error(`delivery_payload_mismatch:${submissionOperationId}`);
   }
   const updated = await deps.deliveries.recordInserted(
     resultDeliveryKey({ parentThreadId: child.parentThreadId, childThreadId: child.childThreadId, resultRef }),
