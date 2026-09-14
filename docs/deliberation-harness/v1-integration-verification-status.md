@@ -49,6 +49,10 @@
   rebuilt from this tree (Human GO real-ledger dispatch; durable Goal Re-anchor
   end-to-end).
 - Commit-message test counts are taken from the last clean-tree run.
+- Release-workflow parity (2026-09-15, `c3aba01`): `npm run typecheck` 0;
+  `npm test -- --exclude tests/content-ui-smoke.test.ts` 28 files / 295 tests;
+  all eight release scripts pass `bash -n`; `npm run package:extension`
+  builds and packages.
 
 ## 4. Open items
 
