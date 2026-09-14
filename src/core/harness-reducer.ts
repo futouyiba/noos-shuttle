@@ -24,7 +24,10 @@ export type ReducerErrorCode =
   | "DISPATCH_LEASE_MISMATCH"
   | "DISPATCH_CARRIER_MISMATCH"
   | "DISPATCH_OPERATION_METADATA_MISMATCH"
-  | "DISPATCH_ALREADY_OWNED";
+  | "DISPATCH_ALREADY_OWNED"
+  | "SETTLE_STATE_MISMATCH"
+  | "SETTLE_FENCE_MISMATCH"
+  | "SETTLE_TRANSITION_INVALID";
 
 export interface CurrentConversationBinding {
   logicalThreadId: string;
@@ -124,6 +127,17 @@ export interface ClaimSubmissionDispatchInput {
   bindingGeneration: number;
   leaseGeneration: number;
   carrierRef: string;
+  actor: ReducerActor;
+  now: number;
+}
+
+export interface SettleSubmissionDispatchInput {
+  operationId: string;
+  expectedCurrentState: ReducerSubmissionState;
+  expectedDispatchFence: DispatchFence;
+  targetState: "OBSERVED_ACCEPTED" | "COMPLETED" | "UNCERTAIN" | "FAILED_SAFE" | "CANCELLED";
+  /** Journal/evidence ref proving the observed transport fact. */
+  executionEvidenceRef: string;
   actor: ReducerActor;
   now: number;
 }
@@ -447,6 +461,64 @@ export class HarnessReducer {
     operation.state = "DISPATCHING";
     operation.dispatchClaimedAt = input.now;
     operation.dispatchFence = fence;
+    this.state.lastMutationActor = input.actor;
+    this.state.lastMutationAt = input.now;
+    return this.ok(cloneOperation(operation));
+  }
+
+  /**
+   * Settle a claimed dispatch from execution evidence: advance or release the
+   * execution authority that claimSubmissionDispatch granted. Expectation-fenced
+   * (current state + fence), transition-table governed (terminal states are
+   * irreversible), and idempotent for an equal-state replay.
+   */
+  settleSubmissionDispatch(
+    input: SettleSubmissionDispatchInput,
+  ): ReducerResult<ReducerSubmissionOperation> {
+    const inputError = validateMutationInput(input.actor, input.now);
+    if (inputError) return this.fail("INVALID_MUTATION_INPUT", inputError);
+    const orderError = this.validateMutationOrder(input.now);
+    if (orderError) return this.fail("INVALID_MUTATION_INPUT", orderError);
+    const identityError = validateIdentities(
+      ["operationId", input.operationId],
+      ["executionEvidenceRef", input.executionEvidenceRef],
+    );
+    if (identityError) return this.fail("INVALID_MUTATION_INPUT", identityError);
+    const operation = this.state.operations[input.operationId];
+    if (!operation) {
+      return this.fail(
+        "OPERATION_NOT_FOUND",
+        `submission operation ${input.operationId} does not exist`,
+      );
+    }
+    if (operation.state !== input.expectedCurrentState) {
+      return this.fail(
+        "SETTLE_STATE_MISMATCH",
+        `submission operation ${input.operationId} is ${operation.state}, not ${input.expectedCurrentState}`,
+      );
+    }
+    if (
+      !operation.dispatchFence ||
+      !sameFence(operation.dispatchFence, input.expectedDispatchFence)
+    ) {
+      return this.fail(
+        "SETTLE_FENCE_MISMATCH",
+        `settlement fence does not match the fence recorded on ${input.operationId}`,
+      );
+    }
+    if (!isAllowedLifecycleTransition(operation.state, input.targetState)) {
+      return this.fail(
+        "SETTLE_TRANSITION_INVALID",
+        `cannot settle ${input.operationId} from ${operation.state} to ${input.targetState}`,
+      );
+    }
+    if (input.now < (operation.dispatchClaimedAt ?? 0)) {
+      return this.fail(
+        "INVALID_MUTATION_INPUT",
+        "settlement time cannot precede the dispatch claim",
+      );
+    }
+    operation.state = input.targetState;
     this.state.lastMutationActor = input.actor;
     this.state.lastMutationAt = input.now;
     return this.ok(cloneOperation(operation));
