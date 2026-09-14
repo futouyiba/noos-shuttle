@@ -1032,6 +1032,22 @@ describe("HarnessReducer", () => {
     });
     expect(staleState.ok).toBe(false);
     if (!staleState.ok) expect(staleState.error.code).toBe("SETTLE_STATE_MISMATCH");
+    // Failed settlements must leave the authority fence untouched.
+    expect(reducer.snapshot().lastMutationAt).toBe(30);
+    expect(reducer.snapshot().lastMutationActor).toBe("human");
+    const emptyReason = reducer.settleSubmissionDispatch({
+      operationId: "op-1",
+      expectedCurrentState: "DISPATCHING",
+      expectedDispatchFence: fence,
+      targetState: "OBSERVED_ACCEPTED",
+      executionEvidenceRef: "journal-entry-1",
+      reason: "   ",
+      actor: "worker",
+      now: 40,
+    });
+    expect(emptyReason.ok).toBe(false);
+    if (!emptyReason.ok) expect(emptyReason.error.code).toBe("INVALID_MUTATION_INPUT");
+    expect(reducer.snapshot().lastMutationAt).toBe(30);
 
     const staleFence = reducer.settleSubmissionDispatch({
       operationId: "op-1",

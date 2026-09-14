@@ -489,7 +489,6 @@ export class HarnessReducer {
     if (typeof input.reason !== "string" || input.reason.trim().length === 0) {
       return this.fail("INVALID_MUTATION_INPUT", "reason is required");
     }
-    if (identityError) return this.fail("INVALID_MUTATION_INPUT", identityError);
     const operation = this.state.operations[input.operationId];
     if (!operation) {
       return this.fail(

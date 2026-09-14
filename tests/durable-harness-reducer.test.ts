@@ -170,13 +170,60 @@ describe("applyDelta (State Delta + Reducer Contract §2.4, §15)", () => {
     const mutate = (r: HarnessReducer) => { executions += 1; return commit("t1", "c1")(r); };
     const first = await reducer.applyDelta({ ...delta, mutate });
     expect(first.outcome).toBe("applied");
+    const before = stateFingerprint(reducer.snapshot());
     const replay = await reducer.applyDelta({ ...delta, mutate });
     expect(executions).toBe(1);
     expect(replay).toMatchObject({ outcome: "applied", replayed: true });
+    // Replay leaves the authoritative state byte-identical.
+    expect(stateFingerprint(reducer.snapshot())).toBe(before);
     if (replay.outcome === "applied" || replay.outcome === "no_op") {
       expect(replay.record).toEqual(first.outcome === "applied" ? (first as { record: DeltaApplyRecord }).record : replay.record);
     }
     expect(store.saved).toHaveLength(1);
+  });
+
+  it("keeps in-memory audit clean when persisting a rejection fails", async () => {
+    let failNext = false;
+    const saved: DurableStateBundle[] = [];
+    const store: HarnessReducerStore = {
+      load: async () => undefined,
+      save: async bundle => { if (failNext) { failNext = false; throw new Error("disk_full"); } saved.push(bundle); }
+    };
+    const reducer = await DurableHarnessReducer.restore(store);
+    await reducer.applyResult(commit("t0", "c0"));
+    failNext = true;
+    const before = stateFingerprint(reducer.snapshot());
+    // The stale rejection's audit write hits the failing store: like the applied
+    // path, an unpersisted transaction is not acknowledged — it throws, and
+    // nothing may leak into memory.
+    await expect(reducer.applyDelta({
+      ...delta, deltaId: "SD-1", expectedBaseStateFingerprint: "state:nomatch", mutate: commit("t1", "c1")
+    })).rejects.toThrow("disk_full");
+    expect(reducer.auditTrail()).toHaveLength(0);
+    expect(stateFingerprint(reducer.snapshot())).toBe(before);
+    // Only the earlier preparation write exists; the failed rejection wrote nothing.
+    expect(saved).toHaveLength(1);
+    // Once persistence works again the rejection is durably audited, exactly once.
+    const retry = await reducer.applyDelta({
+      ...delta, deltaId: "SD-1", expectedBaseStateFingerprint: "state:nomatch", mutate: commit("t1", "c1")
+    });
+    expect(retry.outcome).toBe("rejected_stale");
+    expect(reducer.auditTrail()).toHaveLength(1);
+    // A rejected delta has no ApplyResult, so its id stays free for real work;
+    // the invariant guard applies only to successfully applied ids.
+    const applied = await reducer.applyDelta({ ...delta, deltaId: "SD-2", mutate: commit("t1", "c1") });
+    expect(applied.outcome).toBe("applied");
+    const rejected = await reducer.applyDelta({ ...delta, deltaId: "SD-2", deltaFingerprint: "fp-other", mutate: commit("t2", "c2") });
+    expect(rejected.outcome).toBe("rejected_invariant");
+    expect(reducer.auditTrail()).toHaveLength(3);
+  });
+
+  it("rejects a delta without a reason before entering the transaction", async () => {
+    const store = memoryStore();
+    const reducer = await DurableHarnessReducer.restore(store);
+    await expect(reducer.applyDelta({ ...delta, reason: "   ", mutate: commit("t1", "c1") })).rejects.toThrow("delta_reason_required");
+    expect(store.saved).toHaveLength(0);
+    expect(reducer.snapshot().bindings).toEqual({});
   });
 
   it("rejects a reused deltaId carrying different content (§15.3)", async () => {

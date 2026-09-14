@@ -70,8 +70,9 @@ export interface ApplyDeltaInput<T> {
 }
 
 export type ApplyDeltaResult<T> =
-  | { outcome: "applied" | "no_op"; value: T; record: DeltaApplyRecord; replayed: boolean }
-  | { outcome: "rejected_invariant"; record?: undefined; replayed: true; priorOutcome: DeltaOutcome }
+  | { outcome: "applied" | "no_op"; value: T; record: DeltaApplyRecord; replayed: false }
+  | { outcome: "applied" | "no_op"; record: DeltaApplyRecord; replayed: true }
+  | { outcome: "rejected_invariant"; replayed: true; priorOutcome: DeltaOutcome }
   | { outcome: "rejected_stale" | "rejected_precondition"; error?: { code: string; message: string } };
 
 export const HARNESS_REDUCER_KEY = "noosHarnessReducer";
@@ -79,11 +80,17 @@ export const HARNESS_REDUCER_KEY = "noosHarnessReducer";
 /** Deterministic fingerprint over a canonical (key-sorted) serialization. */
 export function stateFingerprint(state: HarnessReducerState): string {
   const normalized = JSON.stringify(canonicalize(state));
-  let hash = 0;
+  // Two independent 32-bit lanes keep accidental collisions at the 2^-64 scale
+  // rather than the birthday bound of a single 32-bit hash.
+  let a = 0x811c9dc5;
+  let b = 0x01000193;
   for (let index = 0; index < normalized.length; index += 1) {
-    hash = (hash * 31 + normalized.charCodeAt(index)) >>> 0;
+    const code = normalized.charCodeAt(index);
+    a = ((a ^ code) * 0x01000193) >>> 0;
+    b = ((b + code) * 0x85ebca6b) >>> 0;
+    b = (b ^ (b >>> 13)) >>> 0;
   }
-  return `state:${hash.toString(16)}`;
+  return `state:${a.toString(16)}${b.toString(16).padStart(8, "0")}`;
 }
 
 function canonicalize(value: unknown): unknown {
@@ -133,11 +140,11 @@ export class DurableHarnessReducer {
 
   /** Persisted ApplyResults, for replay decisions and audit. */
   appliedDeltas(): DeltaApplyRecord[] {
-    return [...this.applyResults];
+    return this.applyResults.map(record => ({ ...record }));
   }
 
   auditTrail(): DeltaAuditRecord[] {
-    return [...this.auditRecords];
+    return this.auditRecords.map(record => ({ ...record, detail: { ...record.detail } }));
   }
 
   /**
@@ -166,35 +173,39 @@ export class DurableHarnessReducer {
    * fingerprint is rejected as an invariant violation.
    */
   applyDelta<T>(input: ApplyDeltaInput<T>): Promise<ApplyDeltaResult<T>> {
+    if (typeof input.reason !== "string" || input.reason.trim().length === 0) {
+      return Promise.reject(new Error("delta_reason_required"));
+    }
     return this.serialize(async () => {
       const existing = this.applyResults.find(record => record.deltaId === input.deltaId);
       if (existing) {
         if (existing.deltaFingerprint !== input.deltaFingerprint) {
-          this.rememberAudit(input, "rejected_invariant: deltaId reused with a different fingerprint");
-          await this.persist(this.reducer, this.applyResults, this.auditRecords);
+          const auditRecords = this.withAudit(input, "rejected_invariant: deltaId reused with a different fingerprint");
+          await this.persist(this.reducer, this.applyResults, auditRecords);
+          this.auditRecords = auditRecords;
           return { outcome: "rejected_invariant" as const, replayed: true, priorOutcome: existing.outcome };
         }
-        return { outcome: existing.outcome, value: undefined as T, record: existing, replayed: true };
+        return { outcome: existing.outcome, record: { ...existing }, replayed: true };
       }
 
       const fromFingerprint = stateFingerprint(this.reducer.snapshot());
       if (input.expectedBaseStateFingerprint !== undefined && input.expectedBaseStateFingerprint !== fromFingerprint) {
-        const outcome: ApplyDeltaResult<T> = { outcome: "rejected_stale" as const };
-        this.rememberAudit(input, `rejected_stale (base ${input.expectedBaseStateFingerprint} != ${fromFingerprint})`);
-        await this.persist(this.reducer, this.applyResults, this.auditRecords);
-        return outcome;
+        const auditRecords = this.withAudit(input, `rejected_stale (base ${input.expectedBaseStateFingerprint} != ${fromFingerprint})`);
+        await this.persist(this.reducer, this.applyResults, auditRecords);
+        this.auditRecords = auditRecords;
+        return { outcome: "rejected_stale" as const };
       }
 
       const staged = new HarnessReducer(this.reducer.snapshot());
       const result = input.mutate(staged);
       if (!result.ok) {
-        const outcome: ApplyDeltaResult<T> = {
+        const auditRecords = this.withAudit(input, `rejected_precondition: ${result.error.code}`);
+        await this.persist(this.reducer, this.applyResults, auditRecords);
+        this.auditRecords = auditRecords;
+        return {
           outcome: "rejected_precondition" as const,
           error: { code: result.error.code, message: result.error.message }
         };
-        this.rememberAudit(input, `rejected_precondition: ${result.error.code}`);
-        await this.persist(this.reducer, this.applyResults, this.auditRecords);
-        return outcome;
       }
 
       const toState = staged.snapshot();
@@ -222,15 +233,16 @@ export class DurableHarnessReducer {
       this.reducer = staged;
       this.applyResults = applyResults;
       this.auditRecords = auditRecords;
-      if (outcome === "no_op") {
-        return { outcome, value: result.value, record, replayed: false };
-      }
-      return { outcome, value: result.value, record, replayed: false };
+      return { outcome, value: result.value, record: { ...record }, replayed: false };
     });
   }
 
-  private rememberAudit(input: ApplyDeltaInput<unknown>, note: string): void {
-    this.auditRecords = [...this.auditRecords, {
+  /** Pure: returns a new audit array; callers persist first, then swap. */
+  private withAudit(
+    input: ApplyDeltaInput<unknown>,
+    note: string,
+  ): DeltaAuditRecord[] {
+    return [...this.auditRecords, {
       auditRecordId: `ar:${input.deltaId}:${this.auditRecords.length + 1}`,
       deltaId: input.deltaId,
       reason: `${input.reason} — ${note}`,
