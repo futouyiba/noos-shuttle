@@ -133,6 +133,42 @@ describe("GoalReanchorLedger", () => {
     })).toThrow(/evidenceFingerprint/);
   });
 
+  it("tracks the backing submission identity and supersedes rotations durably", () => {
+    const store = new MemoryStore();
+    const ledger = new GoalReanchorLedger({ verifySubstantive: value => value.substantive, logicalThreadId: "pdlt-1", experimentalN: 1, store });
+    ledger.recordDesignGeneration(evidence("g1"));
+    ledger.requestReanchor("rollover", "anchor-1", 10);
+    const first = "reanchor:pdlt-1:1:c1:tab-1:abcd1234";
+    const second = "reanchor:pdlt-1:1:c2:tab-2:abcd1234";
+    expect(ledger.noteSubmissionOperation("anchor-1", first)).toMatchObject({
+      submissionOperationId: first,
+      supersededSubmissionOperationIds: []
+    });
+    expect(ledger.noteSubmissionOperation("anchor-1", second)).toMatchObject({
+      submissionOperationId: second,
+      supersededSubmissionOperationIds: [first]
+    });
+    // Re-noting the current identity is idempotent and never self-supersedes.
+    expect(ledger.noteSubmissionOperation("anchor-1", second).supersededSubmissionOperationIds).toEqual([first]);
+    expect(() => ledger.noteSubmissionOperation("unknown-anchor", second)).toThrow(/unknown/);
+    ledger.completeReanchor("anchor-1", 20);
+    expect(() => ledger.noteSubmissionOperation("anchor-1", "reanchor:pdlt-1:1:c3:tab-3:abcd1234")).toThrow(/pending/);
+
+    const recovered = new GoalReanchorLedger({ verifySubstantive: value => value.substantive, logicalThreadId: "pdlt-1", experimentalN: 1, store });
+    expect(recovered.state.operations["anchor-1"]).toMatchObject({
+      status: "COMPLETED",
+      submissionOperationId: second,
+      supersededSubmissionOperationIds: [first]
+    });
+    expect(() => new GoalReanchorLedger({ verifySubstantive: value => value.substantive,
+      logicalThreadId: "pdlt-1", experimentalN: 1,
+      initialState: { version: 1, logicalThreadId: "pdlt-1", designTurnsSinceAnchor: 0, anchorRevision: 0,
+        experimentalN: 1, completedGenerationIds: [],
+        operations: { bad: { operationId: "bad", trigger: "rollover", sourceAnchorRevision: 0, targetAnchorRevision: 1,
+          requestedAt: 1, status: "PENDING", submissionOperationId: "x", supersededSubmissionOperationIds: ["x"] } } }
+    })).toThrow(/both current and superseded/);
+  });
+
   it("executes a re-anchor through the durable submission ledger and resets only after accepted evidence", async () => {
     let value: Record<string, unknown> = {};
     const store = {

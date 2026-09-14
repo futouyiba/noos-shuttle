@@ -34,6 +34,10 @@ export interface GoalReanchorOperation {
   completedAt?: number;
   status: GoalReanchorOperationStatus;
   submissionState?: SubmissionOperation["state"];
+  /** Submission operation currently backing this anchor, scoped to binding and payload. */
+  submissionOperationId?: string;
+  /** Backing operations retired before any durable dispatch authority (stale PREPARED/FAILED_SAFE/CANCELLED). */
+  supersededSubmissionOperationIds?: string[];
 }
 
 export interface GoalReanchorState {
@@ -231,6 +235,35 @@ export class GoalReanchorLedger {
     return this.requestReanchor(event, operationId, occurredAt);
   }
 
+  /**
+   * Records which submission operation currently backs a pending anchor.
+   * Rotating the backing operation automatically supersedes the previous one,
+   * so a stale old-generation submission can never be mistaken for the
+   * anchor's authoritative transport after a rollover or payload change.
+   */
+  noteSubmissionOperation(operationId: string, submissionOperationId: string): GoalReanchorOperation {
+    assertNonEmpty(operationId, "operationId");
+    assertNonEmpty(submissionOperationId, "submissionOperationId");
+    const operation = this.current.operations[operationId];
+    if (!operation) throw new Error("Goal Re-anchor operation is unknown.");
+    if (operation.status !== "PENDING") {
+      throw new Error("Only a pending Goal Re-anchor can retarget its submission operation.");
+    }
+    const previous = operation.submissionOperationId;
+    if (previous === submissionOperationId) return { ...operation };
+    const knownSuperseded = operation.supersededSubmissionOperationIds ?? [];
+    const superseded = previous && !knownSuperseded.includes(previous)
+      ? [...knownSuperseded, previous]
+      : knownSuperseded;
+    const updated: GoalReanchorOperation = { ...operation, submissionOperationId, supersededSubmissionOperationIds: superseded };
+    this.current = {
+      ...this.current,
+      operations: { ...this.current.operations, [operationId]: updated }
+    };
+    this.persist();
+    return { ...updated };
+  }
+
   async executeReanchor(
     trigger: GoalReanchorTrigger,
     operationId: string,
@@ -240,6 +273,8 @@ export class GoalReanchorLedger {
       workItemId: string;
       payload: string;
       payloadFingerprint: string;
+      /** Binding/payload-scoped transport identity; defaults to the anchor operation id. */
+      submissionOperationId?: string;
       now?: number;
     }
   ): Promise<CompleteReanchorResult | RequestReanchorResult> {
@@ -249,8 +284,9 @@ export class GoalReanchorLedger {
 
     const operation = requested.operation;
     operationId = operation.operationId;
+    const submissionOperationId = details.submissionOperationId ?? operationId;
     const durable = await submissionLedger.prepare({
-      operationId,
+      operationId: submissionOperationId,
       operationKind: "REANCHOR_GOAL",
       workItemId: details.workItemId,
       logicalThreadId: this.logicalThreadId,
@@ -263,20 +299,21 @@ export class GoalReanchorLedger {
       dispatchFence: runtime.claimContext,
       now: details.now
     });
-    const claimed = await submissionLedger.claim(operationId, runtime.claimContext, details.now);
+    this.noteSubmissionOperation(operationId, submissionOperationId);
+    const claimed = await submissionLedger.claim(submissionOperationId, runtime.claimContext, details.now);
     if (!claimed || claimed.state !== "DISPATCHING") return requested;
     try {
       const observation = await runtime.dispatch(claimed);
-      const reconciled = await submissionLedger.reconcile(operationId, observation);
+      const reconciled = await submissionLedger.reconcile(submissionOperationId, observation);
       if (reconciled.outcome !== "PROVEN_ACCEPTED") return requested;
-      const completed = await submissionLedger.record(operationId, "COMPLETED", {
+      const completed = await submissionLedger.record(submissionOperationId, "COMPLETED", {
         now: observation.observedAt ?? details.now,
         resultingTurnRef: observation.headFingerprint
       });
       return completed?.state === "COMPLETED"
         ? this.completeReanchor(operationId, completed.lastObservedAt) : requested;
     } catch (error) {
-      await submissionLedger.record(operationId, "UNCERTAIN", {
+      await submissionLedger.record(submissionOperationId, "UNCERTAIN", {
         now: details.now,
         error: error instanceof Error ? error.message : "reanchor dispatch failed"
       });
@@ -324,6 +361,19 @@ function normalizeState(input: GoalReanchorState | undefined, logicalThreadId: s
       throw new Error("Goal Re-anchor operation status is invalid.");
     }
     assertTimestamp(operation.requestedAt, "requestedAt");
+    if (operation.submissionOperationId !== undefined) {
+      assertNonEmpty(operation.submissionOperationId, "submissionOperationId");
+    }
+    const superseded = operation.supersededSubmissionOperationIds ?? [];
+    if (!Array.isArray(superseded) || superseded.some(id => typeof id !== "string" || !id.trim())) {
+      throw new Error("Goal Re-anchor superseded submission identities are invalid.");
+    }
+    if (new Set(superseded).size !== superseded.length) {
+      throw new Error("Goal Re-anchor superseded submission identities must be unique.");
+    }
+    if (operation.submissionOperationId !== undefined && superseded.includes(operation.submissionOperationId)) {
+      throw new Error("Goal Re-anchor submission identity cannot be both current and superseded.");
+    }
     if (operation.status === "COMPLETED") {
       if (operation.completedAt === undefined) throw new Error("Completed Goal Re-anchor operation needs completedAt.");
       assertTimestamp(operation.completedAt, "completedAt");
@@ -331,7 +381,7 @@ function normalizeState(input: GoalReanchorState | undefined, logicalThreadId: s
         throw new Error("Goal Re-anchor completion cannot precede request.");
       }
     }
-    return [id, { ...operation }];
+    return [id, { ...operation, supersededSubmissionOperationIds: [...superseded] }];
   }));
   for (const operation of Object.values(operations)) {
     if (operation.status === "PENDING" && operation.sourceAnchorRevision !== input.anchorRevision) {
@@ -356,7 +406,10 @@ function cloneState(state: GoalReanchorState): GoalReanchorState {
   return {
     ...state,
     completedGenerationIds: [...state.completedGenerationIds],
-    operations: Object.fromEntries(Object.entries(state.operations).map(([id, operation]) => [id, { ...operation }]))
+    operations: Object.fromEntries(Object.entries(state.operations).map(([id, operation]) => [
+      id,
+      { ...operation, supersededSubmissionOperationIds: [...(operation.supersededSubmissionOperationIds ?? [])] }
+    ]))
   };
 }
 
