@@ -889,7 +889,7 @@ describe("SubmissionOperationLedger", () => {
       const state = (await ledger.get(setup.id))?.state;
       expect(["DISPATCHING", "UNCERTAIN", "OBSERVED_ACCEPTED", "COMPLETED", "CANCELLED"], setup.id).toContain(state);
       currentAuthority = authority(rolledOver);
-      expect(await ledger.retarget(setup.id, rolledOver, { ...baseline(), routeRef: "route:b", observedAt: 200 }, 300), setup.id).toBeUndefined();
+      expect(await ledger.retarget(setup.id, rolledOver, { ...baseline(), routeRef: "route:b", observedAt: 200 }, 4_000), setup.id).toBeUndefined();
       expect((await ledger.get(setup.id))?.state, setup.id).toBe(state);
     }
   });
