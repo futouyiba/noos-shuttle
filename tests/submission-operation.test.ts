@@ -848,6 +848,48 @@ describe("SubmissionOperationLedger", () => {
     expect((await ledger.claim("fs-1", rolledOver, 60))?.state).toBe("DISPATCHING");
   });
 
+  it("retarget refuses every non-retargetable state and a same-fence FAILED_SAFE reset", async () => {
+    const rolledOver = context("browser-tab:9", "conversation:b", "t1", 4, 200);
+    // Same-fence FAILED_SAFE must go through rearm, not retarget.
+    const sameFence = new SubmissionOperationLedger(memoryStore());
+    await sameFence.prepare({ ...input("lane-1"), now: 10 });
+    await sameFence.claim("lane-1", context(), 10);
+    await sameFence.reconcile("lane-1", {
+      ...baseline(), conversationRef: "conversation:a",
+      observedAt: 20, sourceEpoch: 0, generationActive: false,
+      providerFailure: true, dispatchFence: context()
+    });
+    expect((await sameFence.get("lane-1"))?.state).toBe("FAILED_SAFE");
+    expect(await sameFence.retarget("lane-1", context(), baseline(), 50)).toBeUndefined();
+    expect((await sameFence.get("lane-1"))?.state).toBe("FAILED_SAFE");
+    // Every execution-owning and terminal state refuses.
+    for (const setup of [
+      { id: "st-dispatching", reach: async (ledger: SubmissionOperationLedger, id: string) => ledger.claim(id, context(), 10) },
+      { id: "st-uncertain", reach: async (ledger: SubmissionOperationLedger, id: string) => ledger.record(id, "UNCERTAIN", { now: 11, error: "lost" }) },
+      { id: "st-observed", reach: async (ledger: SubmissionOperationLedger, id: string) => ledger.reconcile(id, {
+        ...baseline(), conversationRef: "conversation:a", userMessageCount: 2,
+        observedAt: 20, sourceEpoch: 0, generationActive: false, dispatchFence: context()
+      }) },
+      { id: "st-completed", reach: async (ledger: SubmissionOperationLedger, id: string) => ledger.reconcile(id, {
+        ...baseline(), conversationRef: "conversation:a", userMessageCount: 2,
+        lastUserMessageFingerprint: "ce8", observedAt: 20, stableSince: 0, sourceEpoch: 0,
+        generationActive: false, dispatchFence: context()
+      }) }
+    ] as const) {
+      let currentAuthority = authority(context());
+      const store = { ...memoryStore(), getAuthority: async () => currentAuthority };
+      const ledger = new SubmissionOperationLedger(store);
+      await ledger.prepare({ ...input(setup.id), now: 10 });
+      await ledger.claim(setup.id, context(), 10);
+      await setup.reach(ledger, setup.id);
+      const state = (await ledger.get(setup.id))?.state;
+      expect(["DISPATCHING", "UNCERTAIN", "OBSERVED_ACCEPTED", "COMPLETED"], setup.id).toContain(state);
+      currentAuthority = authority(rolledOver);
+      expect(await ledger.retarget(setup.id, rolledOver, { ...baseline(), routeRef: "route:b", observedAt: 200 }, 300), setup.id).toBeUndefined();
+      expect((await ledger.get(setup.id))?.state, setup.id).toBe(state);
+    }
+  });
+
   it("retarget refuses a context or baseline from another logical thread or conversation", async () => {
     // Cross-thread: the authority moved to another thread's tuple; the
     // operation must not follow it.

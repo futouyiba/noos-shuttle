@@ -132,6 +132,11 @@ export class SubmissionOperationLedger {
         // The operation never changes logical threads: a context from another
         // thread must not retarget it (mirrors recover's fence check).
         operation.logicalThreadId !== context.logicalThreadId) return { records, result: undefined };
+      if (operation.state === "FAILED_SAFE" && sameDispatchFence(operation.dispatchFence, context)) {
+        // Lane separation: a same-fence FAILED_SAFE reset must go through
+        // rearm (with its evidence-sameness contract), not retarget.
+        return { records, result: undefined };
+      }
       if (now < operation.lastObservedAt) return { records, result: undefined };
       if (operation.state === "FAILED_SAFE") {
         // Fresh-attempt semantics: the not-accepted proof belonged to the old
