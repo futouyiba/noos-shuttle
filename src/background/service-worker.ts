@@ -271,6 +271,8 @@ async function applySubmissionMutation(coordinator: SubmissionOperationLedger, m
       return coordinator.prepare(mutation.input);
     case "claim":
       return coordinator.claim(mutation.operationId, mutation.context, mutation.now);
+    case "retarget":
+      return coordinator.retarget(mutation.operationId, mutation.context, mutation.baseline, mutation.now);
     case "record":
       return coordinator.record(mutation.operationId, mutation.state, mutation.details);
     case "rearm":
@@ -301,6 +303,7 @@ function isSubmissionOperationMutation(value: unknown): value is SubmissionOpera
   if (mutation.type === "initialize_authority") return isClaimContext(mutation.context);
   if (mutation.type === "recover") return Boolean(isOperationId(mutation.operationId) && isFiniteInteger(mutation.now) && isClaimContext(mutation.context));
   if (mutation.type === "claim") return Boolean(isOperationId(mutation.operationId) && isFiniteInteger(mutation.now) && isClaimContext(mutation.context));
+  if (mutation.type === "retarget") return Boolean(isOperationId(mutation.operationId) && isFiniteInteger(mutation.now) && isClaimContext(mutation.context) && isBaseline(mutation.baseline));
   if (mutation.type === "prepare") return isPrepareInput(mutation.input);
   if (mutation.type === "record") return Boolean(isOperationId(mutation.operationId) && isRecordableState(mutation.state) && isRecordDetails(mutation.details));
   if (mutation.type === "rearm") return Boolean(isOperationId(mutation.operationId) && isFiniteInteger(mutation.now) && isBaseline(mutation.baseline) && isDispatchFence(mutation.fence));

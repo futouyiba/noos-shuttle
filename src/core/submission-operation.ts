@@ -36,6 +36,7 @@ export type SubmissionOperationMutation =
   | { type: "recover"; operationId: string; context: SubmissionClaimContext; now: number }
   | { type: "prepare"; input: Omit<SubmissionOperation, "operationId" | "state" | "createdAt" | "lastObservedAt"> & { operationId: string; now?: number } }
   | { type: "claim"; operationId: string; context: SubmissionClaimContext; now: number }
+  | { type: "retarget"; operationId: string; context: SubmissionClaimContext; baseline: SubmissionBaseline; now: number }
   | { type: "record"; operationId: string; state: SubmissionOperationState; details: { now?: number; error?: string; resultingTurnRef?: string; dispatchReceipt?: SubmissionDispatchReceipt } }
   | { type: "rearm"; operationId: string; baseline: SubmissionBaseline; fence: SubmissionDispatchFence; now: number }
   | { type: "reconcile"; operationId: string; observation: SubmissionObservation };
@@ -107,6 +108,37 @@ export class SubmissionOperationLedger {
     if (!isValidClaimContext(context)) throw new Error("submission_authority_invalid");
     if (!this.store.ensureAuthority) throw new Error("submission_authority_unavailable");
     await this.store.ensureAuthority(context);
+  }
+  /**
+   * Re-fence a PREPARED (never claimed) operation after its destination rolled
+   * over: the delivery identity is stable, but the concrete conversation,
+   * carrier, and generations move to the newly authoritative context, and the
+   * pre-submit baseline moves with the new conversation. Guards mirror claim —
+   * valid context, matching durable authority, PREPARED state — plus a
+   * monotonic now. Anything execution-owning or terminal refuses: those states
+   * keep the recovery semantics of recover/rearm instead.
+   */
+  async retarget(operationId: string, context: SubmissionClaimContext, baseline: SubmissionBaseline, now = Date.now()): Promise<SubmissionOperation | undefined> {
+    if (!isValidClaimContext(context) || !isBaselineValue(baseline) || !Number.isSafeInteger(now) || now < 0) return undefined;
+    if (this.store.dispatch) return this.store.dispatch({ type: "retarget", operationId, context, baseline, now }) as Promise<SubmissionOperation | undefined>;
+    return this.mutate(async records => {
+      const authority = this.store.getAuthority ? await this.store.getAuthority() : undefined;
+      const operation = records.find(item => item.operationId === operationId);
+      if (!operation || operation.state !== "PREPARED" || !authority || !sameClaimAuthority(authority, context)) return { records, result: undefined };
+      if (now < operation.lastObservedAt) return { records, result: undefined };
+      operation.providerConversationRef = context.providerConversationRef;
+      operation.targetCarrierRef = context.targetCarrierRef;
+      operation.dispatchFence = {
+        providerConversationRef: context.providerConversationRef,
+        bindingEpoch: context.bindingEpoch,
+        leaseGeneration: context.leaseGeneration,
+        leaseOwnerRef: context.leaseOwnerRef,
+        targetCarrierRef: context.targetCarrierRef
+      };
+      operation.preSubmitBaseline = { ...baseline };
+      operation.lastObservedAt = now;
+      return { records, result: operation };
+    });
   }
   async recover(operationId: string, context: SubmissionClaimContext, now = Date.now()): Promise<SubmissionOperation | undefined> {
     if (!isValidClaimContext(context) || !Number.isSafeInteger(now) || now < 0) return undefined;

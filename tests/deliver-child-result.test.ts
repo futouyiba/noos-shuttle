@@ -7,6 +7,7 @@ import {
   mintInsertedOnAcceptance,
   openChildDelivery,
   prepareChildDeliveryTransport,
+  retargetChildDeliveryTransport,
   type DeliveryTransportDependencies,
 } from "../src/core/deliver-child-result";
 
@@ -120,6 +121,26 @@ describe("prepare delivery transport", () => {
       destination: { ...destination, logicalThreadId: "other-thread" },
       baseline
     })).rejects.toThrow("delivery_route_mismatch:other-thread!=pdlt-l1");
+  });
+
+  it("retargets the transport after a parent rollover before the claim", async () => {
+    const d = deps();
+    await readyChild(d);
+    await d.submissions.initializeAuthority(destination);
+    await prepareChildDeliveryTransport(d, { childThreadId: "child-l2", destination, baseline, now: 100 });
+    const rolledOver = { ...destination, providerConversationRef: "conv-l3", bindingEpoch: 4, targetCarrierRef: "browser-tab:6", sourceEpoch: 4, sourceObservedAt: 150 };
+    await d.submissions.initializeAuthority(rolledOver);
+    const { operation } = await retargetChildDeliveryTransport(d, {
+      childThreadId: "child-l2",
+      destination: rolledOver,
+      baseline: { ...baseline, routeRef: "/c/conv-l3", observedAt: 150 },
+      now: 160
+    });
+    expect(operation).toMatchObject({ providerConversationRef: "conv-l3", targetCarrierRef: "browser-tab:6", state: "PREPARED" });
+    expect(operation.dispatchFence).toMatchObject({ bindingEpoch: 4 });
+    // The rolled-over fence claims; the stale one cannot.
+    expect(await d.submissions.claim(deliveryId(), destination, 200)).toBeUndefined();
+    expect((await d.submissions.claim(deliveryId(), rolledOver, 200))?.state).toBe("DISPATCHING");
   });
 });
 

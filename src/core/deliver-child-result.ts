@@ -132,6 +132,36 @@ export async function prepareChildDeliveryTransport(
 }
 
 /**
+ * Re-fence the transport after a parent rollover that happened BEFORE the
+ * dispatch claim: the delivery identity stays, the ledger's retarget moves the
+ * conversation/carrier/generations and the pre-submit baseline to the newly
+ * authoritative destination. Only valid while the transport is still PREPARED;
+ * anything execution-owning keeps the ledger's recover/rearm semantics.
+ */
+export async function retargetChildDeliveryTransport(
+  deps: DeliveryTransportDependencies,
+  input: {
+    childThreadId: string;
+    destination: SubmissionClaimContext;
+    baseline: SubmissionBaseline;
+    now?: number;
+  }
+): Promise<{ child: ChildWorkerRecord; operation: SubmissionOperation }> {
+  const { child, resultRef } = await requireReturnableChild(deps, input.childThreadId);
+  if (input.destination.logicalThreadId !== child.parentThreadId) {
+    throw new Error(`delivery_route_mismatch:${input.destination.logicalThreadId}!=${child.parentThreadId}`);
+  }
+  const submissionOperationId = childDeliveryOperationId({
+    parentThreadId: child.parentThreadId,
+    childThreadId: child.childThreadId,
+    resultRef
+  });
+  const operation = await deps.submissions.retarget(submissionOperationId, input.destination, input.baseline, input.now);
+  if (!operation) throw new Error(`delivery_retarget_refused:${submissionOperationId}`);
+  return { child, operation };
+}
+
+/**
  * Mint the INSERTED receipt strictly from transport state: the referenced
  * SubmissionOperation must be OBSERVED_ACCEPTED (directly or by
  * reconciliation). Anything else — PREPARED, DISPATCHING, UNCERTAIN, terminal —

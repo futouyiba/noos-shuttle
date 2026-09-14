@@ -695,4 +695,36 @@ describe("SubmissionOperationLedger", () => {
     expect(result.outcome).toBe("STILL_AMBIGUOUS");
     expect((await ledger.get("recover-old"))?.state).toBe("DISPATCHING");
   });
+
+  it("retarget re-fences a PREPARED operation to a rolled-over destination", async () => {
+    const rolledOver = context("browser-tab:9", "conversation:b", "t1", 4, 200);
+    const ledger = new SubmissionOperationLedger(memoryStore(authority(rolledOver)));
+    await ledger.prepare({ ...input("rt-1"), now: 10 });
+    const retargeted = await ledger.retarget("rt-1", rolledOver, { ...baseline(), routeRef: "route:b", observedAt: 200 }, 50);
+    expect(retargeted).toMatchObject({ state: "PREPARED", providerConversationRef: "conversation:b", targetCarrierRef: "browser-tab:9", operationKind: "GO", logicalThreadId: "t1" });
+    expect(retargeted?.dispatchFence).toMatchObject({ providerConversationRef: "conversation:b", targetCarrierRef: "browser-tab:9" });
+    expect(retargeted?.preSubmitBaseline.routeRef).toBe("route:b");
+    // The stale fence can no longer claim; the rolled-over one can.
+    expect(await ledger.claim("rt-1", context(), 60)).toBeUndefined();
+    expect((await ledger.claim("rt-1", rolledOver, 60))?.state).toBe("DISPATCHING");
+  });
+
+  it("retarget refuses non-PREPARED states, stale authority, and backwards time", async () => {
+    const rolledOver = context("browser-tab:9", "conversation:b", "t1", 4, 200);
+    // DISPATCHING refuses (recover/rearm own that territory).
+    const dispatching = new SubmissionOperationLedger(memoryStore());
+    await dispatching.prepare({ ...input("rt-2"), now: 10 });
+    await dispatching.claim("rt-2", context(), 10);
+    expect(await dispatching.retarget("rt-2", context(), baseline(), 20)).toBeUndefined();
+    // Authority must match the new context.
+    const mismatched = new SubmissionOperationLedger(memoryStore());
+    await mismatched.prepare({ ...input("rt-3"), now: 10 });
+    expect(await mismatched.retarget("rt-3", rolledOver, baseline(), 50)).toBeUndefined();
+    expect((await mismatched.list())[0].providerConversationRef).toBe("conversation:a");
+    // Time must not move backwards from the operation's last observation.
+    const backwards = new SubmissionOperationLedger(memoryStore(authority(rolledOver)));
+    await backwards.prepare({ ...input("rt-4"), now: 100 });
+    expect(await backwards.retarget("rt-4", rolledOver, baseline(), 50)).toBeUndefined();
+    expect((await backwards.retarget("rt-4", rolledOver, baseline(), 150))?.providerConversationRef).toBe("conversation:b");
+  });
 });
