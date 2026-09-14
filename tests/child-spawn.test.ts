@@ -98,7 +98,7 @@ describe("spawn child worker", () => {
     expect(adapter.calls).toBe(1);
   });
 
-  it("serializes concurrent spawns so only one reaches the adapter", async () => {
+  it("spawns concurrently without a second adapter call", async () => {
     const children = makeChildren();
     const adapter = countingAdapter(async () => ({ providerConversationRef: "conv-l2", carrierRef: "browser-tab:7" }));
     const attempts: Array<Promise<unknown>> = [

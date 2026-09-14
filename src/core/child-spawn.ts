@@ -85,6 +85,9 @@ export async function spawnChildWorker(deps: SpawnDependencies, input: CreateChi
  * §16 spawn-uncertainty recovery. With a recovered binding, rebind the child
  * (SPAWNING/SPAWN_UNCERTAIN/BROKEN → BOOTSTRAPPING); without one — and only
  * when non-creation is proven — cancel the intent. Never spawns again.
+ * The no-binding caller carries the burden of proof: it must have established
+ * out-of-band (e.g. by listing provider conversations) that the child was not
+ * created; this layer cannot verify that.
  */
 export async function reconcileChildSpawn(
   children: ChildWorkerLedger,
