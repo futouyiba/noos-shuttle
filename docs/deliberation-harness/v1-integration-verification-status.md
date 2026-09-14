@@ -40,7 +40,7 @@
 | W7 durable acceptance stamp | `08ef188`, `0c10be6` | APPROVE ×2 (residual closed, re-arm clears stamp) |
 | W8 execution journal in delivery runtime | `cc645c2`, `da7f30c` | APPROVE after notes |
 | W9 FAILED_SAFE re-arm symmetry | `3a9f4bc` | APPROVE |
-| W10 FAILED_SAFE rollover escape (fresh-attempt retarget) | `42161a2`, `602968d`, `a793905` | APPROVE (lane separation enforced, states pinned) |
+| W10 FAILED_SAFE rollover escape (fresh-attempt retarget) | `42161a2`, `602968d`, `a793905`, `13cd373` | APPROVE (lane separation enforced, states pinned) |
 
 ## 3. Verification evidence (current)
 
