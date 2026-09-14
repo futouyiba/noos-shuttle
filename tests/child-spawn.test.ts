@@ -1,14 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { ChildWorkerLedger, createChromeChildWorkerStore } from "../src/core/child-worker";
-import { SpawnUncertainError, spawnChildWorker, reconcileChildSpawn, type SpawnAdapter } from "../src/core/child-spawn";
+import { ChildWorkerLedger, createChromeChildWorkerStore, type ChildWorkerRecord } from "../src/core/child-worker";
+import { SpawnUncertainError, spawnChildWorker, reconcileChildSpawn, type SpawnAdapter, type SpawnDependencies } from "../src/core/child-spawn";
 
-function harness(adapter: SpawnAdapter) {
+function makeChildren() {
   const backing: Record<string, unknown> = {};
-  const children = new ChildWorkerLedger(createChromeChildWorkerStore({
+  return new ChildWorkerLedger(createChromeChildWorkerStore({
     get: async (key: string) => ({ [key]: backing[key] }),
     set: async (value: Record<string, unknown>) => { Object.assign(backing, value); }
   }));
-  return { children, adapter };
 }
 
 const intent = {
@@ -22,69 +21,133 @@ const intent = {
   returnRoute: "thread:pdlt-l1"
 };
 
+function countingAdapter(
+  outcome: () => Promise<{ providerConversationRef: string; carrierRef: string }>
+): SpawnAdapter & { calls: number } {
+  const adapter = { calls: 0, spawn: async (child: ChildWorkerRecord) => { adapter.calls += 1; return outcome(); } };
+  return adapter;
+}
+
+function overrideMethod<T extends object, K extends keyof T>(target: T, method: K, implementation: unknown): T {
+  const shadow = Object.create(target);
+  Object.defineProperty(shadow, method, { value: implementation });
+  return shadow;
+}
+
 describe("spawn child worker", () => {
   it("drives PLANNED to ACTIVE through the provider spawn", async () => {
-    let calls = 0;
-    const adapter: SpawnAdapter = { spawn: async () => { calls += 1; return { providerConversationRef: "conv-l2", carrierRef: "browser-tab:7" }; } };
-    const { children } = harness(adapter);
+    const children = makeChildren();
+    const adapter = countingAdapter(async () => ({ providerConversationRef: "conv-l2", carrierRef: "browser-tab:7" }));
     const child = await spawnChildWorker({ children, adapter }, intent);
     expect(child).toMatchObject({ state: "ACTIVE", providerConversationRef: "conv-l2", carrierRef: "browser-tab:7" });
-    expect(calls).toBe(1);
+    expect(adapter.calls).toBe(1);
   });
 
   it("is idempotent: a re-run after success returns the child without spawning again", async () => {
-    let calls = 0;
-    const adapter: SpawnAdapter = { spawn: async () => { calls += 1; return { providerConversationRef: "conv-l2", carrierRef: "browser-tab:7" }; } };
-    const { children } = harness(adapter);
+    const children = makeChildren();
+    const adapter = countingAdapter(async () => ({ providerConversationRef: "conv-l2", carrierRef: "browser-tab:7" }));
     await spawnChildWorker({ children, adapter }, intent);
     const again = await spawnChildWorker({ children, adapter }, intent);
     expect(again.state).toBe("ACTIVE");
-    expect(calls).toBe(1);
+    expect(adapter.calls).toBe(1);
     expect(await children.list()).toHaveLength(1);
   });
 
   it("marks the child SPAWN_UNCERTAIN when the acknowledgement is lost, and refuses a blind re-spawn", async () => {
-    let calls = 0;
-    const adapter: SpawnAdapter = { spawn: async () => { calls += 1; throw new SpawnUncertainError(); } };
-    const { children } = harness(adapter);
+    const children = makeChildren();
+    const adapter = countingAdapter(async () => { throw new SpawnUncertainError(); });
     await expect(spawnChildWorker({ children, adapter }, intent)).rejects.toBeInstanceOf(SpawnUncertainError);
     expect((await children.get("child-l2"))?.state).toBe("SPAWN_UNCERTAIN");
-    expect(calls).toBe(1);
+    expect(adapter.calls).toBe(1);
     await expect(spawnChildWorker({ children, adapter }, intent)).rejects.toThrow("spawn_not_resumable:SPAWN_UNCERTAIN");
-    expect(calls).toBe(1);
+    expect(adapter.calls).toBe(1);
   });
 
-  it("propagates a definite spawn failure without transitioning the child", async () => {
-    const adapter: SpawnAdapter = { spawn: async () => { throw new Error("fork_denied"); } };
-    const { children } = harness(adapter);
-    await expect(spawnChildWorker({ children, adapter }, intent)).rejects.toThrow("fork_denied");
-    expect((await children.get("child-l2"))?.state).toBe("SPAWNING");
+  it("refuses to re-spawn a child stuck in SPAWNING after a crash or definite failure (§16)", async () => {
+    const children = makeChildren();
+    // Crash window: the record is durable in SPAWNING and no new process may
+    // assume the outcome — recovery must reconcile first.
+    await children.createIntent(intent);
+    await children.beginSpawn("child-l2");
+    const adapter = countingAdapter(async () => ({ providerConversationRef: "conv-second", carrierRef: "browser-tab:8" }));
+    await expect(spawnChildWorker({ children, adapter }, intent)).rejects.toThrow("spawn_not_resumable:SPAWNING");
+    expect(adapter.calls).toBe(0);
+
+    // Definite-failure window on a fresh child: the child stays SPAWNING and a
+    // re-entry is refused too.
+    const failing = countingAdapter(async () => { throw new Error("fork_denied"); });
+    const other = { ...intent, childThreadId: "child-l3" };
+    await expect(spawnChildWorker({ children, adapter: failing }, other)).rejects.toThrow("fork_denied");
+    await expect(spawnChildWorker({ children, adapter: failing }, other)).rejects.toThrow("spawn_not_resumable:SPAWNING");
+    expect(failing.calls).toBe(1);
+  });
+
+  it("parks the child as uncertain when the bind write fails after creation, and recovery rebinds", async () => {
+    const children = makeChildren();
+    const adapter = countingAdapter(async () => ({ providerConversationRef: "conv-l2", carrierRef: "browser-tab:7" }));
+    const breaking = overrideMethod(children, "bindConversation", async () => { throw new Error("storage_full"); });
+    await expect(spawnChildWorker({ children: breaking, adapter }, intent)).rejects.toThrow("storage_full");
+    expect(adapter.calls).toBe(1);
+    expect((await children.get("child-l2"))?.state).toBe("SPAWN_UNCERTAIN");
+
+    // The conversation exists; recovery rebinds it and never spawns again.
+    const rebound = await reconcileChildSpawn(children, "child-l2", { providerConversationRef: "conv-l2", carrierRef: "browser-tab:7" });
+    expect(rebound.state).toBe("BOOTSTRAPPING");
+    const active = await spawnChildWorker({ children, adapter }, intent);
+    expect(active).toMatchObject({ state: "ACTIVE", providerConversationRef: "conv-l2" });
+    expect(adapter.calls).toBe(1);
+  });
+
+  it("serializes concurrent spawns so only one reaches the adapter", async () => {
+    const children = makeChildren();
+    const adapter = countingAdapter(async () => ({ providerConversationRef: "conv-l2", carrierRef: "browser-tab:7" }));
+    const attempts: Array<Promise<unknown>> = [
+      spawnChildWorker({ children, adapter }, intent),
+      spawnChildWorker({ children, adapter }, intent)
+    ];
+    const outcomes = await Promise.allSettled(attempts);
+    expect(outcomes.filter(outcome => outcome.status === "fulfilled")).toHaveLength(1);
+    expect(adapter.calls).toBe(1);
+    expect((await children.get("child-l2"))?.state).toBe("ACTIVE");
+    expect(await children.list()).toHaveLength(1);
   });
 
   it("binds a recovered conversation and activates after reconciliation", async () => {
-    const adapter: SpawnAdapter = { spawn: async () => { throw new SpawnUncertainError(); } };
-    const { children } = harness(adapter);
+    const children = makeChildren();
+    const adapter = countingAdapter(async () => { throw new SpawnUncertainError(); });
     await expect(spawnChildWorker({ children, adapter }, intent)).rejects.toBeInstanceOf(SpawnUncertainError);
+    expect(adapter.calls).toBe(1);
 
-    const rebound = await reconcileChildSpawn({ children, adapter }, "child-l2", { providerConversationRef: "conv-recovered", carrierRef: "browser-tab:9" });
+    const rebound = await reconcileChildSpawn(children, "child-l2", { providerConversationRef: "conv-recovered", carrierRef: "browser-tab:9" });
     expect(rebound.state).toBe("BOOTSTRAPPING");
     const active = await spawnChildWorker({ children, adapter }, intent);
     expect(active).toMatchObject({ state: "ACTIVE", providerConversationRef: "conv-recovered" });
+    expect(adapter.calls).toBe(1);
     expect(await children.list()).toHaveLength(1);
   });
 
   it("cancels only when non-creation is proven", async () => {
-    const adapter: SpawnAdapter = { spawn: async () => { throw new SpawnUncertainError(); } };
-    const { children } = harness(adapter);
+    const children = makeChildren();
+    const adapter = countingAdapter(async () => { throw new SpawnUncertainError(); });
     await expect(spawnChildWorker({ children, adapter }, intent)).rejects.toBeInstanceOf(SpawnUncertainError);
-    const cancelled = await reconcileChildSpawn({ children, adapter }, "child-l2");
+    const cancelled = await reconcileChildSpawn(children, "child-l2");
     expect(cancelled.state).toBe("CANCELLED");
   });
 
-  it("refuses to cancel a child that is not uncertain", async () => {
-    const adapter: SpawnAdapter = { spawn: async () => ({ providerConversationRef: "conv-l2", carrierRef: "browser-tab:7" }) };
-    const { children } = harness(adapter);
+  it("refuses to cancel a child that is not reconcilable", async () => {
+    const children = makeChildren();
+    const adapter = countingAdapter(async () => ({ providerConversationRef: "conv-l2", carrierRef: "browser-tab:7" }));
     await spawnChildWorker({ children, adapter }, intent);
-    await expect(reconcileChildSpawn({ children, adapter }, "child-l2")).rejects.toThrow("spawn_reconcile_requires_uncertain:ACTIVE");
+    await expect(reconcileChildSpawn(children, "child-l2")).rejects.toThrow("spawn_reconcile_requires_uncertain:ACTIVE");
+  });
+
+  it("keeps serving after a parking failure by preserving the original signal", async () => {
+    const children = makeChildren();
+    const adapter = countingAdapter(async () => { throw new SpawnUncertainError(); });
+    const broken = overrideMethod(children, "markSpawnUncertain", async () => { throw new Error("park_failed"); });
+    await expect(spawnChildWorker({ children: broken, adapter }, intent)).rejects.toBeInstanceOf(SpawnUncertainError);
+    expect((await children.get("child-l2"))?.state).toBe("SPAWNING");
+    await expect(spawnChildWorker({ children, adapter }, intent)).rejects.toThrow("spawn_not_resumable:SPAWNING");
+    expect(adapter.calls).toBe(1);
   });
 });
