@@ -36,12 +36,14 @@
 | W3 PREPARED retarget (rollover re-fence) | `ac6e66a`, `a017317` | APPROVE after fix (gap closed) |
 | W4 child-lifecycle worker lane | `eeea6ad`, `84e19ee` | APPROVE ×2 |
 | W5 content-side delivery wiring | `d1f1e10`, `447e6ac` | APPROVE after fix (re-review passed; one fail-closed evidence-overwrite residual recorded) |
-| W6 child lifecycle closure on delivery | `23aa40c` | in review |
+| W6 child lifecycle closure on delivery | `23aa40c` | APPROVE |
+| W7 durable acceptance stamp | `08ef188`, `0c10be6` | APPROVE ×2 (residual closed, re-arm clears stamp) |
+| W8 execution journal in delivery runtime | `cc645c2` | in review |
 
 ## 3. Verification evidence (current)
 
 - `npm run typecheck` — 0 errors.
-- `npm test` — **29 files / 312 tests pass**, including playwright browser smokes (now also the child-lifecycle lanes and the full child-result delivery loop)
+- `npm test` — **29 files / 316 tests pass**, including playwright browser smokes (now also the child-lifecycle lanes and the full child-result delivery loop)
   rebuilt from this tree (Human GO real-ledger dispatch; durable Goal Re-anchor
   end-to-end).
 - Commit-message test counts are taken from the last clean-tree run.
