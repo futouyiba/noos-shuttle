@@ -54,7 +54,9 @@ async function note(
   deps: DeliveryRuntimeDependencies,
   input: Parameters<ProviderExecutionJournal["append"]>[0]
 ): Promise<void> {
-  await deps.journal?.append(input).catch(() => undefined);
+  await deps.journal?.append(input).catch(error => {
+    console.warn("noos delivery journal append failed", error);
+  });
 }
 
 export function runChildDeliveryProbe(
@@ -198,6 +200,17 @@ async function recoverOnce(
       operationId,
       dispatchFence: settled.dispatchFence!,
       eventKind: "ACCEPTANCE_OBSERVED",
+      evidence: { observedAt: settled.lastObservedAt }
+    });
+  }
+  if (settled.state === "COMPLETED") {
+    // Backfill for the crash window between record(COMPLETED) and the note:
+    // the journal's idempotency key keeps this to one durable entry.
+    await note(deps, {
+      executionAttemptId: `${operationId}:completed:${settled.lastObservedAt}`,
+      operationId,
+      dispatchFence: settled.dispatchFence!,
+      eventKind: "TURN_COMPLETION_OBSERVED",
       evidence: { observedAt: settled.lastObservedAt }
     });
   }

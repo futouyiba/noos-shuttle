@@ -116,12 +116,14 @@ describe("runChildDeliveryProbe", () => {
   });
 
   it("parks a lost acknowledgement as UNCERTAIN and refuses to re-dispatch", async () => {
-    const { deps, storage, backing } = harness();
+    const { deps, storage, backing, journal } = harness();
     backing.noosWorkItemInbox = WORK_ITEM;
     await seedResultReadyChild(deps);
     const dispatch = async () => { throw new Error("ack lost"); };
     const result = await runChildDeliveryProbe({ context: context(), baseline }, storage, deps, dispatch);
     expect(result.dispatched).toBe(0);
+    // A lost acknowledgement records the attempt but never an ack.
+    expect((await journal.list()).map(entry => entry.eventKind)).toEqual(["BLIND_DISPATCH_ATTEMPT"]);
     const operation = (await deps.submissions.list())[0];
     expect(operation.state).toBe("UNCERTAIN");
     expect(operation.error).toBe("delivery_dispatch_uncertain");
