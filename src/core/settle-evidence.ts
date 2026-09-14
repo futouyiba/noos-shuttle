@@ -6,17 +6,23 @@
  * for the authoritative OperationalStateReducer. It never mutates the journal
  * and never settles without a durable evidence entry.
  *
+ * Licensing is contract-conservative (command-submission-idempotency-contract
+ * §5/§7): only a composite acceptance observation or a reconciliation record
+ * may establish OBSERVED_ACCEPTED — a single transport-level ack or a blind
+ * attempt can at most establish UNCERTAIN, because "ack received" is not
+ * "result-bearing message accepted" and OBSERVED_ACCEPTED is irreversible
+ * (it mints the delivery receipt and locks the route).
+ *
  * Fence mapping (the wiring debt the journal review flagged): the journal and
- * the submission ledger share the five-field fence
- * {providerConversationRef, bindingEpoch, leaseGeneration, leaseOwnerRef,
- * targetCarrierRef}; the reducer's DispatchFence spells the same authority as
- * {providerConversationRef, carrierRef, bindingGeneration, leaseGeneration} —
- * bindingEpoch≡bindingGeneration (generation of the binding that authorized the
- * attempt) and targetCarrierRef≡carrierRef. leaseOwnerRef has no reducer
- * counterpart: the reducer already bound it into the lease it granted.
+ * the submission ledger share the five-field fence; the reducer's DispatchFence
+ * spells the same authority as four of those fields — bindingEpoch≡
+ * bindingGeneration (generation of the binding that authorized the attempt)
+ * and targetCarrierRef≡carrierRef. leaseOwnerRef has no reducer counterpart:
+ * the reducer already bound it into the lease it granted.
  */
 
-import type { ExecutionJournalEntry } from "./execution-journal";
+import { dispatchFenceFingerprint, type ExecutionJournalEntry, type ExecutionEventKind } from "./execution-journal";
+import type { SubmissionDispatchFence } from "./submission-operation";
 import type {
   DispatchFence,
   OperationalStateReducer,
@@ -25,13 +31,8 @@ import type {
   SettleSubmissionDispatchInput,
 } from "./operational-state-reducer";
 
-export interface JournalFence {
-  providerConversationRef: string;
-  bindingEpoch: number;
-  leaseGeneration: number;
-  leaseOwnerRef: string;
-  targetCarrierRef: string;
-}
+/** The journal/ledger fence spelling; kept as an alias so callers import one name. */
+export type JournalFence = SubmissionDispatchFence;
 
 /** Map a journal/ledger fence onto the reducer's authority fence spelling. */
 export function toReducerDispatchFence(fence: JournalFence): DispatchFence {
@@ -45,13 +46,17 @@ export function toReducerDispatchFence(fence: JournalFence): DispatchFence {
 
 export type SettleTarget = SettleSubmissionDispatchInput["targetState"];
 
-/** Evidence kinds that license each settle target (§9 journal taxonomy). */
-const TARGET_BY_EVENT: Record<string, SettleTarget[]> = {
+/**
+ * Which settle targets each evidence kind may license. Narrow on purpose:
+ * only composite acceptance/reconciliation may establish OBSERVED_ACCEPTED;
+ * transport-level facts alone (blind attempt, provider ack) cap at UNCERTAIN.
+ */
+const TARGET_BY_EVENT: Record<ExecutionEventKind, SettleTarget[]> = {
+  BLIND_DISPATCH_ATTEMPT: ["UNCERTAIN"],
+  PROVIDER_ACK: ["UNCERTAIN"],
   ACCEPTANCE_OBSERVED: ["OBSERVED_ACCEPTED", "COMPLETED", "UNCERTAIN", "FAILED_SAFE", "CANCELLED"],
   TURN_COMPLETION_OBSERVED: ["COMPLETED"],
-  RECONCILIATION_EVIDENCE: ["OBSERVED_ACCEPTED", "COMPLETED", "UNCERTAIN", "FAILED_SAFE", "CANCELLED"],
-  BLIND_DISPATCH_ATTEMPT: ["UNCERTAIN", "FAILED_SAFE", "CANCELLED"],
-  PROVIDER_ACK: ["OBSERVED_ACCEPTED", "COMPLETED", "UNCERTAIN", "FAILED_SAFE", "CANCELLED"]
+  RECONCILIATION_EVIDENCE: ["OBSERVED_ACCEPTED", "COMPLETED", "UNCERTAIN", "FAILED_SAFE", "CANCELLED"]
 };
 
 export interface SettleFromEvidenceInput {
@@ -68,15 +73,12 @@ export interface SettleFromEvidenceInput {
   now: number;
 }
 
-export type SettleFromEvidenceError =
-  | "evidence_operation_mismatch"
-  | "evidence_kind_cannot_settle_target";
-
 /**
  * Drive one settle from a durable journal entry. Fails closed before touching
- * the reducer when the evidence does not belong to the operation or its kind
- * cannot license the requested target; otherwise the reducer's own expectation
- * fence, transition table, and terminal-state guards apply unchanged.
+ * the reducer when the evidence does not belong to the operation, was not
+ * recorded under the given fence, or its kind cannot license the requested
+ * target; otherwise the reducer's own expectation fence, transition table,
+ * and terminal-state guards apply unchanged.
  */
 export function settleFromEvidence(
   reducer: OperationalStateReducer,
@@ -85,8 +87,10 @@ export function settleFromEvidence(
   if (input.evidence.operationId !== input.operationId) {
     throw new Error("evidence_operation_mismatch");
   }
-  const licensed = TARGET_BY_EVENT[input.evidence.eventKind] ?? [];
-  if (!licensed.includes(input.targetState)) {
+  if (input.evidence.dispatchFenceFingerprint !== dispatchFenceFingerprint(input.fence)) {
+    throw new Error("evidence_fence_mismatch");
+  }
+  if (!TARGET_BY_EVENT[input.evidence.eventKind].includes(input.targetState)) {
     throw new Error(`evidence_kind_cannot_settle_target:${input.evidence.eventKind}->${input.targetState}`);
   }
   return reducer.settleSubmissionDispatch({
