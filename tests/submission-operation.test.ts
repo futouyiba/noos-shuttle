@@ -728,6 +728,34 @@ describe("SubmissionOperationLedger", () => {
     expect((await backwards.retarget("rt-4", rolledOver, baseline(), 150))?.providerConversationRef).toBe("conversation:b");
   });
 
+  it("re-arm clears a stale acceptance stamp with the evidence", async () => {
+    const ledger = new SubmissionOperationLedger(memoryStore());
+    const fingerprint = fingerprintSubmissionPayload("delivered result");
+    await ledger.prepare({ ...input("rearm-stamp"), operationKind: "DELIVER_CHILD_RESULT", payload: "delivered result", payloadFingerprint: fingerprint });
+    await ledger.claim("rearm-stamp", context(), 10);
+    await ledger.record("rearm-stamp", "DISPATCHING", {
+      now: 11, dispatchReceipt: { claimedAt: 10, attemptedAt: 11, outcome: "dispatched", fence: context() }
+    });
+    await ledger.reconcile("rearm-stamp", {
+      ...baseline(), conversationRef: "conversation:a", userMessageCount: 2,
+      lastUserMessageFingerprint: fingerprint, observedAt: 20, sourceEpoch: 0,
+      generationActive: false, dispatchFence: context()
+    });
+    expect((await ledger.get("rearm-stamp"))?.acceptedPayloadFingerprint).toBe(fingerprint);
+    // The reviewer chain: a raced record parks it UNCERTAIN, then a quiet
+    // proven-not-accepted observation fails it safe, then it re-arms.
+    await ledger.record("rearm-stamp", "UNCERTAIN", { now: 25, error: "raced" });
+    await ledger.reconcile("rearm-stamp", {
+      ...baseline(), conversationRef: "conversation:a", userMessageCount: 1,
+      observedAt: 30, sourceEpoch: 0, generationActive: false,
+      providerFailure: true, dispatchFence: context()
+    });
+    const rearmed = await ledger.rearm("rearm-stamp", { ...baseline(), conversationRef: "conversation:a", observedAt: 40 }, context(), 50);
+    expect(rearmed?.state).toBe("PREPARED");
+    expect(rearmed?.acceptedPayloadFingerprint).toBeUndefined();
+    expect(rearmed?.lastReconciliationEvidence).toBeUndefined();
+  });
+
   it("stamps the acceptance payload fingerprint when reconciliation proves acceptance", async () => {
     const ledger = new SubmissionOperationLedger(memoryStore());
     // Non-GO transports (delivery) do not require the payload fingerprint for

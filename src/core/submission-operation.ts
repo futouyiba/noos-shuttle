@@ -236,7 +236,7 @@ export class SubmissionOperationLedger {
         now < baseline.observedAt) {
         return { records, result: operation };
       }
-      operation.preSubmitBaseline = { ...baseline }; operation.state = "PREPARED"; operation.lastObservedAt = now; operation.error = undefined; operation.lastReconciliationEvidence = undefined;
+      operation.preSubmitBaseline = { ...baseline }; operation.state = "PREPARED"; operation.lastObservedAt = now; operation.error = undefined; operation.lastReconciliationEvidence = undefined; operation.acceptedPayloadFingerprint = undefined;
       return { records, result: operation };
     });
   }
