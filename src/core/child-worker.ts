@@ -285,7 +285,8 @@ export function isChildWorkerRecord(value: unknown): value is ChildWorkerRecord 
       (Array.isArray(record.supersededConversationRefs) && record.supersededConversationRefs.every(isNonEmptyString)));
 }
 
-function isCreateChildIntentInput(value: unknown): value is CreateChildIntentInput {
+/** Structural validator for the wire form of a create-intent mutation. */
+export function isCreateChildIntentInput(value: unknown): value is CreateChildIntentInput {
   if (!value || typeof value !== "object") return false;
   const input = value as Record<string, unknown>;
   return isThreadId(input.childThreadId) &&

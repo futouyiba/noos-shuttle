@@ -563,6 +563,105 @@ describe("content script smoke flow", () => {
     await page.close();
   }, 15_000);
 
+  it("drives the child worker lifecycle through the real service-worker lanes", async () => {
+    const page = await newMockChatPage({ startWithHandoffs: false, injectContentScript: false });
+    await page.evaluate(() => {
+      const listeners: Array<(message: unknown, sender: unknown, sendResponse: (response: unknown) => void) => unknown> = [];
+      const backing: Record<string, unknown> = {};
+      const sendMessage = async (message: unknown) => new Promise<unknown>(resolve => {
+        if ((message as { type?: string }).type === "NOOS_OBSERVATION_CARRIER") {
+          resolve({ carrierRef: "browser-tab:11" });
+          return;
+        }
+        let settled = false;
+        const complete = (response: unknown) => {
+          if (!settled) {
+            settled = true;
+            resolve(response);
+          }
+        };
+        const listener = listeners[0];
+        if (!listener) {
+          complete(undefined);
+          return;
+        }
+        const returned = listener(message, {
+          id: "extension-id",
+          frameId: 0,
+          tab: { id: 11 },
+          url: window.location.href
+        }, complete);
+        if (returned !== true) complete(undefined);
+      });
+      (globalThis as unknown as { childLaneBacking: Record<string, unknown> }).childLaneBacking = backing;
+      (globalThis as unknown as { childLaneSend: (message: unknown) => Promise<unknown> }).childLaneSend = sendMessage;
+      (globalThis as unknown as { chrome: any }).chrome = {
+        runtime: {
+          id: "extension-id",
+          getURL: (path: string) => `chrome-extension://mock/${path}`,
+          sendMessage,
+          lastError: undefined,
+          onInstalled: { addListener: () => undefined },
+          onMessage: { addListener: (listener: typeof listeners[number]) => listeners.push(listener) }
+        },
+        storage: {
+          local: {
+            get: async (key: string) => ({ [key]: backing[key] }),
+            set: async (value: Record<string, unknown>) => Object.assign(backing, value),
+            remove: async () => undefined
+          }
+        },
+        downloads: { download: async () => 1 }
+      };
+    });
+    await page.addScriptTag({ content: `(function () {\n${serviceWorkerScript}\n})();` });
+    const intent = {
+      childThreadId: "child-l2",
+      parentThreadId: "pdlt-l1",
+      workItemId: "wi-1",
+      role: "Sedimentation / Memory Curator",
+      creationMode: "FORKED",
+      operationGoal: "preserve missing durable reasoning",
+      operationScope: "do not continue the main design trajectory",
+      returnRoute: "thread:pdlt-l1",
+      now: 100
+    };
+    const mutate = (mutation: unknown) => page.evaluate(async (m) => {
+      const send = (globalThis as unknown as { childLaneSend: (message: unknown) => Promise<unknown> }).childLaneSend;
+      return await send({ type: "NOOS_CHILD_MUTATION", mutation: m });
+    }, mutation);
+    const records = () => page.evaluate(() => {
+      const backing = (globalThis as unknown as { childLaneBacking: Record<string, any> }).childLaneBacking;
+      return Array.isArray(backing.noosChildWorkers) ? backing.noosChildWorkers : [];
+    });
+
+    expect(((await mutate({ type: "create_intent", input: intent })) as any).result.state).toBe("PLANNED");
+    // Idempotent re-plan returns the same record.
+    expect(((await mutate({ type: "create_intent", input: intent })) as any).result.createdAt).toBe(100);
+    expect(((await mutate({ type: "begin_spawn", childThreadId: "child-l2", now: 110 })) as any).result.state).toBe("SPAWNING");
+    expect(((await mutate({ type: "bind_conversation", childThreadId: "child-l2", binding: { providerConversationRef: "conv-l2", carrierRef: "browser-tab:11" }, now: 120 })) as any).result.state).toBe("BOOTSTRAPPING");
+    expect(((await mutate({ type: "activate", childThreadId: "child-l2", now: 130 })) as any).result.state).toBe("ACTIVE");
+    expect(((await mutate({ type: "record_result", childThreadId: "child-l2", result: { resultRef: "docs/memory.md", completionReceipt: "rcpt-1" }, now: 140 })) as any).result.state).toBe("RESULT_READY");
+    expect(((await mutate({ type: "begin_return", childThreadId: "child-l2", now: 150 })) as any).result.state).toBe("RETURNING");
+    expect(((await mutate({ type: "complete", childThreadId: "child-l2", now: 160 })) as any).result.state).toBe("COMPLETED");
+    expect(((await mutate({ type: "retire", childThreadId: "child-l2", now: 170 })) as any).result.state).toBe("RETIRED");
+    // History survives retirement for provenance.
+    const persisted = await records();
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]).toMatchObject({ state: "RETIRED", resultRef: "docs/memory.md", providerConversationRef: "conv-l2" });
+
+    // Illegal transitions and malformed mutations fail closed.
+    expect(((await mutate({ type: "activate", childThreadId: "child-l2", now: 180 })) as any).ok).toBe(false);
+    expect(((await mutate({ type: "begin_spawn", childThreadId: "ghost", now: 180 })) as any).ok).toBe(false);
+    await page.evaluate(async (m) => {
+      const send = (globalThis as unknown as { childLaneSend: (message: unknown) => Promise<unknown> }).childLaneSend;
+      await send(m);
+    }, { type: "NOOS_CHILD_MUTATION", mutation: { type: "bogus" } });
+    const afterBogus = await records();
+    expect(afterBogus).toHaveLength(1);
+    await page.close();
+  }, 15_000);
+
   it("captures a crystal and saves its key-oriented artifact", async () => {
     const page = await newMockChatPage({ startWithHandoffs: false, startWithCrystals: true });
 

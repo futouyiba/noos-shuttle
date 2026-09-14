@@ -17,6 +17,12 @@ import type { NoosThread } from "../core/noos-thread";
 import { extractProviderConversationId } from "../shared/provider-identity";
 import { runGoalReanchorProbe } from "./goal-reanchor-runtime";
 import { SubmissionOperationLedger, createChromeSubmissionStore, type SubmissionOperationMutation } from "../core/submission-operation";
+import {
+  ChildWorkerLedger,
+  createChromeChildWorkerStore,
+  isCreateChildIntentInput,
+  type CreateChildIntentInput
+} from "../core/child-worker";
 
 chrome.runtime.onInstalled.addListener(() => {
   console.info("NOOS Shuttle installed.");
@@ -46,6 +52,14 @@ function getSubmissionOperationCoordinator(): SubmissionOperationLedger | undefi
   if (!storage) return undefined;
   submissionOperationCoordinator ??= new SubmissionOperationLedger(createChromeSubmissionStore(storage, { claimViaCoordinator: false }));
   return submissionOperationCoordinator;
+}
+let childWorkerLedger: ChildWorkerLedger | undefined;
+
+function getChildWorkerLedger(): ChildWorkerLedger | undefined {
+  const storage = chrome.storage?.local;
+  if (!storage) return undefined;
+  childWorkerLedger ??= new ChildWorkerLedger(createChromeChildWorkerStore(storage));
+  return childWorkerLedger;
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -92,6 +106,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .then(() => applySubmissionMutation(coordinator, message.mutation))
       .then(result => sendResponse({ ok: true, result }))
       .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : "submission_claim_failed" }));
+    return true;
+  }
+
+  if (isChildMutationMessage(message, sender)) {
+    const ledger = getChildWorkerLedger();
+    if (!ledger) {
+      sendResponse({ ok: false, error: "child_ledger_unavailable" });
+      return false;
+    }
+    applyChildMutation(ledger, message.mutation)
+      .then(result => sendResponse({ ok: true, result }))
+      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : "child_mutation_failed" }));
     return true;
   }
 
@@ -242,6 +268,64 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   return false;
 });
+
+type ChildWorkerMutation =
+  | { type: "create_intent"; input: CreateChildIntentInput }
+  | { type: "begin_spawn" | "mark_spawn_uncertain" | "prove_non_creation" | "activate" | "begin_return" | "complete" | "retire" | "mark_broken" | "cancel"; childThreadId: string; now?: number }
+  | { type: "bind_conversation"; childThreadId: string; binding: { providerConversationRef: string; carrierRef: string }; now?: number }
+  | { type: "record_result"; childThreadId: string; result: { resultRef: string; completionReceipt: string }; now?: number };
+
+function isChildMutationMessage(value: unknown, sender: chrome.runtime.MessageSender): value is { type: "NOOS_CHILD_MUTATION"; mutation: ChildWorkerMutation } {
+  if (!value || typeof value !== "object") return false;
+  const message = value as Partial<{ type: string; mutation: ChildWorkerMutation }>;
+  return message.type === "NOOS_CHILD_MUTATION" &&
+    sender.frameId === 0 &&
+    Number.isSafeInteger(sender.tab?.id) &&
+    isAllowedProviderSender(sender) &&
+    isChildWorkerMutation(message.mutation);
+}
+
+function isChildWorkerMutation(value: unknown): value is ChildWorkerMutation {
+  if (!value || typeof value !== "object") return false;
+  const mutation = value as Partial<ChildWorkerMutation> & { childThreadId?: unknown; input?: unknown; binding?: unknown; result?: unknown; now?: unknown };
+  if (typeof mutation.type !== "string") return false;
+  const soloTypes = ["begin_spawn", "mark_spawn_uncertain", "prove_non_creation", "activate", "begin_return", "complete", "retire", "mark_broken", "cancel"];
+  if (mutation.type === "create_intent") return isCreateChildIntentInput(mutation.input);
+  if (soloTypes.includes(mutation.type)) return isOperationId(mutation.childThreadId) && (mutation.now === undefined || isFiniteInteger(mutation.now));
+  if (mutation.type === "bind_conversation") {
+    const binding = mutation.binding as Record<string, unknown> | undefined;
+    return isOperationId(mutation.childThreadId) &&
+      Boolean(binding && typeof binding.providerConversationRef === "string" && (binding.providerConversationRef as string).trim().length > 0 &&
+        typeof binding.carrierRef === "string" && (binding.carrierRef as string).trim().length > 0) &&
+      (mutation.now === undefined || isFiniteInteger(mutation.now));
+  }
+  if (mutation.type === "record_result") {
+    const result = mutation.result as Record<string, unknown> | undefined;
+    return isOperationId(mutation.childThreadId) &&
+      Boolean(result && typeof result.resultRef === "string" && (result.resultRef as string).trim().length > 0 &&
+        typeof result.completionReceipt === "string" && (result.completionReceipt as string).trim().length > 0) &&
+      (mutation.now === undefined || isFiniteInteger(mutation.now));
+  }
+  return false;
+}
+
+async function applyChildMutation(ledger: ChildWorkerLedger, mutation: ChildWorkerMutation): Promise<unknown> {
+  switch (mutation.type) {
+    case "create_intent": return ledger.createIntent(mutation.input);
+    case "begin_spawn": return ledger.beginSpawn(mutation.childThreadId, mutation.now);
+    case "mark_spawn_uncertain": return ledger.markSpawnUncertain(mutation.childThreadId, mutation.now);
+    case "bind_conversation": return ledger.bindConversation(mutation.childThreadId, mutation.binding, mutation.now);
+    case "prove_non_creation": return ledger.proveNonCreation(mutation.childThreadId, mutation.now);
+    case "activate": return ledger.activate(mutation.childThreadId, mutation.now);
+    case "record_result": return ledger.recordResult(mutation.childThreadId, mutation.result, mutation.now);
+    case "begin_return": return ledger.beginReturn(mutation.childThreadId, mutation.now);
+    case "complete": return ledger.complete(mutation.childThreadId, mutation.now);
+    case "retire": return ledger.retire(mutation.childThreadId, mutation.now);
+    case "mark_broken": return ledger.markBroken(mutation.childThreadId, mutation.now);
+    case "cancel": return ledger.cancel(mutation.childThreadId, mutation.now);
+    default: throw new Error("unsupported_child_mutation");
+  }
+}
 
 async function initializeSubmissionAuthority(coordinator: SubmissionOperationLedger, mutation: SubmissionOperationMutation): Promise<void> {
   if (mutation.type === "claim" || mutation.type === "initialize_authority") {
