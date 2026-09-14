@@ -250,6 +250,9 @@ describe("production goal completion authority", () => {
     expect(blocked).toMatchObject({ status: "BLOCKED_BY_EXECUTION", blockingOperationId: "design-1" });
     expect(dispatched).toBe(0);
     expect(backing.noosGoalReanchors.t.state.operations["reanchor:t:1"]).toMatchObject({ status: "PENDING", trigger: "scope_correction" });
+    // Fail-closed means no transport is prepared before the block: the anchor
+    // must not have left a PREPARED submission behind.
+    expect((await submissions.list()).filter(operation => operation.operationKind === "REANCHOR_GOAL")).toHaveLength(0);
 
     // The GO completes and no longer holds execution; the pending anchor runs.
     await submissions.reconcile("design-1", { ...base, assistantMessageCount: 2, userMessageCount: 2,
@@ -267,7 +270,7 @@ describe("production goal completion authority", () => {
       baseline: baseline({ observedAt: 6500 }) }, storage, submissions, dispatchAnchor);
     expect(dispatched).toBe(1);
     expect(backing.noosGoalReanchors.t.state.operations["reanchor:t:1"]).toMatchObject({ status: "COMPLETED", trigger: "scope_correction" });
-    expect(backing.noosGoalReanchors.t.state.anchorRevision).toBe(1);
+    expect(backing.noosGoalReanchors.t.state).toMatchObject({ anchorRevision: 1, designTurnsSinceAnchor: 0 });
   });
 
   it("closes the anchor cycle when the pending transport is completed by external reconciliation", async () => {
