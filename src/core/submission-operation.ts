@@ -1,5 +1,5 @@
 /** Durable transport-only SubmissionOperation ledger. Persist PREPARED before provider actuation. */
-export type SubmissionOperationKind = "GO" | "BOOTSTRAP" | "REVIEW_DISPATCH" | "SEDIMENT" | "DELIVER_CHILD_RESULT";
+export type SubmissionOperationKind = "GO" | "REANCHOR_GOAL" | "BOOTSTRAP" | "REVIEW_DISPATCH" | "SEDIMENT" | "DELIVER_CHILD_RESULT";
 export type SubmissionOperationState = "PREPARED" | "DISPATCHING" | "OBSERVED_ACCEPTED" | "COMPLETED" | "UNCERTAIN" | "FAILED_SAFE" | "CANCELLED";
 export interface SubmissionBaseline { conversationRef?: string; routeRef: string; assistantMessageCount: number; userMessageCount: number; lastUserMessageFingerprint?: string; lastAssistantMessageFingerprint?: string; headFingerprint?: string; observedAt: number; }
 export interface SubmissionObservation extends Omit<SubmissionBaseline, "observedAt"> {
@@ -461,7 +461,7 @@ function isAuthorityValue(value: unknown): value is SubmissionAuthority {
   return Number.isSafeInteger(authority.authorityGeneration) && authority.authorityGeneration > 0 &&
     Number.isSafeInteger(authority.authorityEstablishedAt) && authority.authorityEstablishedAt >= 0;
 }
-function isSubmissionOperationKind(value: unknown): value is SubmissionOperationKind { return value === "GO" || value === "BOOTSTRAP" || value === "REVIEW_DISPATCH" || value === "SEDIMENT" || value === "DELIVER_CHILD_RESULT"; }
+function isSubmissionOperationKind(value: unknown): value is SubmissionOperationKind { return value === "GO" || value === "REANCHOR_GOAL" || value === "BOOTSTRAP" || value === "REVIEW_DISPATCH" || value === "SEDIMENT" || value === "DELIVER_CHILD_RESULT"; }
 function isSubmissionOperationState(value: unknown): value is SubmissionOperationState { return value === "PREPARED" || value === "DISPATCHING" || value === "OBSERVED_ACCEPTED" || value === "COMPLETED" || value === "UNCERTAIN" || value === "FAILED_SAFE" || value === "CANCELLED"; }
 function isBaselineValue(value: unknown): value is SubmissionBaseline {
   if (!value || typeof value !== "object") return false;
@@ -499,7 +499,7 @@ function isPrepareInput(
     isBaselineValue(input.preSubmitBaseline) &&
     (input.now === undefined || (typeof input.now === "number" && Number.isSafeInteger(input.now) && input.now >= 0));
 }
-function fingerprintSubmissionPayload(value: string): string {
+export function fingerprintSubmissionPayload(value: string): string {
   let hash = 0;
   const normalized = value.replace(/\s+/g, " ").trim().slice(0, 2000);
   for (let index = 0; index < normalized.length; index += 1) hash = (hash * 31 + normalized.charCodeAt(index)) >>> 0;
@@ -595,7 +595,7 @@ function isCompletionEvidence(operation: SubmissionOperation): boolean {
     evidence !== undefined &&
     evidence.generationActive === false &&
     isStableAfterClaim(evidence, operation.dispatchClaimedAt) &&
-    (operation.operationKind !== "GO" || evidence.lastUserMessageFingerprint === operation.payloadFingerprint);
+    (!["GO", "REANCHOR_GOAL"].includes(operation.operationKind) || evidence.lastUserMessageFingerprint === operation.payloadFingerprint);
 }
 export function isValidClaimContext(context: SubmissionClaimContext): boolean {
   return context.explicitGo === true &&

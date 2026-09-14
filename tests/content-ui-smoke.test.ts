@@ -304,6 +304,110 @@ describe("content script smoke flow", () => {
     await page.close();
   }, 10_000);
 
+  it("dispatches a durable Goal Re-anchor through content, worker, ledger and provider DOM", async () => {
+    const page = await newMockChatPage({ startWithHandoffs: false, injectContentScript: false });
+    await page.evaluate(() => {
+      const listeners: Array<(message: unknown, sender: unknown, sendResponse: (response: unknown) => void) => unknown> = [];
+      const backing: Record<string, unknown> = {};
+      const sendMessage = async (message: unknown) => new Promise<unknown>(resolve => {
+        if ((message as { type?: string }).type === "NOOS_OBSERVATION_CARRIER") {
+          resolve({ carrierRef: "browser-tab:11" });
+          return;
+        }
+        let settled = false;
+        const complete = (response: unknown) => {
+          if (!settled) {
+            settled = true;
+            resolve(response);
+          }
+        };
+        const listener = listeners[0];
+        if (!listener) {
+          complete(undefined);
+          return;
+        }
+        const returned = listener(message, {
+          id: "extension-id",
+          frameId: 0,
+          tab: { id: 11 },
+          url: window.location.href
+        }, complete);
+        if (returned !== true) complete(undefined);
+      });
+      (globalThis as unknown as { realLedgerBacking: Record<string, unknown> }).realLedgerBacking = backing;
+      (globalThis as unknown as { chrome: any }).chrome = {
+        runtime: {
+          id: "extension-id",
+          getURL: (path: string) => `chrome-extension://mock/${path}`,
+          sendMessage,
+          lastError: undefined,
+          onInstalled: { addListener: () => undefined },
+          onMessage: { addListener: (listener: typeof listeners[number]) => {
+            if ((globalThis as any).restartGoalWorker) { listeners[0] = listener; (globalThis as any).restartGoalWorker = false; }
+            else listeners.push(listener);
+          } }
+        },
+        storage: {
+          local: {
+            get: async (key: string) => ({ [key]: backing[key] }),
+            set: async (value: Record<string, unknown>) => Object.assign(backing, value),
+            remove: async () => undefined
+          }
+        },
+        tabs: { sendMessage: async (_tab: number, message: unknown) => new Promise(resolve => {
+          const listener = listeners[1];
+          if (!listener) return resolve({ ok: false });
+          const returned = listener(message, { id: "extension-id" }, resolve);
+          if (returned !== true) resolve({ ok: false });
+        }) },
+        downloads: { download: async () => 1 }
+      };
+    });
+    await page.evaluate(() => {
+      const backing = (globalThis as any).realLedgerBacking;
+      backing.noosWorkItemInbox = { activeWorkItemId: "work-1", workItems: [{
+        workItemId: "work-1", primaryLogicalThreadId: "thread:noos-content-smoke", status: "ACTIVE",
+        goal: "Finish the existing design", scope: "Preserve the agreed boundaries",
+        binding: { conversationId: "noos-content-smoke", carrierRef: "browser-tab:11" }
+      }] };
+      backing.noosGoalReanchors = { "thread:noos-content-smoke": {
+        goal: "Finish the existing design", scope: "Preserve the agreed boundaries",
+        state: { version: 1, logicalThreadId: "thread:noos-content-smoke", experimentalN: 5,
+          designTurnsSinceAnchor: 5, anchorRevision: 0, completedGenerationIds: ["1", "2", "3", "4", "5"], operations: {} }
+      } };
+      const main = document.querySelector("main")!;
+      main.insertAdjacentHTML("beforeend", '<div data-message-author-role="user">previous user</div><div data-message-author-role="assistant">previous assistant</div>');
+      (globalThis as any).anchorDispatches = 0;
+      document.querySelector("button")!.addEventListener("click", () => {
+        (globalThis as any).anchorDispatches++;
+        const text = document.querySelector("#prompt-textarea")!.textContent!;
+        const user = document.createElement("div"); user.dataset.messageAuthorRole = "user"; user.textContent = text; main.append(user);
+        const stop = document.createElement("button"); stop.dataset.testid = "stop-button"; stop.textContent = "Stop"; main.append(stop);
+        setTimeout(() => {
+          stop.remove();
+          const assistant = document.createElement("div"); assistant.dataset.messageAuthorRole = "assistant";
+          assistant.textContent = "Goal and scope re-anchored."; main.append(assistant);
+        }, 200);
+      });
+    });
+    await page.addScriptTag({ content: `(function () {\n${serviceWorkerScript}\n})();` });
+    await page.addScriptTag({ content: contentScript });
+    await expect.poll(() => page.evaluate(() => (globalThis as any).realLedgerBacking.noosSubmissionOperations?.[0]?.operationKind), { timeout: 12000 }).toBe("REANCHOR_GOAL");
+    await expect.poll(() => page.evaluate(() => (globalThis as any).realLedgerBacking.noosGoalReanchors["thread:noos-content-smoke"].state.anchorRevision), { timeout: 15000 }).toBe(1);
+    const result = await page.evaluate(() => ({ count: (globalThis as any).anchorDispatches,
+      operation: (globalThis as any).realLedgerBacking.noosSubmissionOperations[0],
+      anchor: (globalThis as any).realLedgerBacking.noosGoalReanchors["thread:noos-content-smoke"].state }));
+    expect(result.count).toBe(1);
+    expect(result.operation).toMatchObject({ state: "COMPLETED", dispatchReceipt: { outcome: "dispatched" } });
+    expect(result.operation.payload).toContain("Preserve the agreed boundaries");
+    expect(result.anchor.designTurnsSinceAnchor).toBe(0);
+    await page.evaluate(() => { (globalThis as any).restartGoalWorker = true; });
+    await page.addScriptTag({ content: `(function () {\n${serviceWorkerScript}\n})();` });
+    await page.waitForTimeout(2200);
+    expect(await page.evaluate(() => (globalThis as any).anchorDispatches)).toBe(1);
+    await page.close();
+  }, 35000);
+
   it("routes Human GO through the real service-worker ledger and persists its receipt", async () => {
     const page = await newMockChatPage({ startWithHandoffs: false, injectContentScript: false });
     await page.evaluate(() => {

@@ -2579,7 +2579,57 @@ function observeRuntimePage(context: PageContext): CarrierObservation {
   } else if (observation.carrierIdentityState === "browser-tab" && observation.providerConversationRef) {
     void restoreActiveSubmission(observation);
   }
+  void probeGoalReanchor(observation);
   return observation;
+}
+
+let goalProbeInFlight = false;
+let goalProbeAt = 0;
+chrome.runtime?.onMessage?.addListener((message, sender, sendResponse) => {
+  if (message?.type !== "NOOS_DISPATCH_GOAL_REANCHOR") return false;
+  if (sender.id !== chrome.runtime.id) { sendResponse({ ok: false }); return false; }
+  const operation = message.operation;
+  const current = runtimeObservationLedger.value;
+  if (!current || current.state !== "READY" || activeSubmission ||
+    operation?.operationKind !== "REANCHOR_GOAL" || operation.state !== "DISPATCHING" ||
+    !isSubmissionFence(operation.dispatchFence) || typeof operation.payload !== "string" ||
+    operation.dispatchFence.leaseOwnerRef !== current.executionInstanceRef ||
+    operation.dispatchFence.bindingEpoch !== current.sourceEpoch ||
+    operation.dispatchFence.targetCarrierRef !== current.carrierRef ||
+    operation.dispatchFence.providerConversationRef !== current.providerConversationRef) {
+    sendResponse({ ok: false }); return false;
+  }
+  activeSubmission = { operationId: operation.operationId, fence: operation.dispatchFence, claimedAt: operation.dispatchClaimedAt };
+  const composer = getChatComposer();
+  if (!composer || !insertIntoChatInput(operation.payload, composer)) { sendResponse({ ok: false }); return false; }
+  submitChatInput(composer).then(sent => {
+    sendResponse({ ok: sent, observation: {
+      conversationRef: current.providerConversationRef, routeRef: getPageContext().pathname,
+      assistantMessageCount: document.querySelectorAll("[data-message-author-role='assistant']").length,
+      userMessageCount: document.querySelectorAll("[data-message-author-role='user']").length,
+      ...readSubmissionMessageEvidence(), observedAt: Date.now(), sourceEpoch: current.sourceEpoch,
+      generationActive: true, dispatchFence: operation.dispatchFence
+    } });
+  }).catch(() => sendResponse({ ok: false }));
+  return true;
+});
+
+async function probeGoalReanchor(observation: CarrierObservation): Promise<void> {
+  if (goalProbeInFlight || activeSubmission || observation.state !== "READY" ||
+    observation.carrierIdentityState !== "browser-tab" || !observation.providerConversationRef ||
+    Date.now() - goalProbeAt < 1000) return;
+  goalProbeInFlight = true;
+  goalProbeAt = Date.now();
+  try {
+    await sendExtensionMessage({ type: "NOOS_GOAL_REANCHOR_PROBE",
+      context: toHumanGoCarrierSnapshot(observation), baseline: {
+        conversationRef: observation.providerConversationRef, routeRef: observation.routeRef,
+        assistantMessageCount: observation.assistantMessageCount ?? 0, userMessageCount: observation.userMessageCount ?? 0,
+        ...readSubmissionMessageEvidence(), observedAt: observation.observedAt
+      }
+    });
+  } catch { /* The next stable probe retries against durable identity. */ }
+  finally { goalProbeInFlight = false; }
 }
 
 async function restoreActiveSubmission(observation: CarrierObservation): Promise<void> {
