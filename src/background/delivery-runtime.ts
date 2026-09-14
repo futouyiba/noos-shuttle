@@ -185,5 +185,11 @@ async function recoverOnce(
   await deps.deliveries.completeDelivery(resultDeliveryKey({
     parentThreadId: child.parentThreadId, childThreadId: child.childThreadId, resultRef: child.resultRef!
   }), { resultingParentTurnRef: settled.resultingTurnRef }, settled.lastObservedAt).catch(() => undefined);
+  // Lifecycle §7: the delivery closing completes the child's return journey.
+  // State-guarded no-ops for a child already completed or retired.
+  if (child.state === "RESULT_READY") {
+    await deps.children.beginReturn(child.childThreadId, settled.lastObservedAt).catch(() => undefined);
+  }
+  await deps.children.complete(child.childThreadId, settled.lastObservedAt).catch(() => undefined);
   return true;
 }

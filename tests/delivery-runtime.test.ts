@@ -146,6 +146,8 @@ describe("runChildDeliveryProbe", () => {
     const delivery = await deps.deliveries.getDelivery(resultDeliveryKey({ parentThreadId: "pdlt-l1", childThreadId: "child-l2", resultRef: "docs/memory.md" }));
     expect(delivery).toMatchObject({ receiptState: "COMPLETED", deliveredTo: "conv-l1" });
     expect(await deps.deliveries.getWait("pdlt-l1")).toBeUndefined();
+    // Lifecycle §7: the closed delivery completes the child's return journey.
+    expect((await deps.children.get("child-l2"))?.state).toBe("COMPLETED");
   });
 
   it("re-fences a PREPARED transport whose execution instance went stale on the same conversation", async () => {
