@@ -3,6 +3,7 @@ import { ChildWorkerLedger, createChromeChildWorkerStore } from "../src/core/chi
 import { ResultDeliveryLedger, createChromeResultDeliveryStore, resultDeliveryKey } from "../src/core/result-delivery";
 import { SubmissionOperationLedger, createChromeSubmissionStore, fingerprintSubmissionPayload, type SubmissionClaimContext, type SubmissionObservation } from "../src/core/submission-operation";
 import { prepareChildDeliveryTransport } from "../src/core/deliver-child-result";
+import { ProviderExecutionJournal, createChromeExecutionJournalStore } from "../src/core/execution-journal";
 import { runChildDeliveryProbe } from "../src/background/delivery-runtime";
 
 function harness() {
@@ -16,11 +17,15 @@ function harness() {
     deliveries: new ResultDeliveryLedger(createChromeResultDeliveryStore(chromeStorage)),
     submissions: new SubmissionOperationLedger(createChromeSubmissionStore(chromeStorage, { claimViaCoordinator: false }))
   };
+  const journal = new ProviderExecutionJournal(createChromeExecutionJournalStore({
+    get: async (key: string) => ({ [key]: backing[key] }),
+    set: async (value: Record<string, unknown>) => { Object.assign(backing, value); }
+  }));
   const storage = {
     get: async (key: string) => ({ [key]: backing[key] }),
     set: async (value: Record<string, unknown>) => { Object.assign(backing, value); }
   } as unknown as Pick<chrome.storage.StorageArea, "get" | "set">;
-  return { deps, storage, backing };
+  return { deps: { ...deps, journal }, storage, backing, journal };
 }
 
 const WORK_ITEM = {
@@ -170,6 +175,26 @@ await prepareChildDeliveryTransport(deps, { childThreadId: "child-l2", destinati
     const operation = (await deps.submissions.list())[0];
     expect(operation.dispatchFence?.leaseOwnerRef).toBe("obs-1");
     expect(operation.state).toBe("DISPATCHING");
+  });
+
+  it("records dispatch and settlement facts in the execution journal", async () => {
+    const { deps, storage, backing, journal } = harness();
+    backing.noosWorkItemInbox = WORK_ITEM;
+    await seedResultReadyChild(deps);
+    const first = await runChildDeliveryProbe({ context: context(), baseline }, storage, deps, async () => observation());
+    expect(first.dispatched).toBe(1);
+    expect((await journal.list()).map(entry => entry.eventKind)).toEqual(["BLIND_DISPATCH_ATTEMPT", "PROVIDER_ACK"]);
+    const recovered = await runChildDeliveryProbe({
+      context: context(),
+      baseline: { ...baseline, observedAt: Date.now() + 6_000, userMessageCount: 3, lastUserMessageFingerprint: payloadFingerprint }
+    }, storage, deps, async () => { throw new Error("must not redispatch"); });
+    expect(recovered.closed).toBe(1);
+    const kinds = (await journal.list()).map(entry => entry.eventKind);
+    expect(kinds).toEqual(["BLIND_DISPATCH_ATTEMPT", "PROVIDER_ACK", "ACCEPTANCE_OBSERVED", "TURN_COMPLETION_OBSERVED"]);
+    // Every entry is bound to the same operation and fence fingerprint.
+    const entries = await journal.list();
+    expect(new Set(entries.map(entry => entry.operationId)).size).toBe(1);
+    expect(new Set(entries.map(entry => entry.dispatchFenceFingerprint)).size).toBe(1);
   });
 
   it("still mints when a later legitimate message overwrote the acceptance evidence", async () => {

@@ -18,6 +18,7 @@ import { extractProviderConversationId } from "../shared/provider-identity";
 import { runGoalReanchorProbe } from "./goal-reanchor-runtime";
 import { runChildDeliveryProbe } from "./delivery-runtime";
 import { ResultDeliveryLedger, createChromeResultDeliveryStore } from "../core/result-delivery";
+import { ProviderExecutionJournal, createChromeExecutionJournalStore } from "../core/execution-journal";
 import { SubmissionOperationLedger, createChromeSubmissionStore, type SubmissionOperationMutation } from "../core/submission-operation";
 import {
   ChildWorkerLedger,
@@ -71,6 +72,14 @@ function getResultDeliveryLedger(): ResultDeliveryLedger | undefined {
   resultDeliveryLedger ??= new ResultDeliveryLedger(createChromeResultDeliveryStore(storage));
   return resultDeliveryLedger;
 }
+let executionJournal: ProviderExecutionJournal | undefined;
+
+function getExecutionJournal(): ProviderExecutionJournal | undefined {
+  const storage = chrome.storage?.local;
+  if (!storage) return undefined;
+  executionJournal ??= new ProviderExecutionJournal(createChromeExecutionJournalStore(storage));
+  return executionJournal;
+}
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (isWorkItemMessage(message)) {
@@ -117,7 +126,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: false });
       return false;
     }
-    runChildDeliveryProbe(message, chrome.storage.local, { children, deliveries, submissions }, async operation => {
+    runChildDeliveryProbe(message, chrome.storage.local, { children, deliveries, submissions, journal: getExecutionJournal() }, async operation => {
       const result = await chrome.tabs.sendMessage(sender.tab!.id!, { type: "NOOS_DISPATCH_DELIVER_CHILD_RESULT", operation }, { frameId: 0 });
       if (!result?.ok || !isObservation(result.observation)) throw new Error("delivery_dispatch_uncertain");
       return result.observation;

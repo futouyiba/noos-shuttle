@@ -6,6 +6,7 @@ import type {
 } from "../core/submission-operation";
 import type { ChildWorkerLedger, ChildWorkerRecord } from "../core/child-worker";
 import { resultDeliveryKey, type ResultDeliveryLedger } from "../core/result-delivery";
+import type { ProviderExecutionJournal } from "../core/execution-journal";
 import {
   childDeliveryOperationId,
   mintInsertedOnAcceptance,
@@ -43,10 +44,23 @@ const RECOVERY_STATES = new Set(["RESULT_READY", "RETURNING", "COMPLETED"]);
  * the delivery (which clears the parent wait) once the result-bearing turn
  * completes. One blind dispatch per claim; failures park as UNCERTAIN.
  */
+export interface DeliveryRuntimeDependencies extends DeliveryTransportDependencies {
+  /** Optional evidence journal (adjudication §十): facts are recorded as they happen. */
+  journal?: ProviderExecutionJournal;
+}
+
+/** Append one evidence entry; journal failures must never break the flow. */
+async function note(
+  deps: DeliveryRuntimeDependencies,
+  input: Parameters<ProviderExecutionJournal["append"]>[0]
+): Promise<void> {
+  await deps.journal?.append(input).catch(() => undefined);
+}
+
 export function runChildDeliveryProbe(
   probe: ChildDeliveryProbe,
   storage: Pick<chrome.storage.StorageArea, "get" | "set">,
-  deps: DeliveryTransportDependencies,
+  deps: DeliveryRuntimeDependencies,
   dispatch: (operation: SubmissionOperation) => Promise<SubmissionObservation>
 ): Promise<{ status: string; dispatched?: number; closed?: number }> {
   const run = pending.then(async () => {
@@ -85,7 +99,7 @@ export function runChildDeliveryProbe(
 }
 
 async function dispatchOnce(
-  deps: DeliveryTransportDependencies,
+  deps: DeliveryRuntimeDependencies,
   child: ChildWorkerRecord,
   context: SubmissionClaimContext,
   baseline: SubmissionBaseline,
@@ -119,9 +133,22 @@ async function dispatchOnce(
     claimed = await deps.submissions.claim(existing.operationId, context, Date.now());
   }
   if (!claimed) return false;
+  await note(deps, {
+    executionAttemptId: `${claimed.operationId}:attempt:${claimed.dispatchClaimedAt}`,
+    operationId: claimed.operationId,
+    dispatchFence: claimed.dispatchFence!,
+    eventKind: "BLIND_DISPATCH_ATTEMPT"
+  });
   try {
     const observation = await dispatch(claimed);
     const observedAt = observation.observedAt ?? Date.now();
+    await note(deps, {
+      executionAttemptId: `${claimed.operationId}:ack:${observedAt}`,
+      operationId: claimed.operationId,
+      dispatchFence: claimed.dispatchFence!,
+      eventKind: "PROVIDER_ACK",
+      evidence: { observedAt }
+    });
     await deps.submissions.record(claimed.operationId, "DISPATCHING", {
       now: observedAt,
       dispatchReceipt: {
@@ -140,7 +167,7 @@ async function dispatchOnce(
 }
 
 async function recoverOnce(
-  deps: DeliveryTransportDependencies,
+  deps: DeliveryRuntimeDependencies,
   child: ChildWorkerRecord,
   context: SubmissionClaimContext,
   baseline: SubmissionBaseline
@@ -165,6 +192,15 @@ async function recoverOnce(
   }
   const settled = await deps.submissions.get(operationId);
   if (!settled || (settled.state !== "OBSERVED_ACCEPTED" && settled.state !== "COMPLETED") || !settled.providerConversationRef) return false;
+  if (settled.state === "OBSERVED_ACCEPTED" && settled.acceptedPayloadFingerprint) {
+    await note(deps, {
+      executionAttemptId: `${operationId}:accepted:${settled.lastObservedAt}`,
+      operationId,
+      dispatchFence: settled.dispatchFence!,
+      eventKind: "ACCEPTANCE_OBSERVED",
+      evidence: { observedAt: settled.lastObservedAt }
+    });
+  }
   // Non-GO transports do not fingerprint-check acceptance inside the ledger;
   // this runtime tightens it: only the payload's own user message may prove
   // insertion. The stamped proof (recorded when reconciliation first
@@ -183,6 +219,13 @@ async function recoverOnce(
   if (settled.state === "OBSERVED_ACCEPTED") {
     const completed = await deps.submissions.record(operationId, "COMPLETED", { now: settled.lastObservedAt }).catch(() => undefined);
     if (!completed || completed.state !== "COMPLETED") return false;
+    await note(deps, {
+      executionAttemptId: `${operationId}:completed:${completed.lastObservedAt}`,
+      operationId,
+      dispatchFence: settled.dispatchFence!,
+      eventKind: "TURN_COMPLETION_OBSERVED",
+      evidence: { observedAt: completed.lastObservedAt }
+    });
   }
   await deps.deliveries.completeDelivery(resultDeliveryKey({
     parentThreadId: child.parentThreadId, childThreadId: child.childThreadId, resultRef: child.resultRef!
