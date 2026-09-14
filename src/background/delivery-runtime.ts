@@ -179,6 +179,16 @@ async function recoverOnce(
   });
   const operation = await deps.submissions.get(operationId);
   if (!operation) return false;
+  if (operation.state === "FAILED_SAFE" && operation.dispatchFence) {
+    // Proven-not-accepted: re-arm under the current destination with the fresh
+    // probe baseline, mirroring the reanchor runtime — the next probe can then
+    // claim and dispatch again under the same delivery identity.
+    await deps.submissions.rearm(operationId, {
+      ...baseline,
+      conversationRef: context.providerConversationRef
+    }, operation.dispatchFence, baseline.observedAt).catch(() => undefined);
+    return false;
+  }
   if (operation.state === "DISPATCHING" || operation.state === "UNCERTAIN") {
     // Reconcile with the post-dispatch conversation state the probe observes.
     await deps.submissions.reconcile(operationId, {

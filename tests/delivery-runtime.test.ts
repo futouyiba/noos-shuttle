@@ -249,6 +249,39 @@ await prepareChildDeliveryTransport(deps, { childThreadId: "child-l2", destinati
     expect(delivery?.receiptState).toBeUndefined();
   });
 
+  it("re-arms a FAILED_SAFE transport so the next probe can dispatch again", async () => {
+    const { deps, storage, backing } = harness();
+    backing.noosWorkItemInbox = WORK_ITEM;
+    await seedResultReadyChild(deps);
+    // First attempt: ack lost -> UNCERTAIN.
+    await runChildDeliveryProbe({ context: context(), baseline }, storage, deps, async () => { throw new Error("ack lost"); });
+    const operationId = (await deps.submissions.list())[0].operationId;
+    const fence = (await deps.submissions.get(operationId))!.dispatchFence!;
+    // Quiet, unchanged, provider-failing observation proves not accepted.
+    await deps.submissions.reconcile(operationId, {
+      ...baseline, conversationRef: "conv-l1",
+      observedAt: Date.now() + 4_000, sourceEpoch: 3, generationActive: false,
+      providerFailure: true, dispatchFence: fence
+    });
+    expect((await deps.submissions.get(operationId))?.state).toBe("FAILED_SAFE");
+    // The recovery probe re-arms with the fresh baseline (observedAt must be newer).
+    const rearmed = await runChildDeliveryProbe({
+      context: context(),
+      baseline: { ...baseline, observedAt: Date.now() + 5_000 }
+    }, storage, deps, async () => { throw new Error("not yet"); });
+    expect(rearmed.dispatched).toBe(0);
+    expect((await deps.submissions.get(operationId))?.state).toBe("PREPARED");
+    // The next probe claims and dispatches again under the same identity.
+    let dispatches = 0;
+    const second = await runChildDeliveryProbe({
+      context: context(),
+      baseline: { ...baseline, observedAt: Date.now() + 6_000 }
+    }, storage, deps, async () => { dispatches += 1; return observation(); });
+    expect(second.dispatched).toBe(1);
+    expect(dispatches).toBe(1);
+    expect((await deps.submissions.list())).toHaveLength(1);
+  });
+
   it("returns NO_ACTIVE_PARENT when no work item binding matches the carrier", async () => {
     const { deps, storage, backing } = harness();
     backing.noosWorkItemInbox = WORK_ITEM;
