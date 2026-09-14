@@ -89,8 +89,6 @@ export async function prepareChildDeliveryTransport(
     childThreadId: string;
     destination: SubmissionClaimContext;
     baseline: SubmissionBaseline;
-    /** Transport payload; defaults to the result ref. */
-    payload?: string;
     now?: number;
   }
 ): Promise<{ child: ChildWorkerRecord; delivery: ResultDeliveryRecord; operation: SubmissionOperation }> {
@@ -106,7 +104,9 @@ export async function prepareChildDeliveryTransport(
   if (input.destination.logicalThreadId !== child.parentThreadId) {
     throw new Error(`delivery_route_mismatch:${input.destination.logicalThreadId}!=${child.parentThreadId}`);
   }
-  const payload = input.payload ?? resultRef;
+  // The V1 transport payload is the result ref (contract §4 payload_ref); the
+  // mint-side fingerprint check relies on this equality, so no caller override.
+  const payload = resultRef;
   const operation = await deps.submissions.prepare({
     operationId: delivery.submissionOperationId,
     operationKind: "DELIVER_CHILD_RESULT",
