@@ -110,13 +110,15 @@ export class SubmissionOperationLedger {
     await this.store.ensureAuthority(context);
   }
   /**
-   * Re-fence a PREPARED (never claimed) operation after its destination rolled
-   * over: the delivery identity is stable, but the concrete conversation,
-   * carrier, and generations move to the newly authoritative context, and the
-   * pre-submit baseline moves with the new conversation. Guards mirror claim —
-   * valid context, matching durable authority, PREPARED state — plus a
-   * monotonic now. Anything execution-owning or terminal refuses: those states
-   * keep the recovery semantics of recover/rearm instead.
+   * Re-fence a PREPARED (never claimed) or FAILED_SAFE (proven not accepted)
+   * operation after its destination rolled over: the delivery identity is
+   * stable, but the conversation, carrier, generations, and pre-submit baseline
+   * move to the newly authoritative context. Guards mirror claim — valid
+   * context, matching durable authority, retargetable state — plus a monotonic
+   * now. A FAILED_SAFE re-fence is a fresh attempt: claim, receipt, evidence,
+   * stamp, and error clear as the state returns to PREPARED (FAILED_SAFE
+   * already proved the previous attempt was not accepted). Execution-owning
+   * and terminal states refuse: they keep recover/rearm semantics.
    */
   async retarget(operationId: string, context: SubmissionClaimContext, baseline: SubmissionBaseline, now = Date.now()): Promise<SubmissionOperation | undefined> {
     if (!isValidClaimContext(context) || !isBaselineValue(baseline) || !Number.isSafeInteger(now) || now < 0) return undefined;
@@ -125,11 +127,22 @@ export class SubmissionOperationLedger {
     return this.mutate(async records => {
       const authority = this.store.getAuthority ? await this.store.getAuthority() : undefined;
       const operation = records.find(item => item.operationId === operationId);
-      if (!operation || operation.state !== "PREPARED" || !authority || !sameClaimAuthority(authority, context) ||
+      const retargetable = operation?.state === "PREPARED" || operation?.state === "FAILED_SAFE";
+      if (!operation || !retargetable || !authority || !sameClaimAuthority(authority, context) ||
         // The operation never changes logical threads: a context from another
         // thread must not retarget it (mirrors recover's fence check).
         operation.logicalThreadId !== context.logicalThreadId) return { records, result: undefined };
       if (now < operation.lastObservedAt) return { records, result: undefined };
+      if (operation.state === "FAILED_SAFE") {
+        // Fresh-attempt semantics: the not-accepted proof belonged to the old
+        // destination's attempt, not to the delivery identity.
+        operation.state = "PREPARED";
+        operation.dispatchClaimedAt = undefined;
+        operation.dispatchReceipt = undefined;
+        operation.lastReconciliationEvidence = undefined;
+        operation.acceptedPayloadFingerprint = undefined;
+        operation.error = undefined;
+      }
       operation.providerConversationRef = context.providerConversationRef;
       operation.targetCarrierRef = context.targetCarrierRef;
       operation.dispatchFence = {

@@ -287,6 +287,54 @@ await prepareChildDeliveryTransport(deps, { childThreadId: "child-l2", destinati
     expect(kinds).toEqual(["BLIND_DISPATCH_ATTEMPT", "PROVIDER_ACK"]);
   });
 
+  it("escapes a FAILED_SAFE delivery whose destination rolled over before re-arm", async () => {
+    const { deps, storage, backing } = harness();
+    backing.noosWorkItemInbox = WORK_ITEM;
+    await seedResultReadyChild(deps);
+    // Attempt fails safe under the original destination.
+    await runChildDeliveryProbe({ context: context(), baseline }, storage, deps, async () => { throw new Error("ack lost"); });
+    const operationId = (await deps.submissions.list())[0].operationId;
+    const fence = (await deps.submissions.get(operationId))!.dispatchFence!;
+    await deps.submissions.reconcile(operationId, {
+      ...baseline, conversationRef: "conv-l1",
+      observedAt: Date.now() + 4_000, sourceEpoch: 3, generationActive: false,
+      providerFailure: true, dispatchFence: fence
+    });
+    expect((await deps.submissions.get(operationId))?.state).toBe("FAILED_SAFE");
+    // The parent rolled over before the re-arm probe arrived — the work item
+    // binding moved with it (that binding is how the probe resolves the parent).
+    const rolledOver = context({ providerConversationRef: "conv-l9", bindingEpoch: 4, leaseGeneration: 5, leaseOwnerRef: "obs-9", targetCarrierRef: "browser-tab:9", sourceEpoch: 4 });
+    backing.noosWorkItemInbox = {
+      activeWorkItemId: "work-1",
+      workItems: [{ ...WORK_ITEM.workItems[0], binding: { conversationId: "conv-l9", carrierRef: "browser-tab:9" } }]
+    };
+    const escaped = await runChildDeliveryProbe({
+      context: rolledOver,
+      baseline: { ...baseline, routeRef: "/c/conv-l9", observedAt: Date.now() + 5_000 }
+    }, storage, deps, async () => { throw new Error("not yet"); });
+    expect(escaped.dispatched).toBe(0);
+    const rearmed = await deps.submissions.get(operationId);
+    expect(rearmed?.state).toBe("PREPARED");
+    expect(rearmed?.providerConversationRef).toBe("conv-l9");
+    expect(rearmed?.dispatchClaimedAt).toBeUndefined();
+    expect(rearmed?.dispatchReceipt).toBeUndefined();
+    // The next probe dispatches once under the rolled-over destination.
+    let dispatches = 0;
+    const second = await runChildDeliveryProbe({
+      context: rolledOver,
+      baseline: { ...baseline, routeRef: "/c/conv-l9", observedAt: Date.now() + 6_000 }
+    }, storage, deps, async () => {
+      dispatches += 1;
+      return observation({
+        conversationRef: "conv-l9", routeRef: "/c/conv-l9",
+        dispatchFence: { providerConversationRef: "conv-l9", bindingEpoch: 4, leaseGeneration: 5, leaseOwnerRef: "obs-9", targetCarrierRef: "browser-tab:9" }
+      });
+    });
+    expect(second.dispatched).toBe(1);
+    expect(dispatches).toBe(1);
+    expect((await deps.submissions.list())).toHaveLength(1);
+  });
+
   it("returns NO_ACTIVE_PARENT when no work item binding matches the carrier", async () => {
     const { deps, storage, backing } = harness();
     backing.noosWorkItemInbox = WORK_ITEM;

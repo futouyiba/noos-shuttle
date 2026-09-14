@@ -180,13 +180,28 @@ async function recoverOnce(
   const operation = await deps.submissions.get(operationId);
   if (!operation) return false;
   if (operation.state === "FAILED_SAFE" && operation.dispatchFence) {
-    // Proven-not-accepted: re-arm under the current destination with the fresh
-    // probe baseline, mirroring the reanchor runtime — the next probe can then
-    // claim and dispatch again under the same delivery identity.
-    await deps.submissions.rearm(operationId, {
-      ...baseline,
-      conversationRef: context.providerConversationRef
-    }, operation.dispatchFence, baseline.observedAt).catch(() => undefined);
+    const fence = operation.dispatchFence;
+    const fenceIsCurrent = fence.providerConversationRef === context.providerConversationRef &&
+      fence.targetCarrierRef === context.targetCarrierRef &&
+      fence.bindingEpoch === context.bindingEpoch &&
+      fence.leaseGeneration === context.leaseGeneration &&
+      fence.leaseOwnerRef === context.leaseOwnerRef;
+    if (fenceIsCurrent) {
+      // Proven-not-accepted on the same destination: re-arm under the current
+      // fence with the fresh baseline, mirroring the reanchor runtime.
+      await deps.submissions.rearm(operationId, {
+        ...baseline,
+        conversationRef: context.providerConversationRef
+      }, fence, baseline.observedAt).catch(() => undefined);
+    } else {
+      // The destination rolled over before the re-arm probe: re-fence the
+      // failed attempt to the new authority as a fresh attempt. Timestamped
+      // from the probe's fresh observation so the ledger's monotonic fence
+      // (advanced by the failed attempt's reconciliation) holds.
+      await retargetChildDeliveryTransport(deps, {
+        childThreadId: child.childThreadId, destination: context, baseline, now: Math.max(baseline.observedAt, context.sourceObservedAt)
+      }).catch(() => undefined);
+    }
     return false;
   }
   if (operation.state === "DISPATCHING" || operation.state === "UNCERTAIN") {

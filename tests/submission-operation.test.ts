@@ -816,6 +816,38 @@ describe("SubmissionOperationLedger", () => {
     expect(foreign.operation?.acceptedPayloadFingerprint).toBeUndefined();
   });
 
+  it("retargets a FAILED_SAFE operation as a fresh attempt with the claim cleared", async () => {
+    const rolledOver = context("browser-tab:9", "conversation:b", "t1", 4, 200);
+    let currentAuthority = authority(context());
+    const store = {
+      ...memoryStore(),
+      getAuthority: async () => currentAuthority
+    };
+    const ledger = new SubmissionOperationLedger(store);
+    await ledger.prepare({ ...input("fs-1"), now: 10 });
+    await ledger.claim("fs-1", context(), 10);
+    await ledger.record("fs-1", "DISPATCHING", {
+      now: 11, dispatchReceipt: { claimedAt: 10, attemptedAt: 11, outcome: "dispatched", fence: context() }
+    });
+    // Proven not accepted on the old destination.
+    await ledger.reconcile("fs-1", {
+      ...baseline(), conversationRef: "conversation:a",
+      observedAt: 20, sourceEpoch: 0, generationActive: false,
+      providerFailure: true, dispatchFence: context()
+    });
+    expect((await ledger.get("fs-1"))?.state).toBe("FAILED_SAFE");
+    // The destination rolls over: the durable authority advances first.
+    currentAuthority = authority(rolledOver);
+    const retargeted = await ledger.retarget("fs-1", rolledOver, { ...baseline(), routeRef: "route:b", observedAt: 200 }, 50);
+    expect(retargeted).toMatchObject({
+      state: "PREPARED", providerConversationRef: "conversation:b", targetCarrierRef: "browser-tab:9",
+      dispatchClaimedAt: undefined, dispatchReceipt: undefined,
+      lastReconciliationEvidence: undefined, acceptedPayloadFingerprint: undefined, error: undefined
+    });
+    // The fresh attempt claims under the new fence.
+    expect((await ledger.claim("fs-1", rolledOver, 60))?.state).toBe("DISPATCHING");
+  });
+
   it("retarget refuses a context or baseline from another logical thread or conversation", async () => {
     // Cross-thread: the authority moved to another thread's tuple; the
     // operation must not follow it.
