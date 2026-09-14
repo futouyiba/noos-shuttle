@@ -76,7 +76,10 @@ export class ResultDeliveryLedger {
       RESULT_DELIVERIES_KEY, isResultDeliveryRecord,
       records => {
         const existing = records.find(item => item.deliveryKey === deliveryKey);
-        if (existing) return { records, result: existing };
+        if (existing) {
+          if (existing.workItemId !== input.workItemId) throw new Error(`delivery_reuse_conflict:${deliveryKey}`);
+          return { records, result: existing };
+        }
         const now = input.now ?? Date.now();
         const record: ResultDeliveryRecord = {
           deliveryKey,
@@ -214,7 +217,10 @@ export function isResultDeliveryRecord(value: unknown): value is ResultDeliveryR
     (record.deliveredTo === undefined || isNonEmptyString(record.deliveredTo)) &&
     (record.deliveredAt === undefined || isFiniteInteger(record.deliveredAt)) &&
     (record.completionReceipt === undefined || isNonEmptyString(record.completionReceipt)) &&
-    (record.state !== "COMPLETED" || isNonEmptyString(record.completionReceipt));
+    (record.state !== "COMPLETED" ||
+      (isNonEmptyString(record.deliveredTo) && isFiniteInteger(record.deliveredAt) && isNonEmptyString(record.completionReceipt))) &&
+    (record.state !== "INSERTED" ||
+      (record.deliveredTo === undefined && record.deliveredAt === undefined && record.completionReceipt === undefined));
 }
 
 function isParentWaitRecord(value: unknown): value is ParentWaitRecord {

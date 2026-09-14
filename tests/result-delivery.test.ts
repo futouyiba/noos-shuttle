@@ -38,6 +38,21 @@ describe("result delivery", () => {
     await expect(ledger.createDelivery({ ...delivery, childThreadId: "pdlt-l1" })).rejects.toThrow("delivery_input_invalid");
   });
 
+  it("rejects a reuse of the same key under a different work item", async () => {
+    const ledger = new ResultDeliveryLedger(memoryStore());
+    await ledger.createDelivery(delivery);
+    await expect(ledger.createDelivery({ ...delivery, workItemId: "wi-other" })).rejects.toThrow("delivery_reuse_conflict");
+  });
+
+  it("serializes concurrent writes so both deliveries persist", async () => {
+    const ledger = new ResultDeliveryLedger(memoryStore());
+    await Promise.all([
+      ledger.createDelivery({ ...delivery, childThreadId: "child-a" }),
+      ledger.createDelivery({ ...delivery, childThreadId: "child-b" })
+    ]);
+    expect(await ledger.listDeliveries()).toHaveLength(2);
+  });
+
   it("completes a delivery once and records the delivery-time destination", async () => {
     const ledger = new ResultDeliveryLedger(memoryStore());
     await ledger.createDelivery(delivery);
@@ -100,13 +115,22 @@ describe("result delivery persistence", () => {
     const ledger = new ResultDeliveryLedger(store);
     await ledger.createDelivery(delivery);
     expect(await new ResultDeliveryLedger(store).getDelivery("pdlt-l1>child-l3>report-1")).toMatchObject({ state: "INSERTED" });
-    // A COMPLETED record without a receipt is malformed.
+    // A COMPLETED record without a delivery destination is malformed.
     expect(isResultDeliveryRecord({
       ...delivery, deliveryKey: "k", state: "COMPLETED", createdAt: 1, updatedAt: 1
     })).toBe(false);
     expect(isResultDeliveryRecord({
+      ...delivery, deliveryKey: "k", state: "COMPLETED", createdAt: 1, updatedAt: 1,
+      deliveredTo: "conv", deliveredAt: 2, completionReceipt: "r"
+    })).toBe(true);
+    expect(isResultDeliveryRecord({
       ...delivery, deliveryKey: "k", state: "INSERTED", createdAt: 1, updatedAt: 1
     })).toBe(true);
+    // An INSERTED record must not carry delivery fields.
+    expect(isResultDeliveryRecord({
+      ...delivery, deliveryKey: "k", state: "INSERTED", createdAt: 1, updatedAt: 1,
+      deliveredTo: "conv", deliveredAt: 2, completionReceipt: "r"
+    })).toBe(false);
   });
 
   it("ignores corrupted array entries", async () => {
