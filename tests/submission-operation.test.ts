@@ -870,11 +870,15 @@ describe("SubmissionOperationLedger", () => {
         ...baseline(), conversationRef: "conversation:a", userMessageCount: 2,
         observedAt: 20, sourceEpoch: 0, generationActive: false, dispatchFence: context()
       }) },
-      { id: "st-completed", reach: async (ledger: SubmissionOperationLedger, id: string) => ledger.reconcile(id, {
-        ...baseline(), conversationRef: "conversation:a", userMessageCount: 2,
-        lastUserMessageFingerprint: "ce8", observedAt: 20, stableSince: 0, sourceEpoch: 0,
-        generationActive: false, dispatchFence: context()
-      }) }
+      { id: "st-completed", reach: async (ledger: SubmissionOperationLedger, id: string) => {
+        await ledger.reconcile(id, {
+          ...baseline(), conversationRef: "conversation:a", userMessageCount: 2,
+          lastUserMessageFingerprint: "ce8", observedAt: 3_015, stableSince: 12, sourceEpoch: 0,
+          generationActive: false, dispatchFence: context()
+        });
+        await ledger.record(id, "COMPLETED", { now: 3_020 });
+      } },
+      { id: "st-cancelled", reach: async (ledger: SubmissionOperationLedger, id: string) => ledger.record(id, "CANCELLED", { now: 11 }) }
     ] as const) {
       let currentAuthority = authority(context());
       const store = { ...memoryStore(), getAuthority: async () => currentAuthority };
@@ -883,7 +887,7 @@ describe("SubmissionOperationLedger", () => {
       await ledger.claim(setup.id, context(), 10);
       await setup.reach(ledger, setup.id);
       const state = (await ledger.get(setup.id))?.state;
-      expect(["DISPATCHING", "UNCERTAIN", "OBSERVED_ACCEPTED", "COMPLETED"], setup.id).toContain(state);
+      expect(["DISPATCHING", "UNCERTAIN", "OBSERVED_ACCEPTED", "COMPLETED", "CANCELLED"], setup.id).toContain(state);
       currentAuthority = authority(rolledOver);
       expect(await ledger.retarget(setup.id, rolledOver, { ...baseline(), routeRef: "route:b", observedAt: 200 }, 300), setup.id).toBeUndefined();
       expect((await ledger.get(setup.id))?.state, setup.id).toBe(state);
