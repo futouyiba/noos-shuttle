@@ -226,4 +226,85 @@ describe("production goal completion authority", () => {
     expect(anchorOperation.supersededSubmissionOperationIds ?? []).toEqual([]);
     expect(backing.noosGoalReanchors.t.state.anchorRevision).toBe(1);
   });
+
+  it("blocks the anchor while an execution-owning GO holds the carrier, then executes after it completes", async () => {
+    const { backing, storage } = memoryStorage({ noosWorkItemInbox: workItemInbox("c1", "browser-tab:1") });
+    const submissions = new SubmissionOperationLedger(createChromeSubmissionStore(storage, { claimViaCoordinator: false, lock: async work => work() }));
+    const context = claimContext();
+    const base = baseline();
+    // Establish the durable anchor record on the current binding first.
+    await runGoalReanchorProbe({ context, baseline: base }, storage, submissions, async () => { throw new Error("unused"); });
+    // An in-flight GO claims execution on the same carrier and conversation.
+    await submissions.initializeAuthority(context);
+    await submissions.prepare({ operationId: "design-1", operationKind: "GO", workItemId: "w", logicalThreadId: "t",
+      targetCarrierRef: context.targetCarrierRef, providerConversationRef: context.providerConversationRef,
+      dispatchFence: context, payload: "continue", payloadFingerprint: fingerprintSubmissionPayload("continue"),
+      preSubmitBaseline: base, now: 10 });
+    await submissions.claim("design-1", context, 10);
+    // A scope correction makes the anchor eligible regardless of the counter.
+    backing.noosWorkItemInbox.workItems[0].scope = "Scope v2";
+    let dispatched = 0;
+    const dispatch = async () => { dispatched += 1; throw new Error("must not dispatch while blocked"); };
+    const blocked = await runGoalReanchorProbe({ context: claimContext({ sourceObservedAt: 3000 }),
+      baseline: baseline({ observedAt: 3000 }) }, storage, submissions, dispatch);
+    expect(blocked).toMatchObject({ status: "BLOCKED_BY_EXECUTION", blockingOperationId: "design-1" });
+    expect(dispatched).toBe(0);
+    expect(backing.noosGoalReanchors.t.state.operations["reanchor:t:1"]).toMatchObject({ status: "PENDING", trigger: "scope_correction" });
+
+    // The GO completes and no longer holds execution; the pending anchor runs.
+    await submissions.reconcile("design-1", { ...base, assistantMessageCount: 2, userMessageCount: 2,
+      lastAssistantMessageFingerprint: "new", lastUserMessageFingerprint: fingerprintSubmissionPayload("continue"),
+      observedAt: 6010, stableSince: 3000, sourceEpoch: 1, generationActive: false, dispatchFence: context });
+    await submissions.record("design-1", "COMPLETED", { now: 6010 });
+    const dispatchAnchor = async (operation: SubmissionOperation) => {
+      dispatched += 1;
+      return { routeRef: "/c/c1", conversationRef: "c1", assistantMessageCount: 2, userMessageCount: 2,
+        headFingerprint: "h2", observedAt: 8500, sourceEpoch: 1, stableSince: 6500, generationActive: false,
+        lastUserMessageFingerprint: fingerprintSubmissionPayload(operation.payload!),
+        dispatchFence: operation.dispatchFence! };
+    };
+    await runGoalReanchorProbe({ context: claimContext({ sourceObservedAt: 6500 }),
+      baseline: baseline({ observedAt: 6500 }) }, storage, submissions, dispatchAnchor);
+    expect(dispatched).toBe(1);
+    expect(backing.noosGoalReanchors.t.state.operations["reanchor:t:1"]).toMatchObject({ status: "COMPLETED", trigger: "scope_correction" });
+    expect(backing.noosGoalReanchors.t.state.anchorRevision).toBe(1);
+  });
+
+  it("closes the anchor cycle when the pending transport is completed by external reconciliation", async () => {
+    const { backing, storage } = memoryStorage({
+      noosWorkItemInbox: workItemInbox("c1", "browser-tab:1"),
+      noosGoalReanchors: { t: anchorSeed(1) }
+    });
+    const submissions = new SubmissionOperationLedger(createChromeSubmissionStore(storage, { claimViaCoordinator: false, lock: async work => work() }));
+    const context = claimContext();
+    const base = baseline();
+    await completePrimaryGo(submissions, context, base);
+    let dispatched = 0;
+    const failing = async () => { dispatched += 1; throw new Error("provider acknowledgement lost"); };
+    await runGoalReanchorProbe({ context: { ...context, sourceObservedAt: 6010 }, baseline: { ...base, observedAt: 6010 } },
+      storage, submissions, failing);
+    expect(dispatched).toBe(1);
+    const submissionId = backing.noosGoalReanchors.t.state.operations["reanchor:t:1"].submissionOperationId!;
+    expect((await submissions.get(submissionId))?.state).toBe("UNCERTAIN");
+
+    // The provider turn actually landed; a later observation (for example from
+    // the content-side recovery path) completes the transport externally.
+    const pending = (await submissions.get(submissionId))!;
+    const externallyCompleted = await submissions.reconcile(submissionId, {
+      routeRef: "/c/c1", conversationRef: "c1", assistantMessageCount: 2, userMessageCount: 2,
+      lastAssistantMessageFingerprint: "new", lastUserMessageFingerprint: fingerprintSubmissionPayload(pending.payload!),
+      headFingerprint: "h2", observedAt: 8010, stableSince: 6010, sourceEpoch: 1, generationActive: false,
+      dispatchFence: pending.dispatchFence });
+    expect(externallyCompleted.outcome).toBe("PROVEN_ACCEPTED");
+    expect((await submissions.record(submissionId, "COMPLETED", { now: 8010 }))?.state).toBe("COMPLETED");
+
+    // The next probe closes the anchor cycle from the durable transport state
+    // without a second dispatch, and the reset counter keeps it idle.
+    const idle = await runGoalReanchorProbe({ context: claimContext({ sourceObservedAt: 9000 }),
+      baseline: baseline({ observedAt: 9000 }) }, storage, submissions, failing);
+    expect(idle).toMatchObject({ status: "IDLE" });
+    expect(dispatched).toBe(1);
+    expect(backing.noosGoalReanchors.t.state).toMatchObject({ anchorRevision: 1, designTurnsSinceAnchor: 0 });
+    expect(backing.noosGoalReanchors.t.state.operations["reanchor:t:1"]).toMatchObject({ status: "COMPLETED" });
+  });
 });
