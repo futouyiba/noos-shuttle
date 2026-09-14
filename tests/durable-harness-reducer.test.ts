@@ -3,22 +3,35 @@ import {
   DurableHarnessReducer,
   HARNESS_REDUCER_KEY,
   createChromeHarnessReducerStore,
+  stateFingerprint,
+  type DeltaApplyRecord,
+  type DeltaAuditRecord,
+  type DurableStateBundle,
   type HarnessReducerStore,
 } from "../src/core/durable-harness-reducer";
 import type { HarnessReducer, HarnessReducerState } from "../src/core/harness-reducer";
 
-function memoryStore(): HarnessReducerStore & { saved: HarnessReducerState[] } {
-  let current: HarnessReducerState | undefined;
-  const saved: HarnessReducerState[] = [];
+function memoryStore(): HarnessReducerStore & { saved: DurableStateBundle[] } {
+  let current: DurableStateBundle | undefined;
+  const saved: DurableStateBundle[] = [];
   return {
     load: async () => current,
-    save: async state => { current = state; saved.push(state); },
+    save: async bundle => { current = bundle; saved.push(bundle); },
     saved
   };
 }
 
 const commit = (logicalThreadId: string, providerConversationRef: string, now = 1) => (reducer: HarnessReducer) =>
   reducer.commitCurrentConversationBinding({ logicalThreadId, providerConversationRef, expected: null, actor: "system", now });
+
+function bundleStore(initial?: DurableStateBundle): HarnessReducerStore & { current: () => DurableStateBundle | undefined } {
+  let current = initial;
+  return {
+    load: async () => current,
+    save: async bundle => { current = bundle; },
+    current: () => current
+  };
+}
 
 describe("durable harness reducer", () => {
   it("persists the post-state before committing it in memory", async () => {
@@ -27,7 +40,7 @@ describe("durable harness reducer", () => {
     const result = await reducer.applyResult(commit("t1", "c1"));
     expect(result.ok).toBe(true);
     expect(store.saved).toHaveLength(1);
-    expect(store.saved[0].bindings.t1).toMatchObject({ providerConversationRef: "c1" });
+    expect(store.saved[0].state?.bindings.t1).toMatchObject({ providerConversationRef: "c1" });
     expect(reducer.getBinding("t1")).toMatchObject({ providerConversationRef: "c1" });
   });
 
@@ -45,7 +58,6 @@ describe("durable harness reducer", () => {
     const store: HarnessReducerStore = { load: async () => undefined, save: async () => { throw new Error("disk_full"); } };
     const reducer = await DurableHarnessReducer.restore(store);
     await expect(reducer.applyResult(commit("t1", "c1"))).rejects.toThrow("disk_full");
-    // Crash-consistency: nothing is acknowledged that is not durable.
     expect(reducer.getBinding("t1")).toBeUndefined();
     expect(reducer.snapshot().bindings).toEqual({});
   });
@@ -60,32 +72,22 @@ describe("durable harness reducer", () => {
 
   it("refuses to restore corrupt persisted state", async () => {
     const store: HarnessReducerStore = {
-      load: async () => ({ bindings: { t1: { logicalThreadId: "t1" } }, leases: {}, operations: {} }),
+      load: async () => ({
+        state: { bindings: { t1: { logicalThreadId: "t1" } }, leases: {}, operations: {} } as unknown as HarnessReducerState,
+        applyResults: [],
+        auditRecords: []
+      }),
       save: async () => undefined
     };
     await expect(DurableHarnessReducer.restore(store)).rejects.toThrow();
   });
 
-  it("serializes concurrent mutations so neither is lost", async () => {
-    const store = memoryStore();
-    const reducer = await DurableHarnessReducer.restore(store);
-    await Promise.all([
-      reducer.applyResult(commit("t1", "c1")),
-      reducer.applyResult(commit("t2", "c2"))
-    ]);
-    expect(store.saved).toHaveLength(2);
-    expect(reducer.getBinding("t1")).toBeDefined();
-    expect(reducer.getBinding("t2")).toBeDefined();
-    expect(store.saved[store.saved.length - 1].bindings).toHaveProperty("t1");
-    expect(store.saved[store.saved.length - 1].bindings).toHaveProperty("t2");
-  });
-
   it("keeps serving mutations after a persistence failure", async () => {
     let failNext = true;
-    const saved: HarnessReducerState[] = [];
+    const saved: DurableStateBundle[] = [];
     const store: HarnessReducerStore = {
       load: async () => undefined,
-      save: async state => { if (failNext) { failNext = false; throw new Error("disk_full"); } saved.push(state); }
+      save: async bundle => { if (failNext) { failNext = false; throw new Error("disk_full"); } saved.push(bundle); }
     };
     const reducer = await DurableHarnessReducer.restore(store);
     await expect(reducer.applyResult(commit("t1", "c1"))).rejects.toThrow("disk_full");
@@ -110,9 +112,150 @@ describe("durable harness reducer", () => {
       set: async (value: Record<string, unknown>) => { Object.assign(backing, value); }
     });
     const reducer = await DurableHarnessReducer.restore(adapter);
-    await reducer.applyResult(commit("t1", "c1"));
+    await reducer.applyDelta({
+      deltaId: "SD-1",
+      deltaFingerprint: "fp-1",
+      reason: "initial binding",
+      mutate: commit("t1", "c1")
+    });
     expect(backing[HARNESS_REDUCER_KEY]).toBeDefined();
     const restarted = await DurableHarnessReducer.restore(adapter);
     expect(restarted.getBinding("t1")).toMatchObject({ providerConversationRef: "c1" });
+  });
+
+  it("serializes concurrent mutations so neither is lost", async () => {
+    const store = memoryStore();
+    const reducer = await DurableHarnessReducer.restore(store);
+    await Promise.all([
+      reducer.applyResult(commit("t1", "c1")),
+      reducer.applyResult(commit("t2", "c2"))
+    ]);
+    expect(store.saved).toHaveLength(2);
+    expect(reducer.getBinding("t1")).toBeDefined();
+    expect(reducer.getBinding("t2")).toBeDefined();
+    expect(store.saved[store.saved.length - 1].state?.bindings).toHaveProperty("t1");
+    expect(store.saved[store.saved.length - 1].state?.bindings).toHaveProperty("t2");
+  });
+});
+
+describe("applyDelta (State Delta + Reducer Contract §2.4, §15)", () => {
+  const delta = {
+    deltaId: "SD-087",
+    deltaFingerprint: "sha256:abc",
+    reason: "rollover to fresh conversation",
+    detail: { actor: "system" }
+  };
+
+  it("applies once, persists the ApplyResult and audit record in the same transaction", async () => {
+    const store = memoryStore();
+    const reducer = await DurableHarnessReducer.restore(store);
+    const outcome = await reducer.applyDelta({ ...delta, mutate: commit("t1", "c1") });
+    expect(outcome.outcome).toBe("applied");
+    if (outcome.outcome !== "applied" && outcome.outcome !== "no_op") throw new Error("unreachable");
+    expect(outcome.record).toMatchObject({ deltaId: "SD-087", outcome: "applied", auditRecordId: "ar:SD-087:1" });
+    expect(outcome.record.fromStateFingerprint).toMatch(/^state:[0-9a-f]+$/);
+    expect(outcome.record.toStateFingerprint).not.toBe(outcome.record.fromStateFingerprint);
+    const audit = reducer.auditTrail();
+    expect(audit).toHaveLength(1);
+    expect(audit[0]).toMatchObject({ auditRecordId: "ar:SD-087:1", deltaId: "SD-087", reason: delta.reason });
+    const last = store.saved[store.saved.length - 1];
+    expect(last.applyResults).toHaveLength(1);
+    expect(last.auditRecords).toHaveLength(1);
+  });
+
+  it("replays the original ApplyResult without re-executing (§15.2)", async () => {
+    const store = memoryStore();
+    const reducer = await DurableHarnessReducer.restore(store);
+    let executions = 0;
+    const mutate = (r: HarnessReducer) => { executions += 1; return commit("t1", "c1")(r); };
+    const first = await reducer.applyDelta({ ...delta, mutate });
+    expect(first.outcome).toBe("applied");
+    const replay = await reducer.applyDelta({ ...delta, mutate });
+    expect(executions).toBe(1);
+    expect(replay).toMatchObject({ outcome: "applied", replayed: true });
+    if (replay.outcome === "applied" || replay.outcome === "no_op") {
+      expect(replay.record).toEqual(first.outcome === "applied" ? (first as { record: DeltaApplyRecord }).record : replay.record);
+    }
+    expect(store.saved).toHaveLength(1);
+  });
+
+  it("rejects a reused deltaId carrying different content (§15.3)", async () => {
+    const store = memoryStore();
+    const reducer = await DurableHarnessReducer.restore(store);
+    await reducer.applyDelta({ ...delta, mutate: commit("t1", "c1") });
+    const tampered = await reducer.applyDelta({ ...delta, deltaFingerprint: "sha256:other", mutate: commit("t2", "c2") });
+    expect(tampered.outcome).toBe("rejected_invariant");
+    expect(reducer.getBinding("t2")).toBeUndefined();
+    // The rejected attempt is audited but never becomes the delta's ApplyResult.
+    expect(reducer.appliedDeltas()).toHaveLength(1);
+    expect(reducer.auditTrail().at(-1)?.reason).toContain("rejected_invariant");
+  });
+
+  it("rejects stale base state via the version/fingerprint token (§11)", async () => {
+    const store = memoryStore();
+    const reducer = await DurableHarnessReducer.restore(store);
+    const base = stateFingerprint(reducer.snapshot());
+    await reducer.applyResult(commit("t0", "c0"));
+    const stale = await reducer.applyDelta({ ...delta, expectedBaseStateFingerprint: base, mutate: commit("t1", "c1") });
+    expect(stale.outcome).toBe("rejected_stale");
+    expect(reducer.getBinding("t1")).toBeUndefined();
+    expect(reducer.appliedDeltas()).toHaveLength(0);
+  });
+
+  it("records rejected_precondition without producing an ApplyResult", async () => {
+    const store = memoryStore();
+    const reducer = await DurableHarnessReducer.restore(store);
+    await reducer.applyResult(commit("t1", "c1"));
+    const rejected = await reducer.applyDelta({ ...delta, mutate: commit("t2", "c1") });
+    expect(rejected).toMatchObject({ outcome: "rejected_precondition", error: { code: "BINDING_REVERSE_CONFLICT" } });
+    expect(reducer.appliedDeltas()).toHaveLength(0);
+    expect(reducer.auditTrail().at(-1)?.reason).toContain("rejected_precondition");
+  });
+
+  it("records a durable no_op receipt without changing the state (§15.4)", async () => {
+    const store = memoryStore();
+    const reducer = await DurableHarnessReducer.restore(store);
+    await reducer.applyResult(commit("t1", "c1"));
+    const before = stateFingerprint(reducer.snapshot());
+    const noOp = await reducer.applyDelta({
+      ...delta,
+      mutate: (r) => ({ ok: true as const, value: "inspected" as const, state: r.snapshot() })
+    });
+    expect(noOp.outcome).toBe("no_op");
+    expect(stateFingerprint(reducer.snapshot())).toBe(before);
+    expect(reducer.appliedDeltas()).toHaveLength(1);
+    expect(reducer.appliedDeltas()[0].outcome).toBe("no_op");
+    const replay = await reducer.applyDelta({ ...delta, mutate: () => { throw new Error("must not re-execute"); } });
+    expect(replay.outcome).toBe("no_op");
+    expect(reducer.auditTrail().at(-1)?.reason).not.toContain("must not");
+  });
+
+  it("does not persist anything when the store save fails mid-delta", async () => {
+    let failNext = true;
+    const saved: DurableStateBundle[] = [];
+    const store: HarnessReducerStore = {
+      load: async () => undefined,
+      save: async bundle => { if (failNext) { failNext = false; throw new Error("disk_full"); } saved.push(bundle); }
+    };
+    const reducer = await DurableHarnessReducer.restore(store);
+    await expect(reducer.applyDelta({ ...delta, mutate: commit("t1", "c1") })).rejects.toThrow("disk_full");
+    expect(reducer.appliedDeltas()).toHaveLength(0);
+    expect(reducer.auditTrail()).toHaveLength(0);
+    expect(reducer.snapshot().bindings).toEqual({});
+    // Retry succeeds cleanly with the same delta identity.
+    const retry = await reducer.applyDelta({ ...delta, mutate: commit("t1", "c1") });
+    expect(retry.outcome).toBe("applied");
+    expect(reducer.appliedDeltas()).toHaveLength(1);
+  });
+
+  it("keeps deltas serializable under concurrency", async () => {
+    const store = memoryStore();
+    const reducer = await DurableHarnessReducer.restore(store);
+    const outcomes = await Promise.all([
+      reducer.applyDelta({ ...delta, deltaId: "SD-1", mutate: commit("t1", "c1") }),
+      reducer.applyDelta({ ...delta, deltaId: "SD-2", mutate: commit("t2", "c2") })
+    ]);
+    expect(outcomes.map(outcome => outcome.outcome).sort()).toEqual(["applied", "applied"]);
+    expect(reducer.appliedDeltas()).toHaveLength(2);
   });
 });

@@ -937,6 +937,7 @@ describe("HarnessReducer", () => {
         expectedDispatchFence: fence,
         targetState: "OBSERVED_ACCEPTED",
         executionEvidenceRef: "journal-entry-1",
+        reason: "provider acceptance observed",
         actor: "worker",
         now: 40,
         ...overrides,
@@ -979,6 +980,7 @@ describe("HarnessReducer", () => {
       expectedDispatchFence: fence,
       targetState: "COMPLETED",
       executionEvidenceRef: "journal-entry-2",
+      reason: "parent turn completed",
       actor: "worker",
       now: 50,
     });
@@ -1024,6 +1026,7 @@ describe("HarnessReducer", () => {
       expectedDispatchFence: fence,
       targetState: "OBSERVED_ACCEPTED",
       executionEvidenceRef: "journal-entry-1",
+      reason: "settlement audit",
       actor: "worker",
       now: 40,
     });
@@ -1036,6 +1039,7 @@ describe("HarnessReducer", () => {
       expectedDispatchFence: { ...fence, leaseGeneration: 2 },
       targetState: "OBSERVED_ACCEPTED",
       executionEvidenceRef: "journal-entry-1",
+      reason: "settlement audit",
       actor: "worker",
       now: 40,
     });
@@ -1048,6 +1052,7 @@ describe("HarnessReducer", () => {
       expectedDispatchFence: fence,
       targetState: "COMPLETED",
       executionEvidenceRef: "journal-entry-1",
+      reason: "settlement audit",
       actor: "worker",
       now: 40,
     });
@@ -1060,6 +1065,7 @@ describe("HarnessReducer", () => {
       expectedDispatchFence: fence,
       targetState: "OBSERVED_ACCEPTED",
       executionEvidenceRef: "  ",
+      reason: "settlement audit",
       actor: "worker",
       now: 40,
     });
@@ -1072,6 +1078,7 @@ describe("HarnessReducer", () => {
       expectedDispatchFence: fence,
       targetState: "OBSERVED_ACCEPTED",
       executionEvidenceRef: "journal-entry-1",
+      reason: "settlement audit",
       actor: "worker",
       now: 29,
     });
@@ -1084,6 +1091,7 @@ describe("HarnessReducer", () => {
       expectedDispatchFence: fence,
       targetState: "OBSERVED_ACCEPTED",
       executionEvidenceRef: "journal-entry-1",
+      reason: "settlement audit",
       actor: "worker",
       now: 40,
     });
@@ -1097,6 +1105,7 @@ describe("HarnessReducer", () => {
       expectedDispatchFence: fence,
       targetState: "OBSERVED_ACCEPTED",
       executionEvidenceRef: "journal-entry-1",
+      reason: "settlement audit",
       actor: "worker",
       now: 40,
     });
@@ -1106,6 +1115,7 @@ describe("HarnessReducer", () => {
       expectedDispatchFence: fence,
       targetState: "COMPLETED",
       executionEvidenceRef: "journal-entry-2",
+      reason: "parent turn completed",
       actor: "worker",
       now: 50,
     });
@@ -1115,6 +1125,7 @@ describe("HarnessReducer", () => {
       expectedDispatchFence: fence,
       targetState: "OBSERVED_ACCEPTED",
       executionEvidenceRef: "journal-entry-3",
+      reason: "reopen attempt must fail",
       actor: "worker",
       now: 60,
     });

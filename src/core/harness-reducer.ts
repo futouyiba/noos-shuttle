@@ -138,6 +138,8 @@ export interface SettleSubmissionDispatchInput {
   targetState: "OBSERVED_ACCEPTED" | "COMPLETED" | "UNCERTAIN" | "FAILED_SAFE" | "CANCELLED";
   /** Journal/evidence ref proving the observed transport fact. */
   executionEvidenceRef: string;
+  /** Durable audit rationale carried on the delta's audit record. */
+  reason: string;
   actor: ReducerActor;
   now: number;
 }
@@ -483,6 +485,10 @@ export class HarnessReducer {
       ["operationId", input.operationId],
       ["executionEvidenceRef", input.executionEvidenceRef],
     );
+    if (identityError) return this.fail("INVALID_MUTATION_INPUT", identityError);
+    if (typeof input.reason !== "string" || input.reason.trim().length === 0) {
+      return this.fail("INVALID_MUTATION_INPUT", "reason is required");
+    }
     if (identityError) return this.fail("INVALID_MUTATION_INPUT", identityError);
     const operation = this.state.operations[input.operationId];
     if (!operation) {
