@@ -55,13 +55,18 @@ export const EXECUTION_JOURNAL_KEY = "noosExecutionJournal";
 /** Deterministic fence fingerprint: same fence → same fingerprint, always. */
 export function dispatchFenceFingerprint(fence: AppendExecutionEventInput["dispatchFence"]): string {
   if (!isFence(fence)) throw new Error("journal_fence_invalid");
-  const normalized = [
+  // JSON encoding is delimiter-safe: free-string fields cannot collide across
+  // different field splits (a " "-joined encoding would fold "x y"+z onto
+  // x+"y z"). Structure mirrors the control-state reducer's DispatchFence
+  // (providerConversationRef, generation pair, owner, carrier) under its
+  // binding/lease epoch naming; the wiring slice owns the field mapping.
+  const normalized = JSON.stringify([
     fence.providerConversationRef,
-    String(fence.bindingEpoch),
-    String(fence.leaseGeneration),
+    fence.bindingEpoch,
+    fence.leaseGeneration,
     fence.leaseOwnerRef,
     fence.targetCarrierRef
-  ].join(" ");
+  ]);
   let hash = 0;
   for (let index = 0; index < normalized.length; index += 1) {
     hash = (hash * 31 + normalized.charCodeAt(index)) >>> 0;

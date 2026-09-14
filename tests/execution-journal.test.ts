@@ -43,6 +43,12 @@ describe("execution journal fingerprint", () => {
     expect(dispatchFenceFingerprint(fence)).toMatch(/^fence:[0-9a-f]+$/);
   });
 
+  it("keeps whitespace-split field collisions apart", () => {
+    const split = dispatchFenceFingerprint({ ...fence, leaseOwnerRef: "x y", targetCarrierRef: "z" });
+    const merged = dispatchFenceFingerprint({ ...fence, leaseOwnerRef: "x", targetCarrierRef: "y z" });
+    expect(split).not.toBe(merged);
+  });
+
   it("rejects a malformed fence", () => {
     expect(() => dispatchFenceFingerprint({ ...fence, bindingEpoch: -1 })).toThrow("journal_fence_invalid");
   });
