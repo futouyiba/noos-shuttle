@@ -142,6 +142,11 @@ describe("result delivery persistence", () => {
     const base = { ...delivery, deliveryKey: "pdlt-l1>child-l3>report-1", createdAt: 1, updatedAt: 1 };
     // A receiptless record must carry no evidence fields.
     expect(isResultDeliveryRecord({ ...base, insertedAt: 2, deliveredTo: "conv" })).toBe(false);
+    expect(isResultDeliveryRecord({
+      ...base, dispatchFence: { providerConversationRef: "c", bindingEpoch: 1, leaseGeneration: 1, leaseOwnerRef: "o", targetCarrierRef: "t" }
+    })).toBe(false);
+    expect(isResultDeliveryRecord({ ...base, insertedMessageRef: "m" })).toBe(false);
+    expect(isResultDeliveryRecord({ ...base, resultingParentTurnRef: "turn" })).toBe(false);
     // INSERTED requires insertion evidence.
     expect(isResultDeliveryRecord({ ...base, receiptState: "INSERTED" })).toBe(false);
     expect(isResultDeliveryRecord({ ...base, receiptState: "INSERTED", insertedAt: 2, deliveredTo: "conv" })).toBe(true);

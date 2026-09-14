@@ -70,7 +70,10 @@ export const PARENT_WAITS_KEY = "noosParentWaits";
 /**
  * Deterministic logical delivery identity (§2.2): which result goes to which
  * parent Logical Thread. The concrete carrier/generation of any physical
- * attempt lives in the transport's DispatchFence, not here.
+ * attempt lives in the transport's DispatchFence, not here. The key carries
+ * childThreadId beyond the contract's two-field example so two children that
+ * mint the same resultRef cannot collide; the transport slice must align this
+ * with the SubmissionOperation's result_id/result_fingerprint identity.
  */
 export function resultDeliveryKey(input: { parentThreadId: string; childThreadId: string; resultRef: string }): string {
   return `${input.parentThreadId}>${input.childThreadId}>${input.resultRef}`;
@@ -122,6 +125,9 @@ export class ResultDeliveryLedger {
    * Mint the INSERTED receipt. Caller obligation: the transport operation has
    * reached OBSERVED_ACCEPTED (directly or by reconciliation). After this
    * exists, replaying the same ResultDeliveryKey must not insert again.
+   * The DispatchFence is recorded when presented; it stays optional here
+   * because the canonical fence lives on the referenced SubmissionOperation
+   * and is reachable via submissionOperationId.
    */
   async recordInserted(
     deliveryKey: string,
@@ -276,7 +282,9 @@ export function isResultDeliveryRecord(value: unknown): value is ResultDeliveryR
     (record.receiptState !== "COMPLETED" ||
       (isFiniteInteger(record.insertedAt) && isNonEmptyString(record.deliveredTo) && isFiniteInteger(record.completedAt))) &&
     (record.receiptState !== undefined ||
-      (record.insertedAt === undefined && record.completedAt === undefined && record.deliveredTo === undefined));
+      (record.insertedAt === undefined && record.completedAt === undefined && record.deliveredTo === undefined &&
+        record.dispatchFence === undefined && record.insertedMessageRef === undefined &&
+        record.resultingParentTurnRef === undefined));
 }
 
 function isRecordedDispatchFence(value: unknown): value is RecordedDispatchFence {

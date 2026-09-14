@@ -24,6 +24,13 @@ export interface ReturnDependencies {
   deliveries: ResultDeliveryLedger;
 }
 
+/**
+ * Call-timing obligation: this convenience input drives the whole projection in
+ * one call, so it must be used only once the result-bearing parent turn has
+ * reached its completion boundary (§12). Clearing the wait earlier would resume
+ * the parent while the turn is still executing; with only insertion evidence,
+ * call deliveries.recordInserted directly and complete later.
+ */
 export interface ReturnChildResultInput {
   childThreadId: string;
   /** Canonical SubmissionOperation(kind=DELIVER_CHILD_RESULT) owning the transport. */
