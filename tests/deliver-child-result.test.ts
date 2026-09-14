@@ -200,18 +200,19 @@ describe("mint INSERTED on acceptance", () => {
       .rejects.toThrow("delivery_payload_mismatch");
   });
 
-  it("does not confuse COMPLETED transport with not-yet-inserted", async () => {
+  it("mints from a transport the generic recovery already completed", async () => {
     const d = deps();
     await readyChild(d);
     await d.submissions.initializeAuthority(destination);
     await prepareChildDeliveryTransport(d, { childThreadId: "child-l2", destination, baseline });
     await d.submissions.claim(deliveryId(), destination, 200);
     await d.submissions.reconcile(deliveryId(), acceptanceObservation());
+    // The content-side recovery completes the operation before the projection
+    // mints; the ledger proves that path went through acceptance, so this mints
+    // instead of wedging the receipt forever.
     await d.submissions.record(deliveryId(), "COMPLETED", { now: 2600 });
-    // The transport moved past acceptance without minting: refuse rather than
-    // back-fill a receipt from a stale window.
-    await expect(mintInsertedOnAcceptance(d, { childThreadId: "child-l2", deliveredTo: "conv-l1c" }))
-      .rejects.toThrow("delivery_not_accepted:COMPLETED");
+    const { delivery } = await mintInsertedOnAcceptance(d, { childThreadId: "child-l2", deliveredTo: "conv-l1c" });
+    expect(delivery.receiptState).toBe("INSERTED");
   });
 });
 

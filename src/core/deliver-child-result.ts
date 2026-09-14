@@ -163,9 +163,12 @@ export async function retargetChildDeliveryTransport(
 
 /**
  * Mint the INSERTED receipt strictly from transport state: the referenced
- * SubmissionOperation must be OBSERVED_ACCEPTED (directly or by
- * reconciliation). Anything else — PREPARED, DISPATCHING, UNCERTAIN, terminal —
- * refuses, so "no safe carrier yet" can never be mistaken for "inserted".
+ * SubmissionOperation must be OBSERVED_ACCEPTED, or COMPLETED — the ledger's
+ * transition discipline proves COMPLETED was reached only through
+ * OBSERVED_ACCEPTED with stable completion evidence, so a completed transport
+ * mints rather than wedging when the generic content recovery completes the
+ * operation before this projection runs. PREPARED, DISPATCHING, and UNCERTAIN
+ * refuse: "no safe carrier yet" can never be mistaken for "inserted".
  */
 export async function mintInsertedOnAcceptance(
   deps: DeliveryTransportDependencies,
@@ -181,7 +184,7 @@ export async function mintInsertedOnAcceptance(
   const submissionOperationId = childDeliveryOperationId({ parentThreadId: child.parentThreadId, childThreadId: child.childThreadId, resultRef });
   const operation = await deps.submissions.get(submissionOperationId);
   if (!operation) throw new Error(`delivery_transport_not_prepared:${submissionOperationId}`);
-  if (operation.state !== "OBSERVED_ACCEPTED") {
+  if (operation.state !== "OBSERVED_ACCEPTED" && operation.state !== "COMPLETED") {
     throw new Error(`delivery_not_accepted:${operation.state}`);
   }
   // The transport must be this child's: even a hash-collided operation id

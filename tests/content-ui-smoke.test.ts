@@ -665,6 +665,135 @@ describe("content script smoke flow", () => {
     await page.close();
   }, 15_000);
 
+  it("delivers a child result through content, worker, ledger and provider DOM", async () => {
+    const page = await newMockChatPage({ startWithHandoffs: false, injectContentScript: false });
+    await page.evaluate(() => {
+      const listeners: Array<(message: unknown, sender: unknown, sendResponse: (response: unknown) => void) => unknown> = [];
+      const backing: Record<string, unknown> = {};
+      const sendMessage = async (message: unknown) => new Promise<unknown>(resolve => {
+        if ((message as { type?: string }).type === "NOOS_OBSERVATION_CARRIER") {
+          resolve({ carrierRef: "browser-tab:11" });
+          return;
+        }
+        let settled = false;
+        const complete = (response: unknown) => {
+          if (!settled) {
+            settled = true;
+            resolve(response);
+          }
+        };
+        const listener = listeners[0];
+        if (!listener) {
+          complete(undefined);
+          return;
+        }
+        const returned = listener(message, {
+          id: "extension-id",
+          frameId: 0,
+          tab: { id: 11 },
+          url: window.location.href
+        }, complete);
+        if (returned !== true) complete(undefined);
+      });
+      (globalThis as unknown as { deliveryBacking: Record<string, unknown> }).deliveryBacking = backing;
+      (globalThis as unknown as { deliverySend: (message: unknown) => Promise<unknown> }).deliverySend = sendMessage;
+      (globalThis as unknown as { chrome: any }).chrome = {
+        runtime: {
+          id: "extension-id",
+          getURL: (path: string) => `chrome-extension://mock/${path}`,
+          sendMessage,
+          lastError: undefined,
+          onInstalled: { addListener: () => undefined },
+          onMessage: { addListener: (listener: typeof listeners[number]) => listeners.push(listener) }
+        },
+        storage: {
+          local: {
+            get: async (key: string) => ({ [key]: backing[key] }),
+            set: async (value: Record<string, unknown>) => Object.assign(backing, value),
+            remove: async () => undefined
+          }
+        },
+        tabs: { sendMessage: async (_tab: number, message: unknown) => new Promise(resolve => {
+          let settled = false;
+          const complete = (response: unknown) => { if (!settled) { settled = true; resolve(response); } };
+          let asyncListener = false;
+          for (const listener of listeners.slice(1)) {
+            try {
+              const returned = listener(message, { id: "extension-id" }, complete);
+              if (returned === true) asyncListener = true;
+            } catch { /* a refusing listener must not break the others */ }
+          }
+          if (!asyncListener) complete({ ok: false });
+        }) },
+        downloads: { download: async () => 1 }
+      };
+    });
+    await page.evaluate(() => {
+      const backing = (globalThis as any).deliveryBacking;
+      backing.noosWorkItemInbox = { activeWorkItemId: "work-1", workItems: [{
+        workItemId: "work-1", primaryLogicalThreadId: "thread:noos-content-smoke", status: "ACTIVE",
+        goal: "Finish the existing design", scope: "Preserve the agreed boundaries",
+        binding: { conversationId: "noos-content-smoke", carrierRef: "browser-tab:11" }
+      }] };
+      backing.noosParentWaits = [{ parentThreadId: "thread:noos-content-smoke", kind: "WAIT_WORKER", childThreadId: "child-l2", since: 1 }];
+      const main = document.querySelector("main")!;
+      main.insertAdjacentHTML("beforeend", '<div data-message-author-role="user">previous user</div><div data-message-author-role="assistant">previous assistant</div>');
+      (globalThis as any).deliveryDispatches = 0;
+      document.querySelector("button")!.addEventListener("click", () => {
+        (globalThis as any).deliveryDispatches++;
+        const text = document.querySelector("#prompt-textarea")!.textContent!;
+        const user = document.createElement("div"); user.dataset.messageAuthorRole = "user"; user.textContent = text; main.append(user);
+        const stop = document.createElement("button"); stop.dataset.testid = "stop-button"; stop.textContent = "Stop"; main.append(stop);
+        setTimeout(() => {
+          stop.remove();
+          const assistant = document.createElement("div"); assistant.dataset.messageAuthorRole = "assistant";
+          assistant.textContent = "Received the child result."; main.append(assistant);
+        }, 200);
+      });
+    });
+    await page.addScriptTag({ content: `(function () {\n${serviceWorkerScript}\n})();` });
+    // Seed a RESULT_READY child for the active work item's thread.
+    const mutate = (mutation: unknown) => page.evaluate(async (m) => {
+      const send = (globalThis as unknown as { deliverySend: (message: unknown) => Promise<unknown> }).deliverySend;
+      return await send({ type: "NOOS_CHILD_MUTATION", mutation: m });
+    }, mutation);
+    const intent = {
+      childThreadId: "child-l2", parentThreadId: "thread:noos-content-smoke", workItemId: "work-1",
+      role: "Sedimentation / Memory Curator", creationMode: "FORKED",
+      operationGoal: "preserve missing durable reasoning", operationScope: "do not continue the main design trajectory",
+      returnRoute: "thread:thread:noos-content-smoke", now: 100
+    };
+    expect(((await mutate({ type: "create_intent", input: intent })) as any).ok).toBe(true);
+    await mutate({ type: "begin_spawn", childThreadId: "child-l2", now: 110 });
+    await mutate({ type: "bind_conversation", childThreadId: "child-l2", binding: { providerConversationRef: "conv-child", carrierRef: "browser-tab:12" }, now: 120 });
+    await mutate({ type: "activate", childThreadId: "child-l2", now: 130 });
+    expect(((await mutate({ type: "record_result", childThreadId: "child-l2", result: { resultRef: "docs/memory.md", completionReceipt: "rcpt-1" }, now: 140 })) as any).result.state).toBe("RESULT_READY");
+
+    await page.addScriptTag({ content: contentScript });
+    await expect.poll(() => page.evaluate(() => (globalThis as any).deliveryBacking.noosSubmissionOperations?.[0]?.operationKind), { timeout: 12000 }).toBe("DELIVER_CHILD_RESULT");
+    await expect.poll(() => page.evaluate(() => (globalThis as any).deliveryBacking.noosResultDeliveries?.[0]?.receiptState), { timeout: 15000 }).toBe("COMPLETED");
+    const result = await page.evaluate(() => ({
+      dispatches: (globalThis as any).deliveryDispatches,
+      operation: (globalThis as any).deliveryBacking.noosSubmissionOperations[0],
+      delivery: (globalThis as any).deliveryBacking.noosResultDeliveries[0],
+      waits: (globalThis as any).deliveryBacking.noosParentWaits ?? []
+    }));
+    expect(result.dispatches).toBe(1);
+    expect(result.operation).toMatchObject({
+      state: "COMPLETED", operationKind: "DELIVER_CHILD_RESULT",
+      logicalThreadId: "thread:noos-content-smoke",
+      dispatchReceipt: { outcome: "dispatched" },
+      payload: "docs/memory.md"
+    });
+    expect(result.delivery).toMatchObject({
+      receiptState: "COMPLETED", deliveredTo: "noos-content-smoke",
+      parentThreadId: "thread:noos-content-smoke", childThreadId: "child-l2", resultRef: "docs/memory.md"
+    });
+    // The parent mechanical wait cleared when the delivery completed.
+    expect(result.waits).toHaveLength(0);
+    await page.close();
+  }, 35000);
+
   it("captures a crystal and saves its key-oriented artifact", async () => {
     const page = await newMockChatPage({ startWithHandoffs: false, startWithCrystals: true });
 

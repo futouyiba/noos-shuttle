@@ -16,6 +16,8 @@ import type { NoosCrystal } from "../core/noos-crystal";
 import type { NoosThread } from "../core/noos-thread";
 import { extractProviderConversationId } from "../shared/provider-identity";
 import { runGoalReanchorProbe } from "./goal-reanchor-runtime";
+import { runChildDeliveryProbe } from "./delivery-runtime";
+import { ResultDeliveryLedger, createChromeResultDeliveryStore } from "../core/result-delivery";
 import { SubmissionOperationLedger, createChromeSubmissionStore, type SubmissionOperationMutation } from "../core/submission-operation";
 import {
   ChildWorkerLedger,
@@ -61,6 +63,14 @@ function getChildWorkerLedger(): ChildWorkerLedger | undefined {
   childWorkerLedger ??= new ChildWorkerLedger(createChromeChildWorkerStore(storage));
   return childWorkerLedger;
 }
+let resultDeliveryLedger: ResultDeliveryLedger | undefined;
+
+function getResultDeliveryLedger(): ResultDeliveryLedger | undefined {
+  const storage = chrome.storage?.local;
+  if (!storage) return undefined;
+  resultDeliveryLedger ??= new ResultDeliveryLedger(createChromeResultDeliveryStore(storage));
+  return resultDeliveryLedger;
+}
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (isWorkItemMessage(message)) {
@@ -91,6 +101,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       await coordinator.record(operation.operationId, "DISPATCHING", { now: result.observation.observedAt,
         dispatchReceipt: { claimedAt: operation.dispatchClaimedAt!, attemptedAt: result.observation.observedAt,
           outcome: "dispatched", fence: operation.dispatchFence! } });
+      return result.observation;
+    }).then(result => sendResponse({ ok: true, result })).catch(error => sendResponse({ ok: false, error: String(error) }));
+    return true;
+  }
+
+  if (message?.type === "NOOS_CHILD_DELIVERY_PROBE") {
+    const submissions = getSubmissionOperationCoordinator();
+    const children = getChildWorkerLedger();
+    const deliveries = getResultDeliveryLedger();
+    if (!submissions || !children || !deliveries || sender.frameId !== 0 || !Number.isSafeInteger(sender.tab?.id) ||
+      !isAllowedProviderSender(sender) || !isClaimContext(message.context) || !isBaseline(message.baseline) ||
+      message.context.targetCarrierRef !== `browser-tab:${sender.tab!.id}` ||
+      message.baseline.conversationRef !== message.context.providerConversationRef) {
+      sendResponse({ ok: false });
+      return false;
+    }
+    runChildDeliveryProbe(message, chrome.storage.local, { children, deliveries, submissions }, async operation => {
+      const result = await chrome.tabs.sendMessage(sender.tab!.id!, { type: "NOOS_DISPATCH_DELIVER_CHILD_RESULT", operation }, { frameId: 0 });
+      if (!result?.ok || !isObservation(result.observation)) throw new Error("delivery_dispatch_uncertain");
       return result.observation;
     }).then(result => sendResponse({ ok: true, result })).catch(error => sendResponse({ ok: false, error: String(error) }));
     return true;
