@@ -10,25 +10,32 @@ class MemoryStore implements GoalReanchorStore {
 
 function evidence(generationId: string, substantive = true, completedAt = 1) {
   return { generationId, role: "design" as const, status: "COMPLETED" as const,
-    substantive, evidenceFingerprint: `evidence:${generationId}`, completedAt };
+    substantive, evidenceFingerprint: `evidence:${generationId}`, completedAt,
+    completionEvidence: { source: "WORKER_RESULT" as const, id: `result:${generationId}`, verified: true as const } };
 }
 
 describe("GoalReanchorLedger", () => {
+  it("rejects self-declared completion without a runtime authority verifier", () => {
+    const ledger = new GoalReanchorLedger({ logicalThreadId: "pdlt-1", experimentalN: 1 });
+    expect(ledger.recordDesignGeneration(evidence("forged")).accepted).toBe(false);
+    const verified = new GoalReanchorLedger({ logicalThreadId: "pdlt-1", experimentalN: 1, verifySubstantive: () => true });
+    expect(verified.recordDesignGeneration({ ...evidence("missing"), completionEvidence: undefined }).accepted).toBe(false);
+  });
   it("increments only substantive completed generations and deduplicates after recovery", () => {
     const store = new MemoryStore();
-    const ledger = new GoalReanchorLedger({ logicalThreadId: "pdlt-1", experimentalN: 2, store });
+    const ledger = new GoalReanchorLedger({ verifySubstantive: value => value.substantive, logicalThreadId: "pdlt-1", experimentalN: 2, store });
     expect(ledger.recordDesignGeneration(evidence("g1")).accepted).toBe(true);
     expect(ledger.recordDesignGeneration(evidence("g1")).duplicate).toBe(true);
     expect(ledger.recordDesignGeneration(evidence("draft", false)).accepted).toBe(false);
     expect(ledger.recordDesignGeneration(evidence("g2")).state.designTurnsSinceAnchor).toBe(2);
 
-    const recovered = new GoalReanchorLedger({ logicalThreadId: "pdlt-1", experimentalN: 2, store });
+    const recovered = new GoalReanchorLedger({ verifySubstantive: value => value.substantive, logicalThreadId: "pdlt-1", experimentalN: 2, store });
     expect(recovered.recordDesignGeneration(evidence("g2")).duplicate).toBe(true);
     expect(recovered.state.designTurnsSinceAnchor).toBe(2);
   });
 
   it("raises one experimental-N operation and does not reset before completion", () => {
-    const ledger = new GoalReanchorLedger({ logicalThreadId: "pdlt-1", experimentalN: 2, now: () => 10 });
+    const ledger = new GoalReanchorLedger({ verifySubstantive: value => value.substantive, logicalThreadId: "pdlt-1", experimentalN: 2, now: () => 10 });
     ledger.recordDesignGeneration(evidence("g1"));
     expect(ledger.requestReanchor("experimental_n", "anchor-1").eligible).toBe(false);
     ledger.recordDesignGeneration(evidence("g2", true, 2));
@@ -47,14 +54,14 @@ describe("GoalReanchorLedger", () => {
   it.each(["compaction", "rollover", "review_return", "sedimentation_return", "scope_correction"] as const)(
     "raises immediately for lifecycle event %s",
     event => {
-      const ledger = new GoalReanchorLedger({ logicalThreadId: "pdlt-1", experimentalN: 99 });
+      const ledger = new GoalReanchorLedger({ verifySubstantive: value => value.substantive, logicalThreadId: "pdlt-1", experimentalN: 99 });
       const result = ledger.onLifecycleEvent(event, `operation-${event}`);
       expect(result).toMatchObject({ eligible: true, created: true });
     }
   );
 
   it("deduplicates different event signals while one anchor is pending", () => {
-    const ledger = new GoalReanchorLedger({ logicalThreadId: "pdlt-1", experimentalN: 3 });
+    const ledger = new GoalReanchorLedger({ verifySubstantive: value => value.substantive, logicalThreadId: "pdlt-1", experimentalN: 3 });
     const first = ledger.onLifecycleEvent("compaction", "anchor-compaction");
     const second = ledger.onLifecycleEvent("rollover", "anchor-rollover");
     expect(first.operation?.operationId).toBe("anchor-compaction");
@@ -65,11 +72,11 @@ describe("GoalReanchorLedger", () => {
 
   it("recovers a pending operation and resets only once after completion", () => {
     const store = new MemoryStore();
-    const ledger = new GoalReanchorLedger({ logicalThreadId: "pdlt-1", experimentalN: 1, store });
+    const ledger = new GoalReanchorLedger({ verifySubstantive: value => value.substantive, logicalThreadId: "pdlt-1", experimentalN: 1, store });
     ledger.recordDesignGeneration(evidence("g1"));
     ledger.requestReanchor("experimental_n", "anchor-1", 10);
 
-    const recovered = new GoalReanchorLedger({ logicalThreadId: "pdlt-1", experimentalN: 1, store });
+    const recovered = new GoalReanchorLedger({ verifySubstantive: value => value.substantive, logicalThreadId: "pdlt-1", experimentalN: 1, store });
     expect(recovered.requestReanchor("experimental_n", "retry-with-same-id", 11)).toMatchObject({
       created: false,
       operation: { operationId: "anchor-1", status: "PENDING" }
@@ -80,13 +87,13 @@ describe("GoalReanchorLedger", () => {
   });
 
   it("rejects malformed or incomplete durable state", () => {
-    expect(() => new GoalReanchorLedger({
+    expect(() => new GoalReanchorLedger({ verifySubstantive: value => value.substantive,
       logicalThreadId: "pdlt-1",
       experimentalN: 2,
       initialState: { version: 1, logicalThreadId: "pdlt-1", designTurnsSinceAnchor: -1, anchorRevision: 0, experimentalN: 2, completedGenerationIds: [], operations: {} }
     })).toThrow(/counter/);
-    expect(() => new GoalReanchorLedger({ logicalThreadId: "pdlt-1", experimentalN: 0 })).toThrow(/experimentalN/);
-    expect(() => new GoalReanchorLedger({
+    expect(() => new GoalReanchorLedger({ verifySubstantive: value => value.substantive, logicalThreadId: "pdlt-1", experimentalN: 0 })).toThrow(/experimentalN/);
+    expect(() => new GoalReanchorLedger({ verifySubstantive: value => value.substantive,
       logicalThreadId: "pdlt-1", experimentalN: 2,
       initialState: {
         version: 1, logicalThreadId: "pdlt-1", designTurnsSinceAnchor: 0, anchorRevision: 1,
@@ -97,7 +104,7 @@ describe("GoalReanchorLedger", () => {
         }
       }
     })).toThrow(/stale/);
-    expect(() => new GoalReanchorLedger({
+    expect(() => new GoalReanchorLedger({ verifySubstantive: value => value.substantive,
       logicalThreadId: "pdlt-1", experimentalN: 2,
       initialState: {
         version: 1, logicalThreadId: "pdlt-1", designTurnsSinceAnchor: 0, anchorRevision: 1,
@@ -111,17 +118,18 @@ describe("GoalReanchorLedger", () => {
   });
 
   it("requires completed evidence and retains deduplication beyond the in-memory window", () => {
-    const ledger = new GoalReanchorLedger({ logicalThreadId: "pdlt-1", experimentalN: 999 });
+    const ledger = new GoalReanchorLedger({ verifySubstantive: value => value.substantive, logicalThreadId: "pdlt-1", experimentalN: 999 });
     for (let index = 0; index < 300; index += 1) {
       expect(ledger.recordDesignGeneration({
         generationId: `g-${index}`, role: "design", status: "COMPLETED", substantive: true,
-        evidenceFingerprint: `e-${index}`, completedAt: index + 1
+        evidenceFingerprint: `e-${index}`, completedAt: index + 1,
+        completionEvidence: { source: "WORKER_RESULT", id: `result:g-${index}`, verified: true }
       }).accepted).toBe(true);
     }
     expect(ledger.recordDesignGeneration(evidence("g-0")).duplicate).toBe(true);
     expect(() => ledger.recordDesignGeneration({
       generationId: "bad", role: "design", status: "COMPLETED", substantive: true,
-      evidenceFingerprint: "", completedAt: 1
+      evidenceFingerprint: "", completedAt: 1, completionEvidence: { source: "WORKER_RESULT", id: "r", verified: true }
     })).toThrow(/evidenceFingerprint/);
   });
 
@@ -132,7 +140,7 @@ describe("GoalReanchorLedger", () => {
       set: async (next: Record<string, unknown>) => { value = next; }
     };
     const submissionLedger = new SubmissionOperationLedger(store);
-    const ledger = new GoalReanchorLedger({ logicalThreadId: "pdlt-1", experimentalN: 1 });
+    const ledger = new GoalReanchorLedger({ verifySubstantive: value => value.substantive, logicalThreadId: "pdlt-1", experimentalN: 1 });
     ledger.recordDesignGeneration(evidence("g1"));
     const result = await ledger.executeReanchor("experimental_n", "anchor-1", {
       carrierState: "READY", logicalControl: "CONTINUE", targetCarrierRef: "tab-1",

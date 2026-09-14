@@ -96,7 +96,7 @@ export interface GoalReanchorLedgerOptions {
   store?: GoalReanchorStore;
   initialState?: GoalReanchorState;
   now?: () => number;
-  /** Runtime supplied authority verifier; when present the caller boolean is ignored. */
+  /** Runtime supplied authority verifier. Missing authority fails closed; caller flags are never authority. */
   verifySubstantive?: (evidence: DesignGenerationEvidence) => boolean;
 }
 
@@ -104,7 +104,7 @@ export class GoalReanchorLedger {
   private readonly logicalThreadId: string;
   private readonly store?: GoalReanchorStore;
   private readonly now: () => number;
-  private readonly verifySubstantive?: (evidence: DesignGenerationEvidence) => boolean;
+  private readonly verifySubstantive: (evidence: DesignGenerationEvidence) => boolean;
   private current: GoalReanchorState;
 
   constructor(options: GoalReanchorLedgerOptions) {
@@ -113,7 +113,7 @@ export class GoalReanchorLedger {
     this.logicalThreadId = options.logicalThreadId;
     this.store = options.store;
     this.now = options.now ?? Date.now;
-    this.verifySubstantive = options.verifySubstantive;
+    this.verifySubstantive = options.verifySubstantive ?? (() => false);
     this.current = normalizeState(options.store?.load() ?? options.initialState, options.logicalThreadId, options.experimentalN);
     this.persist();
   }
@@ -131,7 +131,7 @@ export class GoalReanchorLedger {
     validateGenerationEvidence(evidence);
     // The legacy boolean is only a hint; advancement requires an authority-backed
     // completion projection from the runtime.
-    if (!(this.verifySubstantive ? this.verifySubstantive(evidence) : evidence.substantive)) {
+    if (!evidence.completionEvidence || !this.verifySubstantive(evidence)) {
       return { accepted: false, duplicate: false, state: this.state };
     }
     if (this.current.completedGenerationIds.includes(evidence.generationId)) {
