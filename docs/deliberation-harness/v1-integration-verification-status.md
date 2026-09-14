@@ -38,7 +38,7 @@
 | W5 content-side delivery wiring | `d1f1e10`, `447e6ac` | APPROVE after fix (re-review passed; one fail-closed evidence-overwrite residual recorded) |
 | W6 child lifecycle closure on delivery | `23aa40c` | APPROVE |
 | W7 durable acceptance stamp | `08ef188`, `0c10be6` | APPROVE ×2 (residual closed, re-arm clears stamp) |
-| W8 execution journal in delivery runtime | `cc645c2` | in review |
+| W8 execution journal in delivery runtime | `cc645c2`, `da7f30c` | APPROVE after notes |
 
 ## 3. Verification evidence (current)
 
