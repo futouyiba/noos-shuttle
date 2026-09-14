@@ -1,21 +1,23 @@
 /**
- * Composes the child worker lifecycle with durable result delivery into the
- * RETURNING path (§11-§13, §15).
+ * Composes the child worker lifecycle with the adjudicated delivery model
+ * (lifecycle §§11-15 + child-result-delivery-idempotency-contract v0).
  *
- * A child that reached RESULT_READY routes its result to the parent Logical
- * Thread; only after that delivery completes is the child marked COMPLETED.
- * Routing is by parent thread with the destination resolved at delivery time,
- * so it stays correct across parent rollover, and delivery is not semantic
- * acceptance. Retrying is idempotent: the delivery is create-or-get and each
- * child transition is guarded by the current state.
+ * The canonical transport is the caller's SubmissionOperation
+ * (kind=DELIVER_CHILD_RESULT); this module drives the projection: create-or-get
+ * the ResultDeliveryKey index, mint the INSERTED receipt only once the caller
+ * presents OBSERVED_ACCEPTED evidence, complete the child, and mint COMPLETED
+ * (which clears the parent mechanical wait). Waiting for a safe carrier leaves
+ * an index row without a receipt — PREPARED != INSERTED. Retrying is
+ * idempotent: the delivery is create-or-get and each child transition is
+ * state-guarded.
  *
  * One return orchestrator per child is assumed. Two concurrent returns are
  * fail-safe — the loser gets a child transition conflict (its retry then takes
- * the idempotent path) — but the two ledgers are not jointly atomic.
+ * the idempotent path) — but the ledgers are not jointly atomic.
  */
 
 import { ChildWorkerLedger, type ChildWorkerRecord } from "./child-worker";
-import { ResultDeliveryLedger, type ResultDeliveryRecord } from "./result-delivery";
+import { ResultDeliveryLedger, type ResultDeliveryRecord, type RecordedDispatchFence } from "./result-delivery";
 
 export interface ReturnDependencies {
   children: ChildWorkerLedger;
@@ -24,12 +26,17 @@ export interface ReturnDependencies {
 
 export interface ReturnChildResultInput {
   childThreadId: string;
+  /** Canonical SubmissionOperation(kind=DELIVER_CHILD_RESULT) owning the transport. */
+  submissionOperationId: string;
   /**
-   * Parent provider conversation ref resolved at delivery time (§11). Routing is
-   * by parent Logical Thread, so the caller must resolve this from the canonical
-   * binding — never from a raw tabId. This layer records it as given.
+   * Provider conversation ref proven by the transport's OBSERVED_ACCEPTED
+   * evidence. Resolved by the caller from the canonical binding at dispatch
+   * time — never from a raw tabId. This layer records it as given.
    */
   deliveredTo: string;
+  dispatchFence?: RecordedDispatchFence;
+  insertedMessageRef?: string;
+  resultingParentTurnRef?: string;
   now?: number;
 }
 
@@ -52,10 +59,12 @@ export async function returnChildResult(
   if (!child) throw new Error(`child_thread_not_found:${input.childThreadId}`);
   if (!RETURNABLE_STATES.has(child.state)) throw new Error(`child_not_returnable:${child.state}`);
   const resultRef = child.resultRef;
-  const completionReceipt = child.completionReceipt;
-  if (!resultRef || !completionReceipt) throw new Error("child_result_not_ready");
+  if (!resultRef || !child.completionReceipt) throw new Error("child_result_not_ready");
 
-  const delivery = await deps.deliveries.createDelivery({
+  // Logical delivery index — safe to create before any transport progress; it
+  // mints no receipt, so a PREPARED transport is not mistaken for INSERTED.
+  let delivery = await deps.deliveries.createDelivery({
+    submissionOperationId: input.submissionOperationId,
     parentThreadId: child.parentThreadId,
     childThreadId: child.childThreadId,
     workItemId: child.workItemId,
@@ -66,12 +75,18 @@ export async function returnChildResult(
   if (child.state === "RESULT_READY") {
     child = await deps.children.beginReturn(child.childThreadId, now);
   }
-  const completed = await deps.deliveries.completeDelivery(delivery.deliveryKey, {
+  // INSERTED: only on OBSERVED_ACCEPTED evidence; replay never re-inserts.
+  delivery = await deps.deliveries.recordInserted(delivery.deliveryKey, {
     deliveredTo: input.deliveredTo,
-    completionReceipt
+    dispatchFence: input.dispatchFence,
+    insertedMessageRef: input.insertedMessageRef
   }, now);
   if (child.state === "RETURNING") {
     child = await deps.children.complete(child.childThreadId, now);
   }
+  // COMPLETED: the result-bearing parent turn finished; clears the mechanical wait.
+  const completed = await deps.deliveries.completeDelivery(delivery.deliveryKey, {
+    resultingParentTurnRef: input.resultingParentTurnRef
+  }, now);
   return { child, delivery: completed };
 }

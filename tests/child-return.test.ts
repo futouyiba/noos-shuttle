@@ -4,7 +4,7 @@ import { ResultDeliveryLedger, createChromeResultDeliveryStore, resultDeliveryKe
 import { returnChildResult } from "../src/core/child-return";
 
 class ThrowingDelivery extends ResultDeliveryLedger {
-  override async completeDelivery(): Promise<ResultDeliveryRecord> {
+  override async recordInserted(): Promise<ResultDeliveryRecord> {
     throw new Error("transport_failed");
   }
 }
@@ -30,6 +30,7 @@ const intent = {
   operationScope: "do not continue the main design trajectory",
   returnRoute: "thread:pdlt-l1"
 };
+const transport = { submissionOperationId: "deliv-op-1", deliveredTo: "conv-l1c" };
 
 async function readyChild(children: ChildWorkerLedger) {
   await children.createIntent(intent);
@@ -45,11 +46,32 @@ describe("return child result", () => {
     await readyChild(children);
     await deliveries.setWait("pdlt-l1", { kind: "WAIT_WORKER", childThreadId: "child-l2" }, 5);
 
-    const outcome = await returnChildResult({ children, deliveries }, { childThreadId: "child-l2", deliveredTo: "conv-l1c", now: 100 });
+    const outcome = await returnChildResult({ children, deliveries }, { ...transport, childThreadId: "child-l2", now: 100 });
 
     expect(outcome.child.state).toBe("COMPLETED");
-    expect(outcome.delivery).toMatchObject({ state: "COMPLETED", deliveredTo: "conv-l1c", completionReceipt: "rcpt-1" });
+    expect(outcome.delivery).toMatchObject({
+      receiptState: "COMPLETED", submissionOperationId: "deliv-op-1", deliveredTo: "conv-l1c"
+    });
     expect(await deliveries.getWait("pdlt-l1")).toBeUndefined();
+  });
+
+  it("keeps the delivery receiptless while the transport waits for a safe carrier", async () => {
+    const { children, deliveries } = harness();
+    await readyChild(children);
+    // Transport is PREPARED and no carrier has been resolved: the index exists,
+    // but no INSERTED receipt and the child keeps its result.
+    const indexOnly = await deliveries.createDelivery({
+      submissionOperationId: "deliv-op-1", parentThreadId: "pdlt-l1",
+      childThreadId: "child-l2", workItemId: "wi-1", resultRef: "docs/memory.md"
+    });
+    expect(indexOnly.receiptState).toBeUndefined();
+    expect((await children.get("child-l2"))?.state).toBe("RESULT_READY");
+    expect(await deliveries.listDeliveries()).toHaveLength(1);
+
+    // The delivery completes normally once the transport gets its evidence.
+    const outcome = await returnChildResult({ children, deliveries }, { ...transport, childThreadId: "child-l2", now: 100 });
+    expect(outcome.delivery.receiptState).toBe("COMPLETED");
+    expect(await deliveries.listDeliveries()).toHaveLength(1);
   });
 
   it("refuses a child that has not produced a result", async () => {
@@ -58,69 +80,57 @@ describe("return child result", () => {
     await children.beginSpawn("child-l2");
     await children.bindConversation("child-l2", { providerConversationRef: "conv-l2", carrierRef: "browser-tab:7" });
     await children.activate("child-l2");
-    await expect(returnChildResult({ children, deliveries }, { childThreadId: "child-l2", deliveredTo: "conv-l1c" }))
+    await expect(returnChildResult({ children, deliveries }, { ...transport, childThreadId: "child-l2" }))
       .rejects.toThrow("child_not_returnable:ACTIVE");
   });
 
-  it("reports an unknown child", async () => {
+  it("reports an unknown child and rejects an empty destination", async () => {
     const { children, deliveries } = harness();
-    await expect(returnChildResult({ children, deliveries }, { childThreadId: "nope", deliveredTo: "conv" }))
+    await expect(returnChildResult({ children, deliveries }, { ...transport, childThreadId: "nope" }))
       .rejects.toThrow("child_thread_not_found");
-  });
-
-  it("rejects an empty delivery destination", async () => {
-    const { children, deliveries } = harness();
     await readyChild(children);
-    await expect(returnChildResult({ children, deliveries }, { childThreadId: "child-l2", deliveredTo: "  " }))
+    await expect(returnChildResult({ children, deliveries }, { ...transport, childThreadId: "child-l2", deliveredTo: "  " }))
       .rejects.toThrow("return_input_invalid");
   });
 
   it("is idempotent on retry", async () => {
     const { children, deliveries } = harness();
     await readyChild(children);
-    const first = await returnChildResult({ children, deliveries }, { childThreadId: "child-l2", deliveredTo: "conv-l1c", now: 100 });
-    const retry = await returnChildResult({ children, deliveries }, { childThreadId: "child-l2", deliveredTo: "conv-l1c", now: 200 });
+    const first = await returnChildResult({ children, deliveries }, { ...transport, childThreadId: "child-l2", now: 100 });
+    const retry = await returnChildResult({ children, deliveries }, { ...transport, childThreadId: "child-l2", now: 200 });
     expect(retry.child.state).toBe("COMPLETED");
     expect(retry.delivery.deliveryKey).toBe(first.delivery.deliveryKey);
     expect(await deliveries.listDeliveries()).toHaveLength(1);
   });
 
-  it("resumes after the delivery was inserted but the child had not completed", async () => {
-    const { children, deliveries } = harness();
-    await readyChild(children);
-    // A prior attempt got as far as INSERTED + RETURNING before crashing.
-    await deliveries.createDelivery({ parentThreadId: "pdlt-l1", childThreadId: "child-l2", workItemId: "wi-1", resultRef: "docs/memory.md" });
-    await children.beginReturn("child-l2");
-
-    const outcome = await returnChildResult({ children, deliveries }, { childThreadId: "child-l2", deliveredTo: "conv-l1c", now: 300 });
-    expect(outcome.child.state).toBe("COMPLETED");
-    expect(outcome.delivery.state).toBe("COMPLETED");
-    expect(await deliveries.listDeliveries()).toHaveLength(1);
-  });
-
-  it("does not mark the child COMPLETED when the delivery fails (§15 order)", async () => {
-    const { children, chromeStorage } = harness();
+  it("does not mint INSERTED when the transport evidence fails (§15 order)", async () => {
+    const { children, deliveries, chromeStorage } = harness();
     await readyChild(children);
     const throwing = new ThrowingDelivery(createChromeResultDeliveryStore(chromeStorage));
-    await expect(returnChildResult({ children, deliveries: throwing }, { childThreadId: "child-l2", deliveredTo: "conv-l1c" }))
+    await expect(returnChildResult({ children, deliveries: throwing }, { ...transport, childThreadId: "child-l2" }))
       .rejects.toThrow("transport_failed");
-    // The delivery did not complete, so the child must not be COMPLETED.
+    // No insertion evidence, so the child must not be COMPLETED.
     expect((await children.get("child-l2"))?.state).toBe("RETURNING");
+    expect((await deliveries.getDelivery(resultDeliveryKey({ parentThreadId: "pdlt-l1", childThreadId: "child-l2", resultRef: "docs/memory.md" })))?.receiptState).toBeUndefined();
   });
 
-  it("resumes when the delivery completed but the child had not", async () => {
+  it("resumes when the receipt was inserted but the child had not completed", async () => {
     const { children, deliveries } = harness();
     await readyChild(children);
-    await deliveries.createDelivery({ parentThreadId: "pdlt-l1", childThreadId: "child-l2", workItemId: "wi-1", resultRef: "docs/memory.md" });
+    await deliveries.createDelivery({ ...deliveryFields(), submissionOperationId: "deliv-op-1" });
     await children.beginReturn("child-l2");
-    await deliveries.completeDelivery(
+    await deliveries.recordInserted(
       resultDeliveryKey({ parentThreadId: "pdlt-l1", childThreadId: "child-l2", resultRef: "docs/memory.md" }),
-      { deliveredTo: "conv-l1c", completionReceipt: "rcpt-1" }
+      { deliveredTo: "conv-l1c" }
     );
 
-    const outcome = await returnChildResult({ children, deliveries }, { childThreadId: "child-l2", deliveredTo: "conv-l1c", now: 400 });
+    const outcome = await returnChildResult({ children, deliveries }, { ...transport, childThreadId: "child-l2", now: 400 });
     expect(outcome.child.state).toBe("COMPLETED");
-    expect(outcome.delivery).toMatchObject({ state: "COMPLETED", deliveredTo: "conv-l1c" });
+    expect(outcome.delivery).toMatchObject({ receiptState: "COMPLETED", deliveredTo: "conv-l1c" });
     expect(await deliveries.listDeliveries()).toHaveLength(1);
   });
 });
+
+function deliveryFields() {
+  return { parentThreadId: "pdlt-l1", childThreadId: "child-l2", workItemId: "wi-1", resultRef: "docs/memory.md" };
+}

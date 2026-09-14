@@ -1,28 +1,46 @@
 /**
- * Durable child-result delivery.
- * Routes a child's result to the parent Logical Thread (never a raw tab), with
- * a deterministic ResultDeliveryKey so delivery is create-or-get idempotent.
- * INSERTED is persisted before transport; COMPLETED is recorded only after the
- * result reached the parent, and clears the parent's mechanical wait.
- * See docs: Primary Design + Child Worker Lifecycle v0 §§10-13, 16.
+ * ResultDeliveryKey index + durable ResultDeliveryReceipt projection.
+ *
+ * The canonical transport lifecycle for a child result is the
+ * SubmissionOperation(kind=DELIVER_CHILD_RESULT); this ledger owns only the
+ * logical delivery identity and the recipient-side receipt (child-result-
+ * delivery-idempotency-contract v0 §1-§4, §8-§9, §12, §14). Every record
+ * references the owning SubmissionOperation; a receipt is minted only when the
+ * transport reaches OBSERVED_ACCEPTED (INSERTED) and the resulting parent turn
+ * completes (COMPLETED). A delivery waiting for a safe carrier has an index
+ * row and NO receipt: PREPARED != UNCERTAIN != INSERTED. Clearing the parent
+ * mechanical wait on COMPLETED is not semantic acceptance (§14).
  */
 
-export type ResultDeliveryState = "INSERTED" | "COMPLETED";
+export type ResultDeliveryReceiptState = "INSERTED" | "COMPLETED";
 export type ParentWaitKind = "WAIT_REVIEW" | "WAIT_WORKER";
+
+export interface RecordedDispatchFence {
+  providerConversationRef: string;
+  bindingEpoch: number;
+  leaseGeneration: number;
+  leaseOwnerRef: string;
+  targetCarrierRef: string;
+}
 
 export interface ResultDeliveryRecord {
   deliveryKey: string;
+  /** Canonical transport owner: SubmissionOperation(kind=DELIVER_CHILD_RESULT). */
+  submissionOperationId: string;
   parentThreadId: string;
   childThreadId: string;
   workItemId: string;
   resultRef: string;
-  state: ResultDeliveryState;
+  /** Absent until the transport is OBSERVED_ACCEPTED — waiting is not inserted. */
+  receiptState?: ResultDeliveryReceiptState;
+  dispatchFence?: RecordedDispatchFence;
+  deliveredTo?: string;
+  insertedMessageRef?: string;
+  resultingParentTurnRef?: string;
+  insertedAt?: number;
+  completedAt?: number;
   createdAt: number;
   updatedAt: number;
-  /** Provider conversation the result was handed to, resolved at delivery time (§11). */
-  deliveredTo?: string;
-  deliveredAt?: number;
-  completionReceipt?: string;
 }
 
 export interface ParentWaitRecord {
@@ -33,6 +51,7 @@ export interface ParentWaitRecord {
 }
 
 export interface CreateDeliveryInput {
+  submissionOperationId: string;
   parentThreadId: string;
   childThreadId: string;
   workItemId: string;
@@ -49,8 +68,9 @@ export const RESULT_DELIVERIES_KEY = "noosResultDeliveries";
 export const PARENT_WAITS_KEY = "noosParentWaits";
 
 /**
- * Deterministic ResultDeliveryKey. One result from one child to one parent is
- * exactly one delivery, however many times the return path is retried (§11).
+ * Deterministic logical delivery identity (§2.2): which result goes to which
+ * parent Logical Thread. The concrete carrier/generation of any physical
+ * attempt lives in the transport's DispatchFence, not here.
  */
 export function resultDeliveryKey(input: { parentThreadId: string; childThreadId: string; resultRef: string }): string {
   return `${input.parentThreadId}>${input.childThreadId}>${input.resultRef}`;
@@ -68,7 +88,7 @@ export class ResultDeliveryLedger {
     return (await this.listDeliveries()).find(item => item.deliveryKey === deliveryKey);
   }
 
-  /** Idempotent: re-issuing the same delivery returns the existing record. */
+  /** Idempotent create-or-get. Mints no receipt: the transport may still be PREPARED. */
   async createDelivery(input: CreateDeliveryInput): Promise<ResultDeliveryRecord> {
     if (!isCreateDeliveryInput(input)) throw new Error("delivery_input_invalid");
     const deliveryKey = resultDeliveryKey(input);
@@ -77,17 +97,19 @@ export class ResultDeliveryLedger {
       records => {
         const existing = records.find(item => item.deliveryKey === deliveryKey);
         if (existing) {
-          if (existing.workItemId !== input.workItemId) throw new Error(`delivery_reuse_conflict:${deliveryKey}`);
+          if (existing.submissionOperationId !== input.submissionOperationId || existing.workItemId !== input.workItemId) {
+            throw new Error(`delivery_reuse_conflict:${deliveryKey}`);
+          }
           return { records, result: existing };
         }
         const now = input.now ?? Date.now();
         const record: ResultDeliveryRecord = {
           deliveryKey,
+          submissionOperationId: input.submissionOperationId,
           parentThreadId: input.parentThreadId,
           childThreadId: input.childThreadId,
           workItemId: input.workItemId,
           resultRef: input.resultRef,
-          state: "INSERTED",
           createdAt: now,
           updatedAt: now
         };
@@ -97,31 +119,57 @@ export class ResultDeliveryLedger {
   }
 
   /**
-   * INSERTED → COMPLETED after the result reached the parent, then clear the
-   * parent's mechanical wait. Delivering is not semantic acceptance (§12), so
-   * the parent wait is only cleared when it still names this child.
+   * Mint the INSERTED receipt. Caller obligation: the transport operation has
+   * reached OBSERVED_ACCEPTED (directly or by reconciliation). After this
+   * exists, replaying the same ResultDeliveryKey must not insert again.
    */
-  async completeDelivery(
+  async recordInserted(
     deliveryKey: string,
-    receipt: { deliveredTo: string; completionReceipt: string },
+    evidence: { deliveredTo: string; dispatchFence?: RecordedDispatchFence; insertedMessageRef?: string },
     now = Date.now()
   ): Promise<ResultDeliveryRecord> {
-    if (!isNonEmptyString(receipt.deliveredTo) || !isNonEmptyString(receipt.completionReceipt)) {
-      throw new Error("delivery_receipt_invalid");
-    }
+    if (!isNonEmptyString(evidence.deliveredTo)) throw new Error("delivery_receipt_invalid");
+    return this.mutate<ResultDeliveryRecord, ResultDeliveryRecord>(
+      RESULT_DELIVERIES_KEY, isResultDeliveryRecord,
+      records => {
+        const index = records.findIndex(item => item.deliveryKey === deliveryKey);
+        if (index === -1) throw new Error(`delivery_not_found:${deliveryKey}`);
+        const current = records[index];
+        if (current.receiptState) return { records, result: current };
+        const record: ResultDeliveryRecord = {
+          ...current,
+          receiptState: "INSERTED",
+          deliveredTo: evidence.deliveredTo,
+          dispatchFence: evidence.dispatchFence ? { ...evidence.dispatchFence } : current.dispatchFence,
+          insertedMessageRef: evidence.insertedMessageRef ?? current.insertedMessageRef,
+          insertedAt: now,
+          updatedAt: now
+        };
+        const nextRecords = records.slice();
+        nextRecords[index] = record;
+        return { records: nextRecords, result: record };
+      }
+    );
+  }
+
+  /**
+   * INSERTED → COMPLETED when the result-bearing parent turn finishes, then
+   * clear the parent mechanical wait. Completion is not semantic acceptance.
+   */
+  async completeDelivery(deliveryKey: string, input: { resultingParentTurnRef?: string } = {}, now = Date.now()): Promise<ResultDeliveryRecord> {
     const completed = await this.mutate<ResultDeliveryRecord, ResultDeliveryRecord>(
       RESULT_DELIVERIES_KEY, isResultDeliveryRecord,
       records => {
         const index = records.findIndex(item => item.deliveryKey === deliveryKey);
         if (index === -1) throw new Error(`delivery_not_found:${deliveryKey}`);
         const current = records[index];
-        if (current.state === "COMPLETED") return { records, result: current };
+        if (current.receiptState === "COMPLETED") return { records, result: current };
+        if (current.receiptState !== "INSERTED") throw new Error(`delivery_not_inserted:${deliveryKey}`);
         const record: ResultDeliveryRecord = {
           ...current,
-          state: "COMPLETED",
-          deliveredTo: receipt.deliveredTo,
-          deliveredAt: now,
-          completionReceipt: receipt.completionReceipt,
+          receiptState: "COMPLETED",
+          resultingParentTurnRef: input.resultingParentTurnRef ?? current.resultingParentTurnRef,
+          completedAt: now,
           updatedAt: now
         };
         const nextRecords = records.slice();
@@ -137,7 +185,7 @@ export class ResultDeliveryLedger {
     return (await this.read(PARENT_WAITS_KEY, isParentWaitRecord)).find(item => item.parentThreadId === parentThreadId);
   }
 
-  /** Enter (or re-enter) a parent mechanical wait. One wait per parent thread (§14). */
+  /** Enter (or re-enter) a parent mechanical wait. One wait per parent thread (§12, lifecycle §14). */
   async setWait(parentThreadId: string, wait: { kind: ParentWaitKind; childThreadId: string }, now = Date.now()): Promise<ParentWaitRecord> {
     if (!isThreadId(parentThreadId) || !isThreadId(wait.childThreadId) || !isParentWaitKind(wait.kind) || parentThreadId === wait.childThreadId) {
       throw new Error("parent_wait_invalid");
@@ -206,21 +254,39 @@ export function isResultDeliveryRecord(value: unknown): value is ResultDeliveryR
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
   return isNonEmptyString(record.deliveryKey) &&
+    isOperationId(record.submissionOperationId) &&
     isThreadId(record.parentThreadId) &&
     isThreadId(record.childThreadId) &&
     record.parentThreadId !== record.childThreadId &&
     isNonEmptyString(record.workItemId) &&
     isNonEmptyString(record.resultRef) &&
-    (record.state === "INSERTED" || record.state === "COMPLETED") &&
+    (record.receiptState === undefined || record.receiptState === "INSERTED" || record.receiptState === "COMPLETED") &&
+    (record.dispatchFence === undefined || isRecordedDispatchFence(record.dispatchFence)) &&
+    (record.deliveredTo === undefined || isNonEmptyString(record.deliveredTo)) &&
+    (record.insertedMessageRef === undefined || isNonEmptyString(record.insertedMessageRef)) &&
+    (record.resultingParentTurnRef === undefined || isNonEmptyString(record.resultingParentTurnRef)) &&
+    (record.insertedAt === undefined || isFiniteInteger(record.insertedAt)) &&
+    (record.completedAt === undefined || isFiniteInteger(record.completedAt)) &&
     isFiniteInteger(record.createdAt) &&
     isFiniteInteger(record.updatedAt) &&
-    (record.deliveredTo === undefined || isNonEmptyString(record.deliveredTo)) &&
-    (record.deliveredAt === undefined || isFiniteInteger(record.deliveredAt)) &&
-    (record.completionReceipt === undefined || isNonEmptyString(record.completionReceipt)) &&
-    (record.state !== "COMPLETED" ||
-      (isNonEmptyString(record.deliveredTo) && isFiniteInteger(record.deliveredAt) && isNonEmptyString(record.completionReceipt))) &&
-    (record.state !== "INSERTED" ||
-      (record.deliveredTo === undefined && record.deliveredAt === undefined && record.completionReceipt === undefined));
+    // Receipt lifecycle shape: INSERTED requires insertion evidence; COMPLETED
+    // requires INSERTED and completion evidence; no receipt means no evidence.
+    (record.receiptState !== "INSERTED" ||
+      (isFiniteInteger(record.insertedAt) && isNonEmptyString(record.deliveredTo))) &&
+    (record.receiptState !== "COMPLETED" ||
+      (isFiniteInteger(record.insertedAt) && isNonEmptyString(record.deliveredTo) && isFiniteInteger(record.completedAt))) &&
+    (record.receiptState !== undefined ||
+      (record.insertedAt === undefined && record.completedAt === undefined && record.deliveredTo === undefined));
+}
+
+function isRecordedDispatchFence(value: unknown): value is RecordedDispatchFence {
+  if (!value || typeof value !== "object") return false;
+  const fence = value as Record<string, unknown>;
+  return isNonEmptyString(fence.providerConversationRef) &&
+    isNonEmptyString(fence.leaseOwnerRef) &&
+    isNonEmptyString(fence.targetCarrierRef) &&
+    isFiniteInteger(fence.bindingEpoch) && fence.bindingEpoch >= 0 &&
+    isFiniteInteger(fence.leaseGeneration) && fence.leaseGeneration >= 0;
 }
 
 function isParentWaitRecord(value: unknown): value is ParentWaitRecord {
@@ -236,7 +302,8 @@ function isParentWaitRecord(value: unknown): value is ParentWaitRecord {
 function isCreateDeliveryInput(value: unknown): value is CreateDeliveryInput {
   if (!value || typeof value !== "object") return false;
   const input = value as Record<string, unknown>;
-  return isThreadId(input.parentThreadId) &&
+  return isOperationId(input.submissionOperationId) &&
+    isThreadId(input.parentThreadId) &&
     isThreadId(input.childThreadId) &&
     input.parentThreadId !== input.childThreadId &&
     isNonEmptyString(input.workItemId) &&
@@ -246,6 +313,10 @@ function isCreateDeliveryInput(value: unknown): value is CreateDeliveryInput {
 
 function isParentWaitKind(value: unknown): value is ParentWaitKind {
   return value === "WAIT_REVIEW" || value === "WAIT_WORKER";
+}
+
+function isOperationId(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/.test(value);
 }
 
 function isThreadId(value: unknown): value is string {
