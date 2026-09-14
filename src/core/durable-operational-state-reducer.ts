@@ -16,13 +16,13 @@
  */
 
 import {
-  HarnessReducer,
+  OperationalStateReducer,
   type CurrentConversationBinding,
-  type HarnessReducerState,
+  type OperationalStateReducerState,
   type ReducerResult,
-} from "./harness-reducer";
+} from "./operational-state-reducer";
 
-export interface HarnessReducerStore {
+export interface OperationalStateReducerStore {
   load(): Promise<DurableStateBundle | undefined>;
   save(bundle: DurableStateBundle): Promise<void>;
 }
@@ -46,7 +46,7 @@ export interface DeltaAuditRecord {
 }
 
 export interface DurableStateBundle {
-  state?: HarnessReducerState;
+  state?: OperationalStateReducerState;
   applyResults: DeltaApplyRecord[];
   auditRecords: DeltaAuditRecord[];
 }
@@ -66,7 +66,7 @@ export interface ApplyDeltaInput<T> {
   expectedBaseStateFingerprint?: string;
   reason: string;
   detail?: Record<string, string | number | boolean>;
-  mutate: (reducer: HarnessReducer) => ReducerResult<T>;
+  mutate: (reducer: OperationalStateReducer) => ReducerResult<T>;
 }
 
 export type ApplyDeltaResult<T> =
@@ -75,10 +75,10 @@ export type ApplyDeltaResult<T> =
   | { outcome: "rejected_invariant"; replayed: true; priorOutcome: DeltaOutcome }
   | { outcome: "rejected_stale" | "rejected_precondition"; error?: { code: string; message: string } };
 
-export const HARNESS_REDUCER_KEY = "noosHarnessReducer";
+export const OPERATIONAL_STATE_REDUCER_KEY = "noosOperationalStateReducer";
 
 /** Deterministic fingerprint over a canonical (key-sorted) serialization. */
-export function stateFingerprint(state: HarnessReducerState): string {
+export function stateFingerprint(state: OperationalStateReducerState): string {
   const normalized = JSON.stringify(canonicalize(state));
   // Two independent 32-bit lanes keep accidental collisions at the 2^-64 scale
   // rather than the birthday bound of a single 32-bit hash.
@@ -104,21 +104,21 @@ function canonicalize(value: unknown): unknown {
   return value;
 }
 
-export class DurableHarnessReducer {
-  private reducer: HarnessReducer;
+export class DurableOperationalStateReducer {
+  private reducer: OperationalStateReducer;
   private applyResults: DeltaApplyRecord[];
   private auditRecords: DeltaAuditRecord[];
   private queue: Promise<void> = Promise.resolve();
 
-  private constructor(private readonly store: HarnessReducerStore) {
-    this.reducer = new HarnessReducer();
+  private constructor(private readonly store: OperationalStateReducerStore) {
+    this.reducer = new OperationalStateReducer();
     this.applyResults = [];
     this.auditRecords = [];
   }
 
   /** Load and validate the persisted bundle; corrupt state throws rather than silently resetting. */
-  static async restore(store: HarnessReducerStore): Promise<DurableHarnessReducer> {
-    const wrapper = new DurableHarnessReducer(store);
+  static async restore(store: OperationalStateReducerStore): Promise<DurableOperationalStateReducer> {
+    const wrapper = new DurableOperationalStateReducer(store);
     const bundle = await store.load();
     if (bundle !== undefined && bundle !== null) {
       if (bundle.state !== undefined && bundle.state !== null) {
@@ -130,7 +130,7 @@ export class DurableHarnessReducer {
     return wrapper;
   }
 
-  snapshot(): HarnessReducerState {
+  snapshot(): OperationalStateReducerState {
     return this.reducer.snapshot();
   }
 
@@ -152,9 +152,9 @@ export class DurableHarnessReducer {
    * persisted before commit; if persistence fails the in-memory state is left
    * untouched, so nothing is acknowledged that is not durable.
    */
-  applyResult<T>(mutate: (reducer: HarnessReducer) => ReducerResult<T>): Promise<ReducerResult<T>> {
+  applyResult<T>(mutate: (reducer: OperationalStateReducer) => ReducerResult<T>): Promise<ReducerResult<T>> {
     return this.serialize(async () => {
-      const staged = new HarnessReducer(this.reducer.snapshot());
+      const staged = new OperationalStateReducer(this.reducer.snapshot());
       const result = mutate(staged);
       if (!result.ok) return result;
       await this.persist(staged, this.applyResults, this.auditRecords);
@@ -196,7 +196,7 @@ export class DurableHarnessReducer {
         return { outcome: "rejected_stale" as const };
       }
 
-      const staged = new HarnessReducer(this.reducer.snapshot());
+      const staged = new OperationalStateReducer(this.reducer.snapshot());
       const result = input.mutate(staged);
       if (!result.ok) {
         const auditRecords = this.withAudit(input, `rejected_precondition: ${result.error.code}`);
@@ -251,7 +251,7 @@ export class DurableHarnessReducer {
     }];
   }
 
-  private async persist(staged: HarnessReducer, applyResults: DeltaApplyRecord[], auditRecords: DeltaAuditRecord[]): Promise<void> {
+  private async persist(staged: OperationalStateReducer, applyResults: DeltaApplyRecord[], auditRecords: DeltaAuditRecord[]): Promise<void> {
     await this.store.save({
       state: staged.snapshot(),
       applyResults,
@@ -266,10 +266,10 @@ export class DurableHarnessReducer {
   }
 }
 
-export function createChromeHarnessReducerStore(
+export function createChromeOperationalStateReducerStore(
   chromeStorage: { get(key: string): Promise<unknown>; set(value: Record<string, unknown>): Promise<unknown> },
-  key = HARNESS_REDUCER_KEY
-): HarnessReducerStore {
+  key = OPERATIONAL_STATE_REDUCER_KEY
+): OperationalStateReducerStore {
   return {
     load: async () => {
       const raw = await chromeStorage.get(key);

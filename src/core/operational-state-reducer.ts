@@ -75,7 +75,7 @@ export interface DispatchFence {
   leaseGeneration: number;
 }
 
-export interface HarnessReducerState {
+export interface OperationalStateReducerState {
   bindings: Record<string, CurrentConversationBinding>;
   leases: Record<string, ActuationLease>;
   operations: Record<string, ReducerSubmissionOperation>;
@@ -88,7 +88,7 @@ export interface HarnessReducerState {
 export interface ReducerSuccess<T> {
   ok: true;
   value: T;
-  state: HarnessReducerState;
+  state: OperationalStateReducerState;
 }
 
 export interface ReducerFailure {
@@ -97,7 +97,7 @@ export interface ReducerFailure {
     code: ReducerErrorCode;
     message: string;
   };
-  state: HarnessReducerState;
+  state: OperationalStateReducerState;
 }
 
 export type ReducerResult<T> = ReducerSuccess<T> | ReducerFailure;
@@ -150,25 +150,25 @@ const executionOwningStates = new Set<ReducerSubmissionState>([
   "UNCERTAIN",
 ]);
 
-export class HarnessReducer {
-  private state: HarnessReducerState;
+export class OperationalStateReducer {
+  private state: OperationalStateReducerState;
 
-  constructor(initial?: Partial<HarnessReducerState>) {
+  constructor(initial?: Partial<OperationalStateReducerState>) {
     const candidate = {
       bindings: createMap<CurrentConversationBinding>(),
       leases: createMap<ActuationLease>(),
       operations: createMap<ReducerSubmissionOperation>(),
       ...initial,
-    } as HarnessReducerState;
+    } as OperationalStateReducerState;
     assertValidState(candidate);
     this.state = cloneState(candidate);
   }
 
-  snapshot(): HarnessReducerState {
+  snapshot(): OperationalStateReducerState {
     return cloneState(this.state);
   }
 
-  replace(snapshot: HarnessReducerState): void {
+  replace(snapshot: OperationalStateReducerState): void {
     assertValidState(snapshot);
     if (
       this.state.lastMutationAt !== undefined &&
@@ -587,7 +587,7 @@ function cloneOperation(
   };
 }
 
-function cloneState(state: HarnessReducerState): HarnessReducerState {
+function cloneState(state: OperationalStateReducerState): OperationalStateReducerState {
   return {
     bindings: cloneMap(state.bindings, (value) => ({ ...value })),
     leases: cloneMap(state.leases, (value) => ({ ...value })),
@@ -597,7 +597,7 @@ function cloneState(state: HarnessReducerState): HarnessReducerState {
   };
 }
 
-function assertValidState(state: HarnessReducerState): void {
+function assertValidState(state: OperationalStateReducerState): void {
   if (
     !isRecord(state) ||
     !isRecord(state.bindings) ||
@@ -829,8 +829,8 @@ function assertValidState(state: HarnessReducerState): void {
 }
 
 function assertReplacementTimes(
-  current: HarnessReducerState,
-  replacement: HarnessReducerState,
+  current: OperationalStateReducerState,
+  replacement: OperationalStateReducerState,
 ): void {
   for (const [logicalThreadId, binding] of Object.entries(current.bindings)) {
     const next = replacement.bindings[logicalThreadId];
@@ -864,8 +864,8 @@ function assertReplacementTimes(
 }
 
 function assertReplacementEntities(
-  current: HarnessReducerState,
-  replacement: HarnessReducerState,
+  current: OperationalStateReducerState,
+  replacement: OperationalStateReducerState,
 ): void {
   for (const [logicalThreadId, binding] of Object.entries(current.bindings)) {
     const next = replacement.bindings[logicalThreadId];
@@ -928,8 +928,8 @@ function assertReplacementEntities(
 }
 
 function assertReplacementOperations(
-  current: HarnessReducerState,
-  replacement: HarnessReducerState,
+  current: OperationalStateReducerState,
+  replacement: OperationalStateReducerState,
 ): void {
   for (const [operationId, previous] of Object.entries(current.operations)) {
     const next = replacement.operations[operationId];

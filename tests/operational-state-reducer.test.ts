@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  HarnessReducer,
+  OperationalStateReducer,
   ReducerSubmissionOperation,
   type DispatchFence,
   type SettleSubmissionDispatchInput,
-} from "../src/core/harness-reducer";
+} from "../src/core/operational-state-reducer";
 
 function prepared(
   operationId: string,
@@ -23,7 +23,7 @@ function prepared(
 }
 
 function readyReducer() {
-  const reducer = new HarnessReducer();
+  const reducer = new OperationalStateReducer();
   const bound = reducer.commitCurrentConversationBinding({
     logicalThreadId: "thread-1",
     providerConversationRef: "conversation-1",
@@ -45,9 +45,9 @@ function readyReducer() {
   return reducer;
 }
 
-describe("HarnessReducer", () => {
+describe("OperationalStateReducer", () => {
   it("commits a canonical binding and rejects reverse ownership", () => {
-    const reducer = new HarnessReducer();
+    const reducer = new OperationalStateReducer();
     expect(
       reducer.commitCurrentConversationBinding({
         logicalThreadId: "thread-1",
@@ -69,7 +69,7 @@ describe("HarnessReducer", () => {
   });
 
   it("fences stale binding expectations and increments generation on rollover", () => {
-    const reducer = new HarnessReducer();
+    const reducer = new OperationalStateReducer();
     reducer.commitCurrentConversationBinding({
       logicalThreadId: "thread-1",
       providerConversationRef: "conversation-1",
@@ -121,7 +121,7 @@ describe("HarnessReducer", () => {
   });
 
   it("rejects a rollover whose mutation time predates the current binding", () => {
-    const reducer = new HarnessReducer();
+    const reducer = new OperationalStateReducer();
     const initial = reducer.commitCurrentConversationBinding({
       logicalThreadId: "thread-1",
       providerConversationRef: "conversation-1",
@@ -347,7 +347,7 @@ describe("HarnessReducer", () => {
       claimedAt: 1,
       claimedBy: "system",
     };
-    expect(() => new HarnessReducer(invalidLeaseSnapshot)).toThrow(
+    expect(() => new OperationalStateReducer(invalidLeaseSnapshot)).toThrow(
       "INVALID_STATE_SNAPSHOT",
     );
 
@@ -464,7 +464,7 @@ describe("HarnessReducer", () => {
   });
 
   it("records mutation actors in the reducer snapshot for audit", () => {
-    const reducer = new HarnessReducer();
+    const reducer = new OperationalStateReducer();
     reducer.commitCurrentConversationBinding({
       logicalThreadId: "thread-1",
       providerConversationRef: "conversation-1",
@@ -476,7 +476,7 @@ describe("HarnessReducer", () => {
   });
 
   it("fails closed on invalid mutation inputs and prevents time regression", () => {
-    const reducer = new HarnessReducer();
+    const reducer = new OperationalStateReducer();
     const invalidActor = reducer.commitCurrentConversationBinding({
       logicalThreadId: "thread-1",
       providerConversationRef: "conversation-1",
@@ -497,7 +497,7 @@ describe("HarnessReducer", () => {
     });
     expect(invalidNow.ok).toBe(false);
 
-    const firstLeaseReducer = new HarnessReducer();
+    const firstLeaseReducer = new OperationalStateReducer();
     firstLeaseReducer.commitCurrentConversationBinding({
       logicalThreadId: "thread-1",
       providerConversationRef: "conversation-1",
@@ -556,7 +556,7 @@ describe("HarnessReducer", () => {
   });
 
   it("uses one global mutation time fence across logical threads", () => {
-    const reducer = new HarnessReducer();
+    const reducer = new OperationalStateReducer();
     const first = reducer.commitCurrentConversationBinding({
       logicalThreadId: "thread-1",
       providerConversationRef: "conversation-1",
@@ -673,7 +673,7 @@ describe("HarnessReducer", () => {
   });
 
   it("rejects binding and lease generation rollback or deletion during restore", () => {
-    const bindingReducer = new HarnessReducer();
+    const bindingReducer = new OperationalStateReducer();
     bindingReducer.commitCurrentConversationBinding({
       logicalThreadId: "thread-1",
       providerConversationRef: "conversation-1",
@@ -732,7 +732,7 @@ describe("HarnessReducer", () => {
   });
 
   it("rejects authority identity changes when the generation is unchanged", () => {
-    const bindingReducer = new HarnessReducer();
+    const bindingReducer = new OperationalStateReducer();
     bindingReducer.commitCurrentConversationBinding({
       logicalThreadId: "thread-1",
       providerConversationRef: "conversation-1",
@@ -761,7 +761,7 @@ describe("HarnessReducer", () => {
   });
 
   it("allows authority identity changes only with a generation advance", () => {
-    const bindingReducer = new HarnessReducer();
+    const bindingReducer = new OperationalStateReducer();
     bindingReducer.commitCurrentConversationBinding({
       logicalThreadId: "thread-1",
       providerConversationRef: "conversation-1",
