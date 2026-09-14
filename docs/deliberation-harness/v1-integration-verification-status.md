@@ -34,11 +34,13 @@
 | W1 settle-from-evidence glue | `31f8e2d`, `35faeb5` | APPROVE after fix |
 | W2 DELIVER_CHILD_RESULT transport composer | `865ac7f`, `ee03b1d`, `2014329` | APPROVE after fix |
 | W3 PREPARED retarget (rollover re-fence) | `ac6e66a`, `a017317` | APPROVE after fix (gap closed) |
+| W4 child-lifecycle worker lane | `eeea6ad`, `84e19ee` | APPROVE ×2 |
+| W5 content-side delivery wiring | `d1f1e10` | REQUEST_CHANGES → fix `447e6ac` in re-review |
 
 ## 3. Verification evidence (current)
 
 - `npm run typecheck` — 0 errors.
-- `npm test` — **28 files / 304 tests pass**, including playwright browser smokes
+- `npm test` — **29 files / 312 tests pass**, including playwright browser smokes (now also the child-lifecycle lanes and the full child-result delivery loop)
   rebuilt from this tree (Human GO real-ledger dispatch; durable Goal Re-anchor
   end-to-end).
 - Commit-message test counts are taken from the last clean-tree run.
@@ -53,11 +55,13 @@
   baseline to the new conversation, and leave identity fields untouched. The
   previously deadlocked scenario (prepare → rollover → retarget → claim under
   the new fence) is covered end to end; cross-thread retargeting is rejected.
-- Wiring slices (blocked on nothing external, ordered): service-worker
-  producers for child spawn/return; settle evidence producers (journal append →
-  settleFromEvidence); delivery transport driving (prepare → claim → dispatch
-  → reconcile → mint → complete). Wiring order for delivery: reconcile → mint
-  → await turn → record COMPLETED (to shrink the permanent-wedge window).
+- Wiring follow-ups (from W5 review NOTEs): transition the child record
+  (beginReturn/complete) when its delivery closes; wire the Provider
+  Execution Journal into the dispatch/reconcile loop (append attempt/ack/
+  acceptance/completion, then settleFromEvidence for control-state
+  settlement); a FAILED_SAFE delivery needs the ledger rearm path surfaced in
+  the runtime (symmetry with the reanchor runtime); spawn producers (real
+  browser fork adapter is blocked on the fork-adapter proposal).
 - Semantic run-state handlers (commit_decision, open_question, …) share the
   delta kernel per adjudication item 5 — not started, explicitly V1-later.
 
