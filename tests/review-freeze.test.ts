@@ -121,7 +121,11 @@ describe("immutable review freeze and provenance", () => {
     ]);
     expect(outcomes.filter(outcome => outcome.status === "fulfilled")).toHaveLength(1);
     expect(outcomes.filter(outcome => outcome.status === "rejected")).toHaveLength(1);
-    expect((await store.getSnapshot("snap-1"))?.candidate.body).toBe("candidate body");
+    // Which write wins the race is not determined (both await a fingerprint before
+    // the CAS), but the stored immutable snapshot must be exactly the winner's
+    // content: the loser neither overwrites nor mixes into it.
+    const winners = outcomes.filter((outcome): outcome is PromiseFulfilledResult<ReviewSnapshot> => outcome.status === "fulfilled");
+    expect((await store.getSnapshot("snap-1"))?.candidate.body).toBe(winners[0].value.candidate.body);
   });
 
   it("exercises an async CAS race after both requests have read absence", async () => {
