@@ -39,6 +39,7 @@
 | W6 child lifecycle closure on delivery | `23aa40c` | APPROVE |
 | W7 durable acceptance stamp | `08ef188`, `0c10be6` | APPROVE ×2 (residual closed, re-arm clears stamp) |
 | W8 execution journal in delivery runtime | `cc645c2`, `da7f30c` | APPROVE after notes |
+| W9 FAILED_SAFE re-arm symmetry | `3a9f4bc` | APPROVE |
 
 ## 3. Verification evidence (current)
 

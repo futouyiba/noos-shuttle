@@ -250,7 +250,7 @@ await prepareChildDeliveryTransport(deps, { childThreadId: "child-l2", destinati
   });
 
   it("re-arms a FAILED_SAFE transport so the next probe can dispatch again", async () => {
-    const { deps, storage, backing } = harness();
+    const { deps, storage, backing, journal } = harness();
     backing.noosWorkItemInbox = WORK_ITEM;
     await seedResultReadyChild(deps);
     // First attempt: ack lost -> UNCERTAIN.
@@ -280,6 +280,11 @@ await prepareChildDeliveryTransport(deps, { childThreadId: "child-l2", destinati
     expect(second.dispatched).toBe(1);
     expect(dispatches).toBe(1);
     expect((await deps.submissions.list())).toHaveLength(1);
+    // Intentional contract: a same-fence re-dispatch folds into the journal's
+    // first entry (the idempotency key does not count attempts) — the fact
+    // "an attempt happened under this fence" stays true and single.
+    const kinds = (await journal.list()).map(entry => entry.eventKind).sort();
+    expect(kinds).toEqual(["BLIND_DISPATCH_ATTEMPT", "PROVIDER_ACK"]);
   });
 
   it("returns NO_ACTIVE_PARENT when no work item binding matches the carrier", async () => {
