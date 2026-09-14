@@ -46,22 +46,35 @@ function claimedReducer(): OperationalStateReducer {
     carrierRef: "tab-1",
     bindingGeneration: 2,
     leaseGeneration: 1,
-    state: "PREPARED"
+    state: "PREPARED",
+    operationRevision: 0
   } satisfies ReducerSubmissionOperation);
-  expect(reducer.claimSubmissionDispatch({
+  const claim = reducer.claimSubmissionDispatch({
     operationId: "op-1", logicalThreadId: "thread-1", providerConversationRef: "conversation-2",
     bindingGeneration: 2, leaseGeneration: 1, carrierRef: "tab-1", actor: "human", now: 30
-  }).ok).toBe(true);
+  });
+  expect(claim.ok).toBe(true);
+  if (claim.ok) {
+    (globalThis as unknown as { __op1: { revision: number; fenceId: string } }).__op1 = {
+      revision: claim.value.operationRevision,
+      fenceId: claim.value.dispatchFence!.dispatchFenceId
+    };
+  }
   return reducer;
+}
+function attemptContext(): { revision: number; fenceId: string } {
+  return (globalThis as unknown as { __op1: { revision: number; fenceId: string } }).__op1;
 }
 
 function settle(reducer: OperationalStateReducer, overrides: Record<string, unknown> = {}) {
+  const attempt = attemptContext();
   return settleFromEvidence(reducer, {
     operationId: "op-1",
     evidence: entry(),
     fence,
     targetState: "OBSERVED_ACCEPTED",
-    expectedCurrentState: "DISPATCHING",
+    expectedOperationRevision: attempt.revision,
+    expectedDispatchFenceId: attempt.fenceId,
     reason: "provider acceptance observed",
     actor: "worker",
     now: 40,
@@ -87,21 +100,29 @@ describe("settle from evidence", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.state).toBe("OBSERVED_ACCEPTED");
-      expect(result.value.dispatchFence).toEqual(toReducerDispatchFence(fence));
+      expect(result.value.dispatchFence).toMatchObject(toReducerDispatchFence(fence));
+      expect(result.value.dispatchFence?.dispatchFenceId).toBe(attemptContext().fenceId);
+      expect(result.value.operationRevision).toBe(attemptContext().revision + 1);
     }
   });
 
-  it("completes from a turn-completion entry after acceptance", () => {
+  it("completes from a turn-completion entry after acceptance on the same fence", () => {
     const reducer = claimedReducer();
-    settle(reducer);
+    const accepted = settle(reducer);
+    expect(accepted.ok).toBe(true);
+    if (accepted.ok) attemptContext().revision = accepted.value.operationRevision;
     const completed = settle(reducer, {
       evidence: entry({ eventKind: "TURN_COMPLETION_OBSERVED", executionAttemptId: "attempt-2" }),
       targetState: "COMPLETED",
-      expectedCurrentState: "OBSERVED_ACCEPTED",
       reason: "result-bearing turn finished"
     });
     expect(completed.ok).toBe(true);
-    if (completed.ok) expect(completed.value.state).toBe("COMPLETED");
+    if (completed.ok) {
+      expect(completed.value.state).toBe("COMPLETED");
+      // Same attempt identity across both hops (adjudication W11 D1).
+      expect(completed.value.dispatchFence?.dispatchFenceId).toBe(attemptContext().fenceId);
+      expect(completed.value.operationRevision).toBe(attemptContext().revision + 1);
+    }
   });
 
   it("settles UNCERTAIN from a blind-dispatch-attempt or provider-ack entry", () => {
@@ -142,31 +163,28 @@ describe("settle from evidence", () => {
 
   it("still respects the reducer's own fence and transition guards", () => {
     const reducer = claimedReducer();
-    // A journal entry whose fingerprint matches the *modified* fence passes the
-    // composer's binding check and reaches the reducer's authority check.
-    const staleFenceFence = { ...fence, bindingEpoch: 3 };
-    const staleFence = settle(reducer, {
-      fence: staleFenceFence,
-      evidence: entry({ dispatchFenceFingerprint: dispatchFenceFingerprint(staleFenceFence) })
-    });
-    expect(staleFence.ok).toBe(false);
-    if (!staleFence.ok) expect(staleFence.error.code).toBe("SETTLE_FENCE_MISMATCH");
+    // The attempt identity is the minted fence id: a settle naming another
+    // attempt fails the reducer's authority check.
+    const wrongAttempt = settle(reducer, { expectedDispatchFenceId: "fence-not-this-attempt" });
+    expect(wrongAttempt.ok).toBe(false);
+    if (!wrongAttempt.ok) expect(wrongAttempt.error.code).toBe("SETTLE_FENCE_MISMATCH");
+
+    const wrongRevision = settle(reducer, { expectedOperationRevision: 99 });
+    expect(wrongRevision.ok).toBe(false);
+    if (!wrongRevision.ok) expect(wrongRevision.error.code).toBe("SETTLE_REVISION_MISMATCH");
 
     const illegal = settle(reducer, { targetState: "COMPLETED" });
     expect(illegal.ok).toBe(false);
     if (!illegal.ok) expect(illegal.error.code).toBe("SETTLE_TRANSITION_INVALID");
   });
 
-  it("replays fail closed with a stale expectation and stay idempotent with the settled one", () => {
+  it("rejects a settle whose revision expectation is stale", () => {
     const reducer = claimedReducer();
     settle(reducer);
-    // Stale expectation: the operation already moved.
+    // The caller's revision predates the accepted hop: fail closed. Replay
+    // safety belongs to the delta layer, not to re-settling.
     const stale = settle(reducer);
     expect(stale.ok).toBe(false);
-    if (!stale.ok) expect(stale.error.code).toBe("SETTLE_STATE_MISMATCH");
-    // Equal-state replay: idempotent, no further transition.
-    const replay = settle(reducer, { expectedCurrentState: "OBSERVED_ACCEPTED", targetState: "OBSERVED_ACCEPTED" });
-    expect(replay.ok).toBe(true);
-    if (replay.ok) expect(replay.value.state).toBe("OBSERVED_ACCEPTED");
+    if (!stale.ok) expect(stale.error.code).toBe("SETTLE_REVISION_MISMATCH");
   });
 });

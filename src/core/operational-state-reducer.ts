@@ -27,7 +27,8 @@ export type ReducerErrorCode =
   | "DISPATCH_ALREADY_OWNED"
   | "SETTLE_STATE_MISMATCH"
   | "SETTLE_FENCE_MISMATCH"
-  | "SETTLE_TRANSITION_INVALID";
+  | "SETTLE_TRANSITION_INVALID"
+  | "SETTLE_REVISION_MISMATCH";
 
 export interface CurrentConversationBinding {
   logicalThreadId: string;
@@ -64,11 +65,15 @@ export interface ReducerSubmissionOperation {
   leaseGeneration: number;
   requestFingerprint?: string;
   state: ReducerSubmissionState;
+  /** Local authoritative state revision; +1 per committed hop (CAS token). */
+  operationRevision: number;
   dispatchClaimedAt?: number;
   dispatchFence?: DispatchFence;
 }
 
+/** One authorized provider execution attempt; the id is minted by the reducer. */
 export interface DispatchFence {
+  dispatchFenceId: string;
   providerConversationRef: string;
   carrierRef: string;
   bindingGeneration: number;
@@ -133,8 +138,10 @@ export interface ClaimSubmissionDispatchInput {
 
 export interface SettleSubmissionDispatchInput {
   operationId: string;
-  expectedCurrentState: ReducerSubmissionState;
-  expectedDispatchFence: DispatchFence;
+  /** CAS expectation: the operation revision the caller last observed. */
+  expectedOperationRevision: number;
+  /** The attempt identity whose evidence settles; never re-minted by settle. */
+  expectedDispatchFenceId: string;
   targetState: "OBSERVED_ACCEPTED" | "COMPLETED" | "UNCERTAIN" | "FAILED_SAFE" | "CANCELLED";
   /** Journal/evidence ref proving the observed transport fact. */
   executionEvidenceRef: string;
@@ -388,7 +395,7 @@ export class OperationalStateReducer {
         ["DISPATCHING", "OBSERVED_ACCEPTED", "UNCERTAIN"].includes(
           operation.state,
         ) &&
-        sameFence(operation.dispatchFence, {
+        sameFenceComponents(operation.dispatchFence, {
           providerConversationRef: input.providerConversationRef,
           carrierRef: input.carrierRef,
           bindingGeneration: input.bindingGeneration,
@@ -455,12 +462,16 @@ export class OperationalStateReducer {
     }
 
     const fence: DispatchFence = {
+      // The attempt identity is minted here — callers propose, the reducer
+      // creates the authoritative execution identity (adjudication W11 D1).
+      dispatchFenceId: `fence-${randomToken()}`,
       providerConversationRef: input.providerConversationRef,
       carrierRef: input.carrierRef,
       bindingGeneration: input.bindingGeneration,
       leaseGeneration: input.leaseGeneration,
     };
     operation.state = "DISPATCHING";
+    operation.operationRevision += 1;
     operation.dispatchClaimedAt = input.now;
     operation.dispatchFence = fence;
     this.state.lastMutationActor = input.actor;
@@ -496,19 +507,22 @@ export class OperationalStateReducer {
         `submission operation ${input.operationId} does not exist`,
       );
     }
-    if (operation.state !== input.expectedCurrentState) {
+    if (!Number.isSafeInteger(input.expectedOperationRevision) || input.expectedOperationRevision < 0) {
+      return this.fail("INVALID_MUTATION_INPUT", "expectedOperationRevision must be a non-negative integer");
+    }
+    if (operation.operationRevision !== input.expectedOperationRevision) {
       return this.fail(
-        "SETTLE_STATE_MISMATCH",
-        `submission operation ${input.operationId} is ${operation.state}, not ${input.expectedCurrentState}`,
+        "SETTLE_REVISION_MISMATCH",
+        `submission operation ${input.operationId} is at revision ${operation.operationRevision}, not ${input.expectedOperationRevision}`,
       );
     }
     if (
       !operation.dispatchFence ||
-      !sameFence(operation.dispatchFence, input.expectedDispatchFence)
+      operation.dispatchFence.dispatchFenceId !== input.expectedDispatchFenceId
     ) {
       return this.fail(
         "SETTLE_FENCE_MISMATCH",
-        `settlement fence does not match the fence recorded on ${input.operationId}`,
+        `settlement fence does not match the attempt recorded on ${input.operationId}`,
       );
     }
     if (!isAllowedLifecycleTransition(operation.state, input.targetState)) {
@@ -524,6 +538,9 @@ export class OperationalStateReducer {
       );
     }
     operation.state = input.targetState;
+    // The attempt identity (fence) never changes on a settle hop; only the
+    // local authoritative revision advances.
+    operation.operationRevision += 1;
     this.state.lastMutationActor = input.actor;
     this.state.lastMutationAt = input.now;
     return this.ok(cloneOperation(operation));
@@ -568,7 +585,16 @@ function sameBinding(
   );
 }
 
-function sameFence(left: DispatchFence | undefined, right: DispatchFence): boolean {
+function randomToken(): string {
+  return Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
+}
+
+/** Authority-component comparison for claim replay detection: the caller
+ * cannot know the minted attempt id, only the authority it proposed. */
+function sameFenceComponents(
+  left: DispatchFence | undefined,
+  right: Pick<DispatchFence, "providerConversationRef" | "carrierRef" | "bindingGeneration" | "leaseGeneration">,
+): boolean {
   return Boolean(
     left &&
       left.providerConversationRef === right.providerConversationRef &&
@@ -771,7 +797,7 @@ function assertValidState(state: OperationalStateReducerState): void {
         `INVALID_STATE_SNAPSHOT: execution-owning operation ${operationId} lacks claim metadata`,
       );
     }
-    if (operation.dispatchFence && !sameFence(operation.dispatchFence, {
+    if (operation.dispatchFence && !sameFenceComponents(operation.dispatchFence, {
       providerConversationRef: operation.providerConversationRef,
       carrierRef: operation.carrierRef,
       bindingGeneration: operation.bindingGeneration,
@@ -971,7 +997,7 @@ function assertReplacementOperations(
     }
     if (
       previous.dispatchFence &&
-      !sameFence(previous.dispatchFence, next.dispatchFence!)
+      !sameFenceComponents(previous.dispatchFence, next.dispatchFence!)
     ) {
       throw new Error(
         `INVALID_STATE_SNAPSHOT: operation ${operationId} dispatch fence changed during restore`,
@@ -1030,7 +1056,7 @@ function sameFenceOrUndefined(
   right: DispatchFence | undefined,
 ): boolean {
   if (!left || !right) return !left && !right;
-  return sameFence(left, right);
+  return sameFenceComponents(left, right);
 }
 
 function isRecord(value: unknown): value is Record<string, any> {

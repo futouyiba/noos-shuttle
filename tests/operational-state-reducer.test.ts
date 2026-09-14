@@ -18,6 +18,7 @@ function prepared(
     bindingGeneration: 1,
     leaseGeneration: 1,
     state: "PREPARED",
+    operationRevision: 0,
     ...overrides,
   };
 }
@@ -195,6 +196,27 @@ describe("OperationalStateReducer", () => {
     expect(replay.ok).toBe(true);
   });
 
+  it("mints the attempt identity once and never re-mints on claim replay", () => {
+    const reducer = readyReducer();
+    reducer.seedOperation(prepared("op-1"));
+    const claim = reducer.claimSubmissionDispatch({
+      operationId: "op-1", logicalThreadId: "thread-1", providerConversationRef: "conversation-1",
+      bindingGeneration: 1, leaseGeneration: 1, carrierRef: "tab-1", actor: "human", now: 30,
+    });
+    expect(claim.ok).toBe(true);
+    const mintedId = claim.ok ? claim.value.dispatchFence!.dispatchFenceId : "";
+    expect(mintedId).toMatch(/^fence-/);
+    const replay = reducer.claimSubmissionDispatch({
+      operationId: "op-1", logicalThreadId: "thread-1", providerConversationRef: "conversation-1",
+      bindingGeneration: 1, leaseGeneration: 1, carrierRef: "tab-1", actor: "human", now: 31,
+    });
+    expect(replay.ok).toBe(true);
+    if (replay.ok) {
+      expect(replay.value.dispatchFence!.dispatchFenceId).toBe(mintedId);
+      expect(replay.value.operationRevision).toBe(claim.ok ? claim.value.operationRevision : -1);
+    }
+  });
+
   it("blocks rollover and a second dispatch while execution is unresolved", () => {
     const reducer = readyReducer();
     reducer.seedOperation(prepared("op-1"));
@@ -367,6 +389,7 @@ describe("OperationalStateReducer", () => {
         carrierRef: "tab-1",
         bindingGeneration: 1,
         leaseGeneration: 1,
+        dispatchFenceId: "fence-restore-1",
       },
     };
     expect(() => reducer.replace(invalidExecutionSnapshot)).toThrow(
@@ -385,6 +408,7 @@ describe("OperationalStateReducer", () => {
           carrierRef: "tab-2",
           bindingGeneration: 1,
           leaseGeneration: 1,
+          dispatchFenceId: "fence-restore-1",
         },
       }),
     ).toThrow("INVALID_STATE_SNAPSHOT");
@@ -426,6 +450,7 @@ describe("OperationalStateReducer", () => {
         carrierRef: "tab-1",
         bindingGeneration: 1,
         leaseGeneration: 1,
+        dispatchFenceId: "fence-restore-1",
       },
     };
     expect(() => reducer.replace(badFence)).not.toThrow();
@@ -828,6 +853,7 @@ describe("OperationalStateReducer", () => {
     claimed.operations["op-1"].state = "DISPATCHING";
     claimed.operations["op-1"].dispatchClaimedAt = 10;
     claimed.operations["op-1"].dispatchFence = {
+      dispatchFenceId: "fence-restore-2",
       providerConversationRef: "conversation-1",
       carrierRef: "tab-1",
       bindingGeneration: 1,
@@ -842,6 +868,7 @@ describe("OperationalStateReducer", () => {
     const injected = reducer.snapshot();
     injected.operations["op-1"].state = "CANCELLED";
     injected.operations["op-1"].dispatchFence = {
+      dispatchFenceId: "fence-restore-3",
       providerConversationRef: "conversation-1",
       carrierRef: "tab-1",
       bindingGeneration: 1,
@@ -924,17 +951,15 @@ describe("OperationalStateReducer", () => {
       now: 30,
     });
     expect(claim.ok).toBe(true);
-    const fence: DispatchFence = {
-      providerConversationRef: "conversation-1",
-      carrierRef: "tab-1",
-      bindingGeneration: 1,
-      leaseGeneration: 1,
-    };
+    // The reducer minted the attempt identity; the caller reads it from the
+    // claim result (adjudication W11 D1: caller proposes, reducer mints).
+    const fenceId = claim.ok ? claim.value.dispatchFence!.dispatchFenceId : "";
+    const claimedRevision = claim.ok ? claim.value.operationRevision : 0;
     const settle = (overrides: Partial<SettleSubmissionDispatchInput> = {}) =>
       reducer.settleSubmissionDispatch({
         operationId: "op-1",
-        expectedCurrentState: "DISPATCHING",
-        expectedDispatchFence: fence,
+        expectedOperationRevision: claimedRevision,
+        expectedDispatchFenceId: fenceId,
         targetState: "OBSERVED_ACCEPTED",
         executionEvidenceRef: "journal-entry-1",
         reason: "provider acceptance observed",
@@ -944,18 +969,17 @@ describe("OperationalStateReducer", () => {
       });
     const observed = settle();
     expect(observed.ok).toBe(true);
-    if (observed.ok) expect(observed.value.state).toBe("OBSERVED_ACCEPTED");
+    if (observed.ok) {
+      expect(observed.value.state).toBe("OBSERVED_ACCEPTED");
+      expect(observed.value.dispatchFence?.dispatchFenceId).toBe(fenceId);
+      expect(observed.value.operationRevision).toBe(claimedRevision + 1);
+    }
 
-    // Idempotent replay on the settled state returns success without moving;
-    // the expectation must name the actual current state.
-    const replay = settle({ expectedCurrentState: "OBSERVED_ACCEPTED", now: 41 });
-    expect(replay.ok).toBe(true);
-    if (replay.ok) expect(replay.value.state).toBe("OBSERVED_ACCEPTED");
-
-    // A replay that names the pre-settlement state fails closed.
-    const staleReplay = settle({ now: 42 });
+    // A settle with the pre-hop revision expectation fails closed (CAS);
+    // replay safety belongs to the delta layer, not re-settling.
+    const staleReplay = settle({ now: 41 });
     expect(staleReplay.ok).toBe(false);
-    if (!staleReplay.ok) expect(staleReplay.error.code).toBe("SETTLE_STATE_MISMATCH");
+    if (!staleReplay.ok) expect(staleReplay.error.code).toBe("SETTLE_REVISION_MISMATCH");
 
     // A settled execution owner still blocks binding rollover...
     const rollover = reducer.commitCurrentConversationBinding({
@@ -976,8 +1000,8 @@ describe("OperationalStateReducer", () => {
     // ...until COMPLETED releases execution ownership.
     const completed = reducer.settleSubmissionDispatch({
       operationId: "op-1",
-      expectedCurrentState: "OBSERVED_ACCEPTED",
-      expectedDispatchFence: fence,
+      expectedOperationRevision: claimedRevision + 1,
+      expectedDispatchFenceId: fenceId,
       targetState: "COMPLETED",
       executionEvidenceRef: "journal-entry-2",
       reason: "parent turn completed",
@@ -1000,10 +1024,10 @@ describe("OperationalStateReducer", () => {
     expect(afterCompletion.ok).toBe(true);
   });
 
-  it("fails settlement closed on state, fence, transition, and evidence mismatches", () => {
+  it("fails settlement closed on revision, fence, transition, and evidence mismatches", () => {
     const reducer = readyReducer();
     reducer.seedOperation(prepared("op-1"));
-    reducer.claimSubmissionDispatch({
+    const claim = reducer.claimSubmissionDispatch({
       operationId: "op-1",
       logicalThreadId: "thread-1",
       providerConversationRef: "conversation-1",
@@ -1013,132 +1037,73 @@ describe("OperationalStateReducer", () => {
       actor: "human",
       now: 30,
     });
-    const fence: DispatchFence = {
-      providerConversationRef: "conversation-1",
-      carrierRef: "tab-1",
-      bindingGeneration: 1,
-      leaseGeneration: 1,
-    };
+    expect(claim.ok).toBe(true);
+    const fenceId = claim.ok ? claim.value.dispatchFence!.dispatchFenceId : "";
+    const revision = claim.ok ? claim.value.operationRevision : 0;
+    const settle = (overrides: Partial<SettleSubmissionDispatchInput> = {}) =>
+      reducer.settleSubmissionDispatch({
+        operationId: "op-1",
+        expectedOperationRevision: revision,
+        expectedDispatchFenceId: fenceId,
+        targetState: "OBSERVED_ACCEPTED",
+        executionEvidenceRef: "journal-entry-1",
+        reason: "settlement audit",
+        actor: "worker",
+        now: 40,
+        ...overrides,
+      });
 
-    const staleState = reducer.settleSubmissionDispatch({
-      operationId: "op-1",
-      expectedCurrentState: "PREPARED",
-      expectedDispatchFence: fence,
-      targetState: "OBSERVED_ACCEPTED",
-      executionEvidenceRef: "journal-entry-1",
-      reason: "settlement audit",
-      actor: "worker",
-      now: 40,
-    });
-    expect(staleState.ok).toBe(false);
-    if (!staleState.ok) expect(staleState.error.code).toBe("SETTLE_STATE_MISMATCH");
+    // A stale revision expectation (the pre-claim view) fails closed.
+    const staleRevision = settle({ expectedOperationRevision: revision - 1 });
+    expect(staleRevision.ok).toBe(false);
+    if (!staleRevision.ok) expect(staleRevision.error.code).toBe("SETTLE_REVISION_MISMATCH");
     // Failed settlements must leave the authority fence untouched.
     expect(reducer.snapshot().lastMutationAt).toBe(30);
     expect(reducer.snapshot().lastMutationActor).toBe("human");
-    const emptyReason = reducer.settleSubmissionDispatch({
-      operationId: "op-1",
-      expectedCurrentState: "DISPATCHING",
-      expectedDispatchFence: fence,
-      targetState: "OBSERVED_ACCEPTED",
-      executionEvidenceRef: "journal-entry-1",
-      reason: "   ",
-      actor: "worker",
-      now: 40,
-    });
+
+    const emptyReason = settle({ reason: "   " });
     expect(emptyReason.ok).toBe(false);
     if (!emptyReason.ok) expect(emptyReason.error.code).toBe("INVALID_MUTATION_INPUT");
     expect(reducer.snapshot().lastMutationAt).toBe(30);
 
-    const staleFence = reducer.settleSubmissionDispatch({
-      operationId: "op-1",
-      expectedCurrentState: "DISPATCHING",
-      expectedDispatchFence: { ...fence, leaseGeneration: 2 },
-      targetState: "OBSERVED_ACCEPTED",
-      executionEvidenceRef: "journal-entry-1",
-      reason: "settlement audit",
-      actor: "worker",
-      now: 40,
-    });
-    expect(staleFence.ok).toBe(false);
-    if (!staleFence.ok) expect(staleFence.error.code).toBe("SETTLE_FENCE_MISMATCH");
+    const wrongAttempt = settle({ expectedDispatchFenceId: "fence-another-attempt" });
+    expect(wrongAttempt.ok).toBe(false);
+    if (!wrongAttempt.ok) expect(wrongAttempt.error.code).toBe("SETTLE_FENCE_MISMATCH");
 
-    const illegal = reducer.settleSubmissionDispatch({
-      operationId: "op-1",
-      expectedCurrentState: "DISPATCHING",
-      expectedDispatchFence: fence,
-      targetState: "COMPLETED",
-      executionEvidenceRef: "journal-entry-1",
-      reason: "settlement audit",
-      actor: "worker",
-      now: 40,
-    });
+    const illegal = settle({ targetState: "COMPLETED" });
     expect(illegal.ok).toBe(false);
     if (!illegal.ok) expect(illegal.error.code).toBe("SETTLE_TRANSITION_INVALID");
 
-    const noEvidence = reducer.settleSubmissionDispatch({
-      operationId: "op-1",
-      expectedCurrentState: "DISPATCHING",
-      expectedDispatchFence: fence,
-      targetState: "OBSERVED_ACCEPTED",
-      executionEvidenceRef: "  ",
-      reason: "settlement audit",
-      actor: "worker",
-      now: 40,
-    });
+    const noEvidence = settle({ executionEvidenceRef: "  " });
     expect(noEvidence.ok).toBe(false);
     if (!noEvidence.ok) expect(noEvidence.error.code).toBe("INVALID_MUTATION_INPUT");
 
-    const beforeClaim = reducer.settleSubmissionDispatch({
-      operationId: "op-1",
-      expectedCurrentState: "DISPATCHING",
-      expectedDispatchFence: fence,
-      targetState: "OBSERVED_ACCEPTED",
-      executionEvidenceRef: "journal-entry-1",
-      reason: "settlement audit",
-      actor: "worker",
-      now: 29,
-    });
+    const beforeClaim = settle({ now: 29 });
     expect(beforeClaim.ok).toBe(false);
     if (!beforeClaim.ok) expect(beforeClaim.error.code).toBe("INVALID_MUTATION_INPUT");
 
-    const unknown = reducer.settleSubmissionDispatch({
-      operationId: "op-x",
-      expectedCurrentState: "DISPATCHING",
-      expectedDispatchFence: fence,
-      targetState: "OBSERVED_ACCEPTED",
-      executionEvidenceRef: "journal-entry-1",
-      reason: "settlement audit",
-      actor: "worker",
-      now: 40,
-    });
+    const unknown = settle({ operationId: "op-x" });
     expect(unknown.ok).toBe(false);
     if (!unknown.ok) expect(unknown.error.code).toBe("OPERATION_NOT_FOUND");
 
-    // Terminal states are irreversible even with a matching expectation.
-    reducer.settleSubmissionDispatch({
+    // Terminal states are irreversible even with the current revision.
+    const observed = settle();
+    expect(observed.ok).toBe(true);
+    const completed = reducer.settleSubmissionDispatch({
       operationId: "op-1",
-      expectedCurrentState: "DISPATCHING",
-      expectedDispatchFence: fence,
-      targetState: "OBSERVED_ACCEPTED",
-      executionEvidenceRef: "journal-entry-1",
-      reason: "settlement audit",
-      actor: "worker",
-      now: 40,
-    });
-    reducer.settleSubmissionDispatch({
-      operationId: "op-1",
-      expectedCurrentState: "OBSERVED_ACCEPTED",
-      expectedDispatchFence: fence,
+      expectedOperationRevision: revision + 1,
+      expectedDispatchFenceId: fenceId,
       targetState: "COMPLETED",
       executionEvidenceRef: "journal-entry-2",
       reason: "parent turn completed",
       actor: "worker",
       now: 50,
     });
+    expect(completed.ok).toBe(true);
     const reopen = reducer.settleSubmissionDispatch({
       operationId: "op-1",
-      expectedCurrentState: "COMPLETED",
-      expectedDispatchFence: fence,
+      expectedOperationRevision: revision + 2,
+      expectedDispatchFenceId: fenceId,
       targetState: "OBSERVED_ACCEPTED",
       executionEvidenceRef: "journal-entry-3",
       reason: "reopen attempt must fail",

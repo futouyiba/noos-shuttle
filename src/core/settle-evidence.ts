@@ -34,8 +34,8 @@ import type {
 /** The journal/ledger fence spelling; kept as an alias so callers import one name. */
 export type JournalFence = SubmissionDispatchFence;
 
-/** Map a journal/ledger fence onto the reducer's authority fence spelling. */
-export function toReducerDispatchFence(fence: JournalFence): DispatchFence {
+/** Map a journal/ledger fence onto the reducer's authority components. */
+export function toReducerDispatchFence(fence: JournalFence): Omit<DispatchFence, "dispatchFenceId"> {
   return {
     providerConversationRef: fence.providerConversationRef,
     carrierRef: fence.targetCarrierRef,
@@ -66,8 +66,10 @@ export interface SettleFromEvidenceInput {
   /** Fence the evidence was recorded under (journal/ledger spelling). */
   fence: JournalFence;
   targetState: SettleTarget;
-  /** The state the caller expects the operation to be in (expectation fence). */
-  expectedCurrentState: SettleSubmissionDispatchInput["expectedCurrentState"];
+  /** CAS expectation: the operation revision the caller last observed. */
+  expectedOperationRevision: number;
+  /** The attempt identity whose evidence settles; minted at claim time. */
+  expectedDispatchFenceId: string;
   reason: string;
   actor: SettleSubmissionDispatchInput["actor"];
   now: number;
@@ -95,8 +97,8 @@ export function settleFromEvidence(
   }
   return reducer.settleSubmissionDispatch({
     operationId: input.operationId,
-    expectedCurrentState: input.expectedCurrentState,
-    expectedDispatchFence: toReducerDispatchFence(input.fence),
+    expectedOperationRevision: input.expectedOperationRevision,
+    expectedDispatchFenceId: input.expectedDispatchFenceId,
     targetState: input.targetState,
     executionEvidenceRef: input.evidence.executionAttemptId,
     reason: input.reason,

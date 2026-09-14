@@ -354,6 +354,42 @@ describe("applyDelta (State Delta + Reducer Contract §2.4, §15)", () => {
     expect(reducer.appliedDeltas()).toHaveLength(1);
   });
 
+  it("replays a claim delta without re-minting the dispatch fence", async () => {
+    const store = memoryStore();
+    const reducer = await DurableOperationalStateReducer.restore(store);
+    await reducer.applyResult(r => r.commitCurrentConversationBinding({ logicalThreadId: "t1", providerConversationRef: "c1", expected: null, actor: "system", now: 1 }));
+    await reducer.applyResult(r => r.transferActuationLease({ logicalThreadId: "t1", providerConversationRef: "c1", expectedBindingGeneration: 1, expectedLeaseGeneration: null, carrierRef: "tab-1", actor: "system", now: 10 }));
+    await reducer.applyResult(r => {
+      r.seedOperation({
+        operationId: "op-1", logicalThreadId: "t1", providerConversationRef: "c1", carrierRef: "tab-1",
+        bindingGeneration: 1, leaseGeneration: 1, state: "PREPARED", operationRevision: 0
+      });
+      return { ok: true as const, value: undefined, state: r.snapshot() };
+    });
+    const first = await reducer.applyDelta({
+      deltaId: "SD-claim-1",
+      deltaFingerprint: "fp-claim",
+      reason: "claim the delivery dispatch",
+      mutate: r => r.claimSubmissionDispatch({
+        operationId: "op-1", logicalThreadId: "t1", providerConversationRef: "c1",
+        bindingGeneration: 1, leaseGeneration: 1, carrierRef: "tab-1", actor: "human", now: 30
+      })
+    });
+    expect(first.outcome).toBe("applied");
+    const mintedFence = (await reducer.snapshot()).operations["op-1"].dispatchFence!;
+    expect(mintedFence.dispatchFenceId).toMatch(/^fence-/);
+    // Same delta replayed (id + fingerprint) returns the original result and
+    // never mints a new attempt identity (adjudication W11 D1 §7).
+    const replay = await reducer.applyDelta({
+      deltaId: "SD-claim-1",
+      deltaFingerprint: "fp-claim",
+      reason: "claim the delivery dispatch",
+      mutate: () => { throw new Error("must not re-execute the claim"); }
+    });
+    expect(replay.outcome).toBe("applied");
+    expect((await reducer.snapshot()).operations["op-1"].dispatchFence!.dispatchFenceId).toBe(mintedFence.dispatchFenceId);
+  });
+
   it("keeps deltas serializable under concurrency", async () => {
     const store = memoryStore();
     const reducer = await DurableOperationalStateReducer.restore(store);
