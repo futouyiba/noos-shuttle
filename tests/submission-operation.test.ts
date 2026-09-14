@@ -727,4 +727,20 @@ describe("SubmissionOperationLedger", () => {
     expect(await backwards.retarget("rt-4", rolledOver, baseline(), 50)).toBeUndefined();
     expect((await backwards.retarget("rt-4", rolledOver, baseline(), 150))?.providerConversationRef).toBe("conversation:b");
   });
+
+  it("retarget refuses a context or baseline from another logical thread or conversation", async () => {
+    // Cross-thread: the authority moved to another thread's tuple; the
+    // operation must not follow it.
+    const otherThread = context("browser-tab:9", "conversation:b", "other-l9", 4, 200);
+    const crossThread = new SubmissionOperationLedger(memoryStore(authority(otherThread)));
+    await crossThread.prepare({ ...input("rt-5"), now: 10 });
+    expect(await crossThread.retarget("rt-5", otherThread, baseline(), 50)).toBeUndefined();
+    expect((await crossThread.list())[0].providerConversationRef).toBe("conversation:a");
+    // Baseline naming a different conversation than the new fence.
+    const rolledOver = context("browser-tab:9", "conversation:b", "t1", 4, 200);
+    const mismatchedBaseline = new SubmissionOperationLedger(memoryStore(authority(rolledOver)));
+    await mismatchedBaseline.prepare({ ...input("rt-6"), now: 10 });
+    expect(await mismatchedBaseline.retarget("rt-6", rolledOver, { ...baseline(), conversationRef: "conversation:old" }, 50)).toBeUndefined();
+    expect((await mismatchedBaseline.retarget("rt-6", rolledOver, { ...baseline(), conversationRef: "conversation:b" }, 50))?.providerConversationRef).toBe("conversation:b");
+  });
 });

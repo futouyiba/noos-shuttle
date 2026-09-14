@@ -120,11 +120,15 @@ export class SubmissionOperationLedger {
    */
   async retarget(operationId: string, context: SubmissionClaimContext, baseline: SubmissionBaseline, now = Date.now()): Promise<SubmissionOperation | undefined> {
     if (!isValidClaimContext(context) || !isBaselineValue(baseline) || !Number.isSafeInteger(now) || now < 0) return undefined;
+    if (baseline.conversationRef !== undefined && baseline.conversationRef !== context.providerConversationRef) return undefined;
     if (this.store.dispatch) return this.store.dispatch({ type: "retarget", operationId, context, baseline, now }) as Promise<SubmissionOperation | undefined>;
     return this.mutate(async records => {
       const authority = this.store.getAuthority ? await this.store.getAuthority() : undefined;
       const operation = records.find(item => item.operationId === operationId);
-      if (!operation || operation.state !== "PREPARED" || !authority || !sameClaimAuthority(authority, context)) return { records, result: undefined };
+      if (!operation || operation.state !== "PREPARED" || !authority || !sameClaimAuthority(authority, context) ||
+        // The operation never changes logical threads: a context from another
+        // thread must not retarget it (mirrors recover's fence check).
+        operation.logicalThreadId !== context.logicalThreadId) return { records, result: undefined };
       if (now < operation.lastObservedAt) return { records, result: undefined };
       operation.providerConversationRef = context.providerConversationRef;
       operation.targetCarrierRef = context.targetCarrierRef;

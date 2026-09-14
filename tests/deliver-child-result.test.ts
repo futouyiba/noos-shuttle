@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ChildWorkerLedger, createChromeChildWorkerStore } from "../src/core/child-worker";
 import { ResultDeliveryLedger, createChromeResultDeliveryStore } from "../src/core/result-delivery";
-import { SubmissionOperationLedger, createChromeSubmissionStore, type SubmissionObservation } from "../src/core/submission-operation";
+import { SubmissionOperationLedger, createChromeSubmissionStore, fingerprintSubmissionPayload, type SubmissionObservation } from "../src/core/submission-operation";
 import {
   childDeliveryOperationId,
   mintInsertedOnAcceptance,
@@ -172,6 +172,32 @@ describe("mint INSERTED on acceptance", () => {
     // Replay: idempotent, evidence preserved.
     const replay = await mintInsertedOnAcceptance(d, { childThreadId: "child-l2", deliveredTo: "ignored-on-replay", now: 400 });
     expect(replay.delivery).toEqual(delivery);
+  });
+
+  it("refuses to mint when a foreign operation squatted the derived id", async () => {
+    const d = deps();
+    await readyChild(d);
+    // Simulate a delivery-identity hash collision: a different payload is
+    // prepared directly on the ledger under the derived id, reaches
+    // OBSERVED_ACCEPTED, and then tries to mint this child's receipt.
+    const fence = {
+      providerConversationRef: "conv-x", bindingEpoch: 1, leaseGeneration: 1,
+      leaseOwnerRef: "obs-x", targetCarrierRef: "tab-x"
+    };
+    await d.submissions.prepare({
+      operationId: deliveryId(), operationKind: "DELIVER_CHILD_RESULT", workItemId: "wi-1",
+      logicalThreadId: "pdlt-l1", targetCarrierRef: "tab-x", providerConversationRef: "conv-x",
+      dispatchFence: fence, payloadFingerprint: fingerprintSubmissionPayload("foreign"), payload: "foreign",
+      preSubmitBaseline: { routeRef: "/c/conv-x", assistantMessageCount: 0, userMessageCount: 0, observedAt: 1 }
+    });
+    await d.submissions.initializeAuthority({ ...fence, logicalThreadId: "pdlt-l1", carrierState: "READY", logicalControl: "CONTINUE", explicitGo: true, sourceEpoch: 1, sourceObservedAt: 1 });
+    await d.submissions.claim(deliveryId(), { ...fence, logicalThreadId: "pdlt-l1", carrierState: "READY", logicalControl: "CONTINUE", explicitGo: true, sourceEpoch: 1, sourceObservedAt: 1 } as never, 10);
+    await d.submissions.reconcile(deliveryId(), {
+      conversationRef: "conv-x", routeRef: "/c/conv-x", assistantMessageCount: 0, userMessageCount: 1,
+      observedAt: 2500, stableSince: 400, sourceEpoch: 1, generationActive: false, dispatchFence: fence
+    } as never);
+    await expect(mintInsertedOnAcceptance(d, { childThreadId: "child-l2", deliveredTo: "conv-x" }))
+      .rejects.toThrow("delivery_payload_mismatch");
   });
 
   it("does not confuse COMPLETED transport with not-yet-inserted", async () => {
