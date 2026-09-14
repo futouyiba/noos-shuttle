@@ -41,11 +41,13 @@
 | W8 execution journal in delivery runtime | `cc645c2`, `da7f30c` | APPROVE after notes |
 | W9 FAILED_SAFE re-arm symmetry | `3a9f4bc` | APPROVE |
 | W10 FAILED_SAFE rollover escape (fresh-attempt retarget) | `42161a2`, `602968d`, `a793905`, `13cd373` | APPROVE (lane separation enforced, states pinned) |
+| W11a three-identity dispatch model | `6119f2b` | in review |
+| W12 context provenance × source × fidelity | `3e1f028` | in review |
 
 ## 3. Verification evidence (current)
 
 - `npm run typecheck` — 0 errors.
-- `npm test` — **29 files / 321 tests pass**, including playwright browser smokes (now also the child-lifecycle lanes and the full child-result delivery loop)
+- `npm test` — **29 files / 326 tests pass**, including playwright browser smokes (now also the child-lifecycle lanes and the full child-result delivery loop)
   rebuilt from this tree (Human GO real-ledger dispatch; durable Goal Re-anchor
   end-to-end).
 - Commit-message test counts are taken from the last clean-tree run.
@@ -64,11 +66,13 @@
   baseline to the new conversation, and leave identity fields untouched. The
   previously deadlocked scenario (prepare → rollover → retarget → claim under
   the new fence) is covered end to end; cross-thread retargeting is rejected.
-- Wiring follow-ups: the journal → reducer settle hop — framed in
-  `w11-settle-hop-design.md` with the fence-minting question (A/B/C) awaiting
-  adjudication before implementation; the Path-A stamp test is covered
-  (`bbcf7bf`); spawn producers (real browser fork adapter is blocked on the
-  fork-adapter proposal). The rollover re-arm escape is closed (W10).
+- Wiring follow-ups: the runtime lockstep (W11b — the worker-side durable
+  reducer driving the claim permit and settleFromEvidence from journal facts;
+  the identity model itself is implemented in W11a); the spawn adapter's
+  real-browser capabilities implementation (the capability interface and
+  conforming-strategy gating landed in W12; the fork-adapter proposal's
+  adjudication is recorded and honored — no FRESH relabel path exists). The
+  rollover re-arm escape is closed (W10); Path-A stamp test covered.
 - Semantic run-state handlers (commit_decision, open_question, …) share the
   delta kernel per adjudication item 5 — not started, explicitly V1-later.
 
