@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { ChildWorkerLedger, createChromeChildWorkerStore } from "../src/core/child-worker";
-import { ResultDeliveryLedger, createChromeResultDeliveryStore } from "../src/core/result-delivery";
+import { ResultDeliveryLedger, createChromeResultDeliveryStore, resultDeliveryKey, type ResultDeliveryRecord } from "../src/core/result-delivery";
 import { returnChildResult } from "../src/core/child-return";
+
+class ThrowingDelivery extends ResultDeliveryLedger {
+  override async completeDelivery(): Promise<ResultDeliveryRecord> {
+    throw new Error("transport_failed");
+  }
+}
 
 function harness() {
   const backing: Record<string, unknown> = {};
@@ -11,7 +17,7 @@ function harness() {
   };
   const children = new ChildWorkerLedger(createChromeChildWorkerStore(chromeStorage));
   const deliveries = new ResultDeliveryLedger(createChromeResultDeliveryStore(chromeStorage));
-  return { children, deliveries };
+  return { children, deliveries, chromeStorage };
 }
 
 const intent = {
@@ -89,6 +95,32 @@ describe("return child result", () => {
     const outcome = await returnChildResult({ children, deliveries }, { childThreadId: "child-l2", deliveredTo: "conv-l1c", now: 300 });
     expect(outcome.child.state).toBe("COMPLETED");
     expect(outcome.delivery.state).toBe("COMPLETED");
+    expect(await deliveries.listDeliveries()).toHaveLength(1);
+  });
+
+  it("does not mark the child COMPLETED when the delivery fails (§15 order)", async () => {
+    const { children, chromeStorage } = harness();
+    await readyChild(children);
+    const throwing = new ThrowingDelivery(createChromeResultDeliveryStore(chromeStorage));
+    await expect(returnChildResult({ children, deliveries: throwing }, { childThreadId: "child-l2", deliveredTo: "conv-l1c" }))
+      .rejects.toThrow("transport_failed");
+    // The delivery did not complete, so the child must not be COMPLETED.
+    expect((await children.get("child-l2"))?.state).toBe("RETURNING");
+  });
+
+  it("resumes when the delivery completed but the child had not", async () => {
+    const { children, deliveries } = harness();
+    await readyChild(children);
+    await deliveries.createDelivery({ parentThreadId: "pdlt-l1", childThreadId: "child-l2", workItemId: "wi-1", resultRef: "docs/memory.md" });
+    await children.beginReturn("child-l2");
+    await deliveries.completeDelivery(
+      resultDeliveryKey({ parentThreadId: "pdlt-l1", childThreadId: "child-l2", resultRef: "docs/memory.md" }),
+      { deliveredTo: "conv-l1c", completionReceipt: "rcpt-1" }
+    );
+
+    const outcome = await returnChildResult({ children, deliveries }, { childThreadId: "child-l2", deliveredTo: "conv-l1c", now: 400 });
+    expect(outcome.child.state).toBe("COMPLETED");
+    expect(outcome.delivery).toMatchObject({ state: "COMPLETED", deliveredTo: "conv-l1c" });
     expect(await deliveries.listDeliveries()).toHaveLength(1);
   });
 });

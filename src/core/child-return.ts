@@ -8,6 +8,10 @@
  * so it stays correct across parent rollover, and delivery is not semantic
  * acceptance. Retrying is idempotent: the delivery is create-or-get and each
  * child transition is guarded by the current state.
+ *
+ * One return orchestrator per child is assumed. Two concurrent returns are
+ * fail-safe — the loser gets a child transition conflict (its retry then takes
+ * the idempotent path) — but the two ledgers are not jointly atomic.
  */
 
 import { ChildWorkerLedger, type ChildWorkerRecord } from "./child-worker";
@@ -20,7 +24,11 @@ export interface ReturnDependencies {
 
 export interface ReturnChildResultInput {
   childThreadId: string;
-  /** Parent provider conversation resolved at delivery time (§11); never a raw tabId. */
+  /**
+   * Parent provider conversation ref resolved at delivery time (§11). Routing is
+   * by parent Logical Thread, so the caller must resolve this from the canonical
+   * binding — never from a raw tabId. This layer records it as given.
+   */
   deliveredTo: string;
   now?: number;
 }
