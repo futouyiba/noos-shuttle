@@ -42,7 +42,7 @@
 ## 4. Open items
 
 - R2b re-review of `d483e94` in flight (fable).
-- R2c rename `HarnessReducer` → `HarnessControlStateReducer` (adjudication
+- R2c rename `HarnessReducer` → `OperationalStateReducer` (adjudication
   item 3) — queued behind R2b to avoid touching files under review.
 - Wiring slices (blocked on nothing external, ordered): execution-journal fence
   field mapping vs reducer DispatchFence; DELIVER_CHILD_RESULT transport on the

@@ -1,5 +1,5 @@
 /**
- * Crash-consistent durable wrapper for the HarnessControlStateReducer.
+ * Crash-consistent durable wrapper for the OperationalStateReducer.
  *
  * A mutation is applied to a staged copy of the state and the resulting state is
  * persisted BEFORE it is committed in memory, so a failing store leaves the

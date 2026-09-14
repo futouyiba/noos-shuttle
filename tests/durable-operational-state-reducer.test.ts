@@ -33,7 +33,7 @@ function bundleStore(initial?: DurableStateBundle): OperationalStateReducerStore
   };
 }
 
-describe("durable harness reducer", () => {
+describe("durable operational state reducer", () => {
   it("persists the post-state before committing it in memory", async () => {
     const store = memoryStore();
     const reducer = await DurableOperationalStateReducer.restore(store);
