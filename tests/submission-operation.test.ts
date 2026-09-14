@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { SubmissionOperationLedger, SUBMISSION_OPERATIONS_KEY, SUBMISSION_OPERATIONS_REVISION_KEY, createChromeSubmissionStore, type SubmissionAuthority, type SubmissionClaimContext } from "../src/core/submission-operation";
+import { SubmissionOperationLedger, SUBMISSION_OPERATIONS_KEY, SUBMISSION_OPERATIONS_REVISION_KEY, createChromeSubmissionStore, fingerprintSubmissionPayload, type SubmissionAuthority, type SubmissionClaimContext } from "../src/core/submission-operation";
 
 function baseline() { return { routeRef: "route:a", assistantMessageCount: 1, userMessageCount: 1, lastUserMessageFingerprint: "ce8", lastAssistantMessageFingerprint: "a1", headFingerprint: "h1", observedAt: 1 }; }
 function context(carrier = "browser-tab:1", conversation = "conversation:a", logicalThreadId = "t1", sourceEpoch = 0, sourceObservedAt = 1): SubmissionClaimContext { return { logicalThreadId, providerConversationRef: conversation, bindingEpoch: 1, leaseGeneration: 1, leaseOwnerRef: "owner-1", targetCarrierRef: carrier, carrierState: "READY", logicalControl: "CONTINUE", explicitGo: true, sourceEpoch, sourceObservedAt }; }
@@ -726,6 +726,66 @@ describe("SubmissionOperationLedger", () => {
     await backwards.prepare({ ...input("rt-4"), now: 100 });
     expect(await backwards.retarget("rt-4", rolledOver, baseline(), 50)).toBeUndefined();
     expect((await backwards.retarget("rt-4", rolledOver, baseline(), 150))?.providerConversationRef).toBe("conversation:b");
+  });
+
+  it("stamps the acceptance payload fingerprint when reconciliation proves acceptance", async () => {
+    const ledger = new SubmissionOperationLedger(memoryStore());
+    // Non-GO transports (delivery) do not require the payload fingerprint for
+    // acceptance, so the stamp is what makes the proof durable.
+    const fingerprint = fingerprintSubmissionPayload("delivered result");
+    await ledger.prepare({ ...input("stamp-1"), operationKind: "DELIVER_CHILD_RESULT", payload: "delivered result", payloadFingerprint: fingerprint });
+    await ledger.claim("stamp-1", context(), 10);
+    await ledger.record("stamp-1", "DISPATCHING", {
+      now: 11,
+      dispatchReceipt: { claimedAt: 10, attemptedAt: 11, outcome: "dispatched", fence: context() }
+    });
+    const accepted = await ledger.reconcile("stamp-1", {
+      ...baseline(),
+      conversationRef: "conversation:a",
+      userMessageCount: 2,
+      lastUserMessageFingerprint: fingerprint,
+      observedAt: 20,
+      sourceEpoch: 0,
+      generationActive: false,
+      dispatchFence: context()
+    });
+    expect(accepted.outcome).toBe("PROVEN_ACCEPTED");
+    expect(accepted.operation?.acceptedPayloadFingerprint).toBe(fingerprint);
+    // A later legitimate user message overwrites the evidence but not the stamp.
+    const later = fingerprintSubmissionPayload("operator follow-up");
+    const overwritten = await ledger.reconcile("stamp-1", {
+      ...baseline(),
+      conversationRef: "conversation:a",
+      userMessageCount: 3,
+      lastUserMessageFingerprint: later,
+      observedAt: 30,
+      sourceEpoch: 0,
+      generationActive: false,
+      dispatchFence: context()
+    });
+    expect(overwritten.outcome).toBe("PROVEN_ACCEPTED");
+    expect(overwritten.operation?.lastReconciliationEvidence?.lastUserMessageFingerprint).toBe(later);
+    expect(overwritten.operation?.acceptedPayloadFingerprint).toBe(fingerprint);
+    // Acceptance proven without the payload's fingerprint never stamps.
+    const ledger2 = new SubmissionOperationLedger(memoryStore());
+    await ledger2.prepare({ ...input("stamp-2"), operationKind: "DELIVER_CHILD_RESULT", payload: "delivered result", payloadFingerprint: fingerprint });
+    await ledger2.claim("stamp-2", context(), 10);
+    await ledger2.record("stamp-2", "DISPATCHING", {
+      now: 11,
+      dispatchReceipt: { claimedAt: 10, attemptedAt: 11, outcome: "dispatched", fence: context() }
+    });
+    const foreign = await ledger2.reconcile("stamp-2", {
+      ...baseline(),
+      conversationRef: "conversation:a",
+      userMessageCount: 2,
+      lastUserMessageFingerprint: later,
+      observedAt: 20,
+      sourceEpoch: 0,
+      generationActive: false,
+      dispatchFence: context()
+    });
+    expect(foreign.outcome).toBe("PROVEN_ACCEPTED");
+    expect(foreign.operation?.acceptedPayloadFingerprint).toBeUndefined();
   });
 
   it("retarget refuses a context or baseline from another logical thread or conversation", async () => {

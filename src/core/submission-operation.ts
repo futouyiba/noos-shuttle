@@ -17,7 +17,7 @@ export interface SubmissionDispatchReceipt {
   fence: SubmissionDispatchFence;
 }
 export interface SubmissionDispatchFence { providerConversationRef: string; bindingEpoch: number; leaseGeneration: number; leaseOwnerRef: string; targetCarrierRef: string; }
-export interface SubmissionOperation { operationId: string; operationKind: SubmissionOperationKind; workItemId: string; logicalThreadId: string; targetCarrierRef: string; providerConversationRef?: string; dispatchFence?: SubmissionDispatchFence; payloadFingerprint: string; payload?: string; parentEpoch?: number; preSubmitBaseline: SubmissionBaseline; state: SubmissionOperationState; createdAt: number; lastObservedAt: number; dispatchClaimedAt?: number; dispatchReceipt?: SubmissionDispatchReceipt; lastReconciliationEvidence?: SubmissionObservation; resultingTurnRef?: string; error?: string; }
+export interface SubmissionOperation { operationId: string; operationKind: SubmissionOperationKind; workItemId: string; logicalThreadId: string; targetCarrierRef: string; providerConversationRef?: string; dispatchFence?: SubmissionDispatchFence; payloadFingerprint: string; payload?: string; parentEpoch?: number; preSubmitBaseline: SubmissionBaseline; state: SubmissionOperationState; createdAt: number; lastObservedAt: number; dispatchClaimedAt?: number; dispatchReceipt?: SubmissionDispatchReceipt; lastReconciliationEvidence?: SubmissionObservation; resultingTurnRef?: string; error?: string; /** Fingerprint of the user message that proved acceptance, stamped when reconciliation first establishes OBSERVED_ACCEPTED; survives later evidence overwrites. */ acceptedPayloadFingerprint?: string; }
 export interface SubmissionClaimContext extends SubmissionDispatchFence {
   logicalThreadId: string;
   carrierState: "READY";
@@ -301,12 +301,20 @@ export class SubmissionOperationLedger {
         }
         operation.lastObservedAt = observationTime;
         operation.lastReconciliationEvidence = cloneObservation(observation);
+        if (observation.lastUserMessageFingerprint === operation.payloadFingerprint) {
+          operation.acceptedPayloadFingerprint = observation.lastUserMessageFingerprint;
+        }
         return { records, result: { outcome: "PROVEN_ACCEPTED" as const, operation: cloneOperation(operation) } };
       }
       if (!isAllowedTransition(operation.state, nextState)) return { records, result: { outcome: "STILL_AMBIGUOUS" as const, operation: cloneOperation(operation) } };
       operation.lastObservedAt = observation.observedAt ?? Date.now();
       operation.lastReconciliationEvidence = cloneObservation(observation);
       operation.state = nextState;
+      if (nextState === "OBSERVED_ACCEPTED" && observation.lastUserMessageFingerprint === operation.payloadFingerprint) {
+        // Stamp the acceptance proof: later legitimate user messages will
+        // overwrite lastReconciliationEvidence, but acceptance is durable.
+        operation.acceptedPayloadFingerprint = observation.lastUserMessageFingerprint;
+      }
       return {
         records,
         result: {
@@ -476,6 +484,7 @@ export function isSubmissionOperation(value: unknown): value is SubmissionOperat
     (item.dispatchReceipt === undefined || isDispatchReceiptValue(item.dispatchReceipt)) &&
     (item.lastReconciliationEvidence === undefined || isObservationValue(item.lastReconciliationEvidence)) &&
     (item.resultingTurnRef === undefined || typeof item.resultingTurnRef === "string") &&
+    (item.acceptedPayloadFingerprint === undefined || (typeof item.acceptedPayloadFingerprint === "string" && item.acceptedPayloadFingerprint.length > 0)) &&
     (item.error === undefined || typeof item.error === "string");
 }
 function cloneOperation(operation: SubmissionOperation): SubmissionOperation { return { ...operation, preSubmitBaseline: { ...operation.preSubmitBaseline } }; }

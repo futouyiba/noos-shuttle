@@ -172,6 +172,39 @@ await prepareChildDeliveryTransport(deps, { childThreadId: "child-l2", destinati
     expect(operation.state).toBe("DISPATCHING");
   });
 
+  it("still mints when a later legitimate message overwrote the acceptance evidence", async () => {
+    const { deps, storage, backing } = harness();
+    backing.noosWorkItemInbox = WORK_ITEM;
+    await seedResultReadyChild(deps);
+    await deps.deliveries.setWait("pdlt-l1", { kind: "WAIT_WORKER", childThreadId: "child-l2" }, 5);
+    // Ack lost: transport parks UNCERTAIN.
+    await runChildDeliveryProbe({ context: context(), baseline }, storage, deps, async () => { throw new Error("ack lost"); });
+    const operationId = (await deps.submissions.list())[0].operationId;
+    // Acceptance is proven by the payload's own message (stamped)...
+    await deps.submissions.reconcile(operationId, {
+      ...baseline, conversationRef: "conv-l1",
+      userMessageCount: 3, lastUserMessageFingerprint: payloadFingerprint,
+      observedAt: Date.now() + 6_000, stableSince: Date.now() + 3_500, sourceEpoch: 3, generationActive: false,
+      dispatchFence: (await deps.submissions.get(operationId))!.dispatchFence
+    });
+    // ...then the operator's follow-up message overwrites the evidence.
+    await deps.submissions.reconcile(operationId, {
+      ...baseline, conversationRef: "conv-l1",
+      userMessageCount: 4, lastUserMessageFingerprint: fingerprintSubmissionPayload("follow-up message"),
+      observedAt: Date.now() + 7_000, stableSince: Date.now() + 4_500, sourceEpoch: 3, generationActive: false,
+      dispatchFence: (await deps.submissions.get(operationId))!.dispatchFence
+    });
+    // The minting probe still closes the delivery via the stamped proof.
+    const probe = await runChildDeliveryProbe({
+      context: context(),
+      baseline: { ...baseline, observedAt: Date.now() + 8_000, userMessageCount: 4, lastUserMessageFingerprint: fingerprintSubmissionPayload("follow-up message") }
+    }, storage, deps, async () => { throw new Error("must not redispatch"); });
+    expect(probe.closed).toBe(1);
+    const delivery = await deps.deliveries.getDelivery(resultDeliveryKey({ parentThreadId: "pdlt-l1", childThreadId: "child-l2", resultRef: "docs/memory.md" }));
+    expect(delivery?.receiptState).toBe("COMPLETED");
+    expect((await deps.children.get("child-l2"))?.state).toBe("COMPLETED");
+  });
+
   it("refuses to mint when the acceptance evidence carries a foreign user message", async () => {
     const { deps, storage, backing } = harness();
     backing.noosWorkItemInbox = WORK_ITEM;

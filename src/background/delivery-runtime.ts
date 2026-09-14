@@ -166,10 +166,12 @@ async function recoverOnce(
   const settled = await deps.submissions.get(operationId);
   if (!settled || (settled.state !== "OBSERVED_ACCEPTED" && settled.state !== "COMPLETED") || !settled.providerConversationRef) return false;
   // Non-GO transports do not fingerprint-check acceptance inside the ledger;
-  // this runtime tightens it: only evidence whose last user message IS the
-  // payload may mint, so an unrelated manual message cannot be read as
-  // "result inserted".
-  if (settled.lastReconciliationEvidence?.lastUserMessageFingerprint !== settled.payloadFingerprint) return false;
+  // this runtime tightens it: only the payload's own user message may prove
+  // insertion. The stamped proof (recorded when reconciliation first
+  // established acceptance) wins over the latest evidence, so a later
+  // legitimate user message cannot erase an already-proven acceptance.
+  const acceptanceProof = settled.acceptedPayloadFingerprint ?? settled.lastReconciliationEvidence?.lastUserMessageFingerprint;
+  if (acceptanceProof !== settled.payloadFingerprint) return false;
   const minted = await mintInsertedOnAcceptance(deps, {
     childThreadId: child.childThreadId,
     deliveredTo: settled.providerConversationRef,
