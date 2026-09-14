@@ -5,10 +5,12 @@ import { readFile } from "node:fs/promises";
 
 let browser: Browser;
 let contentScript: string;
+let serviceWorkerScript: string;
 
 beforeAll(async () => {
   await build({ configFile: "vite.config.ts", logLevel: "silent" });
   contentScript = await readFile("dist/assets/content.js", "utf8");
+  serviceWorkerScript = await readFile("dist/assets/service-worker.js", "utf8");
   browser = await chromium.launch({ headless: true, executablePath: process.env.NOOS_TEST_BROWSER_EXECUTABLE });
 });
 
@@ -301,6 +303,265 @@ describe("content script smoke flow", () => {
     expect(text).not.toContain("Untitled NOOS Thread");
     await page.close();
   }, 10_000);
+
+  it("dispatches a durable Goal Re-anchor through content, worker, ledger and provider DOM", async () => {
+    const page = await newMockChatPage({ startWithHandoffs: false, injectContentScript: false });
+    await page.evaluate(() => {
+      const listeners: Array<(message: unknown, sender: unknown, sendResponse: (response: unknown) => void) => unknown> = [];
+      const backing: Record<string, unknown> = {};
+      const sendMessage = async (message: unknown) => new Promise<unknown>(resolve => {
+        if ((message as { type?: string }).type === "NOOS_OBSERVATION_CARRIER") {
+          resolve({ carrierRef: "browser-tab:11" });
+          return;
+        }
+        let settled = false;
+        const complete = (response: unknown) => {
+          if (!settled) {
+            settled = true;
+            resolve(response);
+          }
+        };
+        const listener = listeners[0];
+        if (!listener) {
+          complete(undefined);
+          return;
+        }
+        const returned = listener(message, {
+          id: "extension-id",
+          frameId: 0,
+          tab: { id: 11 },
+          url: window.location.href
+        }, complete);
+        if (returned !== true) complete(undefined);
+      });
+      (globalThis as unknown as { realLedgerBacking: Record<string, unknown> }).realLedgerBacking = backing;
+      (globalThis as unknown as { chrome: any }).chrome = {
+        runtime: {
+          id: "extension-id",
+          getURL: (path: string) => `chrome-extension://mock/${path}`,
+          sendMessage,
+          lastError: undefined,
+          onInstalled: { addListener: () => undefined },
+          onMessage: { addListener: (listener: typeof listeners[number]) => {
+            if ((globalThis as any).restartGoalWorker) { listeners[0] = listener; (globalThis as any).restartGoalWorker = false; }
+            else listeners.push(listener);
+          } }
+        },
+        storage: {
+          local: {
+            get: async (key: string) => ({ [key]: backing[key] }),
+            set: async (value: Record<string, unknown>) => Object.assign(backing, value),
+            remove: async () => undefined
+          }
+        },
+        tabs: { sendMessage: async (_tab: number, message: unknown) => new Promise(resolve => {
+          const listener = listeners[1];
+          if (!listener) return resolve({ ok: false });
+          const returned = listener(message, { id: "extension-id" }, resolve);
+          if (returned !== true) resolve({ ok: false });
+        }) },
+        downloads: { download: async () => 1 }
+      };
+    });
+    await page.evaluate(() => {
+      const backing = (globalThis as any).realLedgerBacking;
+      backing.noosWorkItemInbox = { activeWorkItemId: "work-1", workItems: [{
+        workItemId: "work-1", primaryLogicalThreadId: "thread:noos-content-smoke", status: "ACTIVE",
+        goal: "Finish the existing design", scope: "Preserve the agreed boundaries",
+        binding: { conversationId: "noos-content-smoke", carrierRef: "browser-tab:11" }
+      }] };
+      backing.noosGoalReanchors = { "thread:noos-content-smoke": {
+        goal: "Finish the existing design", scope: "Preserve the agreed boundaries",
+        state: { version: 1, logicalThreadId: "thread:noos-content-smoke", experimentalN: 5,
+          designTurnsSinceAnchor: 5, anchorRevision: 0, completedGenerationIds: ["1", "2", "3", "4", "5"], operations: {} }
+      } };
+      const main = document.querySelector("main")!;
+      main.insertAdjacentHTML("beforeend", '<div data-message-author-role="user">previous user</div><div data-message-author-role="assistant">previous assistant</div>');
+      (globalThis as any).anchorDispatches = 0;
+      document.querySelector("button")!.addEventListener("click", () => {
+        (globalThis as any).anchorDispatches++;
+        const text = document.querySelector("#prompt-textarea")!.textContent!;
+        const user = document.createElement("div"); user.dataset.messageAuthorRole = "user"; user.textContent = text; main.append(user);
+        const stop = document.createElement("button"); stop.dataset.testid = "stop-button"; stop.textContent = "Stop"; main.append(stop);
+        setTimeout(() => {
+          stop.remove();
+          const assistant = document.createElement("div"); assistant.dataset.messageAuthorRole = "assistant";
+          assistant.textContent = "Goal and scope re-anchored."; main.append(assistant);
+        }, 200);
+      });
+    });
+    await page.addScriptTag({ content: `(function () {\n${serviceWorkerScript}\n})();` });
+    await page.addScriptTag({ content: contentScript });
+    await expect.poll(() => page.evaluate(() => (globalThis as any).realLedgerBacking.noosSubmissionOperations?.[0]?.operationKind), { timeout: 12000 }).toBe("REANCHOR_GOAL");
+    await expect.poll(() => page.evaluate(() => (globalThis as any).realLedgerBacking.noosGoalReanchors["thread:noos-content-smoke"].state.anchorRevision), { timeout: 15000 }).toBe(1);
+    const result = await page.evaluate(() => ({ count: (globalThis as any).anchorDispatches,
+      operation: (globalThis as any).realLedgerBacking.noosSubmissionOperations[0],
+      anchor: (globalThis as any).realLedgerBacking.noosGoalReanchors["thread:noos-content-smoke"].state }));
+    expect(result.count).toBe(1);
+    expect(result.operation).toMatchObject({ state: "COMPLETED", dispatchReceipt: { outcome: "dispatched" } });
+    expect(result.operation.payload).toContain("Preserve the agreed boundaries");
+    expect(result.anchor.designTurnsSinceAnchor).toBe(0);
+    await page.evaluate(() => { (globalThis as any).restartGoalWorker = true; });
+    await page.addScriptTag({ content: `(function () {\n${serviceWorkerScript}\n})();` });
+    await page.waitForTimeout(2200);
+    expect(await page.evaluate(() => (globalThis as any).anchorDispatches)).toBe(1);
+    await page.close();
+  }, 35000);
+
+  it("routes Human GO through the real service-worker ledger and persists its receipt", async () => {
+    const page = await newMockChatPage({ startWithHandoffs: false, injectContentScript: false });
+    await page.evaluate(() => {
+      const listeners: Array<(message: unknown, sender: unknown, sendResponse: (response: unknown) => void) => unknown> = [];
+      const backing: Record<string, unknown> = {};
+      const sendMessage = async (message: unknown) => new Promise<unknown>(resolve => {
+        if ((message as { type?: string }).type === "NOOS_OBSERVATION_CARRIER") {
+          resolve({ carrierRef: "browser-tab:11" });
+          return;
+        }
+        let settled = false;
+        const complete = (response: unknown) => {
+          if (!settled) {
+            settled = true;
+            resolve(response);
+          }
+        };
+        const listener = listeners[0];
+        if (!listener) {
+          complete(undefined);
+          return;
+        }
+        const returned = listener(message, {
+          id: "extension-id",
+          frameId: 0,
+          tab: { id: 11 },
+          url: window.location.href
+        }, complete);
+        if (returned !== true) complete(undefined);
+      });
+      (globalThis as unknown as { realLedgerBacking: Record<string, unknown> }).realLedgerBacking = backing;
+      (globalThis as unknown as { chrome: any }).chrome = {
+        runtime: {
+          id: "extension-id",
+          getURL: (path: string) => `chrome-extension://mock/${path}`,
+          sendMessage,
+          lastError: undefined,
+          onInstalled: { addListener: () => undefined },
+          onMessage: { addListener: (listener: typeof listeners[number]) => listeners.push(listener) }
+        },
+        storage: {
+          local: {
+            get: async (key: string) => ({ [key]: backing[key] }),
+            set: async (value: Record<string, unknown>) => Object.assign(backing, value),
+            remove: async () => undefined
+          }
+        },
+        downloads: { download: async () => 1 }
+      };
+    });
+    await page.addScriptTag({ content: `(function () {\n${serviceWorkerScript}\n})();` });
+    await page.evaluate((generatedHandoff) => {
+      document.querySelector("button")?.addEventListener("click", () => {
+        const stopButton = document.createElement("button");
+        stopButton.setAttribute("aria-label", "停止生成");
+        document.body.append(stopButton);
+        window.setTimeout(() => {
+          stopButton.remove();
+          const article = document.createElement("article");
+          const pre = document.createElement("pre");
+          pre.textContent = generatedHandoff;
+          article.append(pre);
+          document.querySelector("main")?.append(article);
+        }, 120);
+      });
+    }, createThread("Real Ledger Capture", "real-ledger-capture"));
+    await page.addScriptTag({ content: contentScript });
+    await clickShuttle(page, ".surface-fab");
+    await clickShuttle(page, "[data-action='generate-capture']");
+    await expect.poll(() => page.evaluate(() => {
+      const records = (globalThis as unknown as { realLedgerBacking: Record<string, any> }).realLedgerBacking.noosSubmissionOperations;
+      return Array.isArray(records) && records[0]?.dispatchReceipt?.outcome;
+    }), { timeout: 8000 }).toBe("dispatched");
+    const operation = await page.evaluate(() =>
+      (globalThis as unknown as { realLedgerBacking: Record<string, any> }).realLedgerBacking.noosSubmissionOperations[0]);
+    expect(operation.operationKind).toBe("GO");
+    expect(operation.state).toBe("DISPATCHING");
+    const recovery = await page.evaluate(async () => {
+      const backing = (globalThis as unknown as { realLedgerBacking: Record<string, any> }).realLedgerBacking;
+      const operation = backing.noosSubmissionOperations[0];
+      const existingAuthority = backing.noosSubmissionAuthority;
+      const oldContext = {
+        ...existingAuthority,
+        carrierState: "READY",
+        logicalControl: "CONTINUE",
+        explicitGo: true
+      };
+      const newContext = {
+        ...oldContext,
+        leaseOwnerRef: "observer-reloaded",
+        sourceEpoch: oldContext.sourceEpoch + 1,
+        sourceObservedAt: oldContext.sourceObservedAt + 1
+      };
+      const send = (globalThis as any).chrome.runtime.sendMessage;
+      const staleRecovery = await send({
+        type: "NOOS_SUBMISSION_MUTATION",
+        mutation: {
+          type: "recover",
+          operationId: operation.operationId,
+          context: { ...newContext, sourceObservedAt: oldContext.sourceObservedAt - 1 },
+          now: oldContext.sourceObservedAt
+        }
+      });
+      const wrongGeneration = await send({
+        type: "NOOS_SUBMISSION_MUTATION",
+        mutation: {
+          type: "recover",
+          operationId: operation.operationId,
+          context: { ...newContext, leaseGeneration: oldContext.leaseGeneration + 1 },
+          now: newContext.sourceObservedAt
+        }
+      });
+      const recovered = await send({
+        type: "NOOS_SUBMISSION_MUTATION",
+        mutation: { type: "recover", operationId: operation.operationId, context: newContext, now: newContext.sourceObservedAt }
+      });
+      const oldPrepare = await send({
+        type: "NOOS_SUBMISSION_MUTATION",
+        mutation: {
+          type: "prepare",
+          input: {
+            ...operation,
+            operationId: "old-instance-attempt",
+            state: undefined,
+            createdAt: undefined,
+            lastObservedAt: undefined
+          }
+        }
+      });
+      const oldClaim = await send({
+        type: "NOOS_SUBMISSION_MUTATION",
+        mutation: { type: "claim", operationId: "old-instance-attempt", context: oldContext, now: newContext.sourceObservedAt + 1 }
+      });
+      return {
+        staleRecovery,
+        wrongGeneration,
+        recovered,
+        oldPrepare,
+        oldClaim,
+        authority: backing.noosSubmissionAuthority,
+        operation: backing.noosSubmissionOperations[0]
+      };
+    });
+    expect(recovery.staleRecovery.ok).toBe(true);
+    expect(recovery.staleRecovery.result).toBeUndefined();
+    expect(recovery.wrongGeneration.ok).toBe(true);
+    expect(recovery.wrongGeneration.result).toBeUndefined();
+    expect(recovery.recovered.ok).toBe(true);
+    expect(recovery.recovered.result.dispatchFence.leaseOwnerRef).toBe("observer-reloaded");
+    expect(recovery.oldPrepare.ok).toBe(true);
+    expect(recovery.oldClaim.ok).toBe(false);
+    expect(recovery.operation.dispatchFence.leaseOwnerRef).toBe("observer-reloaded");
+    await page.close();
+  }, 15_000);
 
   it("captures a crystal and saves its key-oriented artifact", async () => {
     const page = await newMockChatPage({ startWithHandoffs: false, startWithCrystals: true });
@@ -707,10 +968,47 @@ async function newMockChatPage(
     if (autoVault) {
       window.localStorage.setItem("noos-shuttle-delivery-modes", JSON.stringify(["vault"]));
     }
+    const submissionRecords: Record<string, any> = {};
     (globalThis as unknown as { chrome: unknown }).chrome = {
       runtime: {
         getURL: (path: string) => `chrome-extension://mock/${path}`,
-        sendMessage: async (message: { type?: string; lookupKey?: string }) => {
+        sendMessage: async (message: { type?: string; lookupKey?: string; mutation?: any }) => {
+          if (message.type === "NOOS_OBSERVATION_CARRIER") return { carrierRef: "browser-tab:11" };
+          if (message.type === "NOOS_SUBMISSION_MUTATION") {
+            const mutation = message.mutation;
+            if (mutation.type === "prepare") {
+              const existing = submissionRecords[mutation.input.operationId];
+              if (existing) return { ok: true, result: existing };
+              const operation = { ...mutation.input, state: "PREPARED", createdAt: mutation.input.now ?? Date.now(), lastObservedAt: mutation.input.now ?? Date.now() };
+              submissionRecords[operation.operationId] = operation;
+              return { ok: true, result: operation };
+            }
+            if (mutation.type === "claim") {
+              const operation = submissionRecords[mutation.operationId];
+              if (!operation || operation.state !== "PREPARED") return { ok: true, result: undefined };
+              operation.state = "DISPATCHING";
+              operation.dispatchClaimedAt = mutation.now;
+              operation.lastObservedAt = mutation.now;
+              return { ok: true, result: operation };
+            }
+            if (mutation.type === "record") {
+              const operation = submissionRecords[mutation.operationId];
+              if (operation) {
+                operation.state = mutation.state;
+                operation.lastObservedAt = mutation.details?.now ?? Date.now();
+                if (mutation.details?.dispatchReceipt) operation.dispatchReceipt = mutation.details.dispatchReceipt;
+              }
+              return { ok: true, result: operation };
+            }
+            if (mutation.type === "reconcile") {
+              const operation = submissionRecords[mutation.operationId];
+              if (!operation) return { ok: true, result: { outcome: "STILL_AMBIGUOUS" } };
+              operation.state = "OBSERVED_ACCEPTED";
+              operation.lastReconciliationEvidence = mutation.observation;
+              return { ok: true, result: { outcome: "PROVEN_ACCEPTED", operation } };
+            }
+            return { ok: true, result: undefined };
+          }
           if (message.type === "NOOS_GET_VAULT_STATUS") {
             return vaultBackend === "downloads_mirror"
               ? { ok: true, hubAvailable: false, paired: false }

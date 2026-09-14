@@ -9,6 +9,7 @@
 
 import type {
   SubmissionBaseline,
+  SubmissionClaimContext,
   SubmissionOperation,
   SubmissionOperationLedger,
   SubmissionObservation
@@ -58,7 +59,7 @@ export interface DesignGenerationEvidence {
   evidenceFingerprint: string;
   completedAt: number;
   /** Authority projection produced by the completed generation, never caller supplied. */
-  completionEvidence?: { source: "WORKER_RESULT" | "REPORT" | "SNAPSHOT"; id: string; verified: true };
+  completionEvidence?: { source: "WORKER_RESULT" | "REPORT" | "SNAPSHOT" | "SUBMISSION_OPERATION"; id: string; verified: true };
 }
 
 export interface GoalReanchorRuntime {
@@ -67,6 +68,7 @@ export interface GoalReanchorRuntime {
   targetCarrierRef: string;
   providerConversationRef?: string;
   baseline: SubmissionBaseline;
+  claimContext: SubmissionClaimContext;
   dispatch(operation: SubmissionOperation): Promise<SubmissionObservation>;
 }
 
@@ -246,6 +248,7 @@ export class GoalReanchorLedger {
     if (runtime.carrierState !== "READY" || runtime.logicalControl !== "CONTINUE") return requested;
 
     const operation = requested.operation;
+    operationId = operation.operationId;
     const durable = await submissionLedger.prepare({
       operationId,
       operationKind: "REANCHOR_GOAL",
@@ -257,19 +260,21 @@ export class GoalReanchorLedger {
       payload: details.payload,
       preSubmitBaseline: runtime.baseline,
       parentEpoch: operation.sourceAnchorRevision,
+      dispatchFence: runtime.claimContext,
       now: details.now
     });
-    const claimed = await submissionLedger.claim(operationId, details.now);
+    const claimed = await submissionLedger.claim(operationId, runtime.claimContext, details.now);
     if (!claimed || claimed.state !== "DISPATCHING") return requested;
     try {
       const observation = await runtime.dispatch(claimed);
       const reconciled = await submissionLedger.reconcile(operationId, observation);
       if (reconciled.outcome !== "PROVEN_ACCEPTED") return requested;
-      await submissionLedger.record(operationId, "COMPLETED", {
+      const completed = await submissionLedger.record(operationId, "COMPLETED", {
         now: observation.observedAt ?? details.now,
         resultingTurnRef: observation.headFingerprint
       });
-      return this.completeReanchor(operationId, observation.observedAt ?? details.now);
+      return completed?.state === "COMPLETED"
+        ? this.completeReanchor(operationId, completed.lastObservedAt) : requested;
     } catch (error) {
       await submissionLedger.record(operationId, "UNCERTAIN", {
         now: details.now,
@@ -376,7 +381,7 @@ function validateGenerationEvidence(evidence: DesignGenerationEvidence): void {
   assertNonEmpty(evidence.evidenceFingerprint, "evidenceFingerprint");
   assertTimestamp(evidence.completedAt, "completedAt");
   if (evidence.completionEvidence !== undefined) {
-    if (!evidence.completionEvidence.verified || !["WORKER_RESULT", "REPORT", "SNAPSHOT"].includes(evidence.completionEvidence.source)) {
+    if (!evidence.completionEvidence.verified || !["WORKER_RESULT", "REPORT", "SNAPSHOT", "SUBMISSION_OPERATION"].includes(evidence.completionEvidence.source)) {
       throw new Error("Generation completion evidence is not authority-backed.");
     }
     assertNonEmpty(evidence.completionEvidence.id, "completionEvidence.id");

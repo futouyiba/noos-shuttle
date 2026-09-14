@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { GoalReanchorLedger, type GoalReanchorState, type GoalReanchorStore } from "../src/core/goal-reanchor";
-import { SubmissionOperationLedger } from "../src/core/submission-operation";
+import { SubmissionOperationLedger, createChromeSubmissionStore, fingerprintSubmissionPayload } from "../src/core/submission-operation";
 
 class MemoryStore implements GoalReanchorStore {
   value?: GoalReanchorState;
@@ -134,23 +134,28 @@ describe("GoalReanchorLedger", () => {
   });
 
   it("executes a re-anchor through the durable submission ledger and resets only after accepted evidence", async () => {
-    let value: unknown;
+    let value: Record<string, unknown> = {};
     const store = {
       get: async (_key: string) => value,
-      set: async (next: Record<string, unknown>) => { value = next; }
+      set: async (next: Record<string, unknown>) => { Object.assign(value, next); }
     };
-    const submissionLedger = new SubmissionOperationLedger(store);
+    const submissionLedger = new SubmissionOperationLedger(createChromeSubmissionStore(store, { claimViaCoordinator: false, lock: async work => work() }));
+    const claimContext = { logicalThreadId: "pdlt-1", providerConversationRef: "c1", targetCarrierRef: "tab-1",
+      bindingEpoch: 1, leaseGeneration: 1, leaseOwnerRef: "owner", explicitGo: true,
+      carrierState: "READY" as const, logicalControl: "CONTINUE" as const, sourceEpoch: 1, sourceObservedAt: 10 };
+    await submissionLedger.initializeAuthority(claimContext);
     const ledger = new GoalReanchorLedger({ verifySubstantive: value => value.substantive, logicalThreadId: "pdlt-1", experimentalN: 1 });
     ledger.recordDesignGeneration(evidence("g1"));
     const result = await ledger.executeReanchor("experimental_n", "anchor-1", {
       carrierState: "READY", logicalControl: "CONTINUE", targetCarrierRef: "tab-1",
-      providerConversationRef: "c1",
+      providerConversationRef: "c1", claimContext,
       baseline: { routeRef: "/c/c1", conversationRef: "c1", assistantMessageCount: 1,
         userMessageCount: 1, headFingerprint: "h1", observedAt: 10 },
       dispatch: async () => ({ routeRef: "/c/c1", conversationRef: "c1", assistantMessageCount: 1,
-        userMessageCount: 2, headFingerprint: "h2", observedAt: 20 })
+        userMessageCount: 2, headFingerprint: "h2", observedAt: 5010, sourceEpoch: 1,
+        stableSince: 10, generationActive: false, lastUserMessageFingerprint: fingerprintSubmissionPayload("anchor"), dispatchFence: claimContext })
     }, submissionLedger, { workItemId: "w1", payload: "anchor",
-      payloadFingerprint: "anchor-hash", now: 10 });
+      payloadFingerprint: fingerprintSubmissionPayload("anchor"), now: 10 });
     expect(result).toMatchObject({ completed: true, operation: { status: "COMPLETED" } });
     expect(ledger.state).toMatchObject({ anchorRevision: 1, designTurnsSinceAnchor: 0 });
     expect((await submissionLedger.get("anchor-1"))?.operationKind).toBe("REANCHOR_GOAL");

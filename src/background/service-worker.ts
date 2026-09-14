@@ -1,3 +1,6 @@
+import { runGoalReanchorProbe } from "./goal-reanchor-runtime";
+import { SubmissionOperationLedger, createChromeSubmissionStore, type SubmissionOperationMutation } from "../core/submission-operation";
+
 chrome.runtime.onInstalled.addListener(() => {
   console.info("NOOS Shuttle installed.");
 });
@@ -11,8 +14,48 @@ const HUB_VAULT_OBJECT_URL = "http://127.0.0.1:17642/v1/vault/object";
 const HUB_WIKI_TARGET_URL = "http://127.0.0.1:17642/v1/wiki/default-target";
 const HUB_ACTION_URL = "http://127.0.0.1:17642/v1/actions";
 const HUB_TOKEN_STORAGE_KEY = "noosHubShuttleToken";
+let submissionOperationCoordinator: SubmissionOperationLedger | undefined;
+
+function getSubmissionOperationCoordinator(): SubmissionOperationLedger | undefined {
+  const storage = chrome.storage?.local;
+  if (!storage) return undefined;
+  submissionOperationCoordinator ??= new SubmissionOperationLedger(createChromeSubmissionStore(storage, { claimViaCoordinator: false }));
+  return submissionOperationCoordinator;
+}
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === "NOOS_GOAL_REANCHOR_PROBE") {
+    const coordinator = getSubmissionOperationCoordinator();
+    if (!coordinator || sender.frameId !== 0 || !Number.isSafeInteger(sender.tab?.id) ||
+      !isAllowedProviderSender(sender) || !isClaimContext(message.context) || !isBaseline(message.baseline) ||
+      message.context.targetCarrierRef !== `browser-tab:${sender.tab!.id}` ||
+      message.baseline.conversationRef !== message.context.providerConversationRef) {
+      sendResponse({ ok: false });
+      return false;
+    }
+    runGoalReanchorProbe(message, chrome.storage.local, coordinator, async operation => {
+      const result = await chrome.tabs.sendMessage(sender.tab!.id!, { type: "NOOS_DISPATCH_GOAL_REANCHOR", operation }, { frameId: 0 });
+      if (!result?.ok || !isObservation(result.observation)) throw new Error("reanchor_dispatch_uncertain");
+      await coordinator.record(operation.operationId, "DISPATCHING", { now: result.observation.observedAt,
+        dispatchReceipt: { claimedAt: operation.dispatchClaimedAt!, attemptedAt: result.observation.observedAt,
+          outcome: "dispatched", fence: operation.dispatchFence! } });
+      return result.observation;
+    }).then(result => sendResponse({ ok: true, result })).catch(error => sendResponse({ ok: false, error: String(error) }));
+    return true;
+  }
+
+  if (isSubmissionMutationMessage(message, sender)) {
+    const coordinator = getSubmissionOperationCoordinator();
+    if (!coordinator) {
+      sendResponse({ ok: false, error: "submission_coordinator_unavailable" });
+      return false;
+    }
+    initializeSubmissionAuthority(coordinator, message.mutation)
+      .then(() => applySubmissionMutation(coordinator, message.mutation))
+      .then(result => sendResponse({ ok: true, result }))
+      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : "submission_claim_failed" }));
+    return true;
+  }
   if (message?.type === "NOOS_OBSERVATION_CARRIER" && sender.frameId === 0 && sender.tab?.id !== undefined) {
     sendResponse({ carrierRef: `browser-tab:${sender.tab.id}`, windowId: sender.tab.windowId, documentId: sender.documentId });
     return false;
@@ -160,6 +203,179 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   return false;
 });
+
+async function initializeSubmissionAuthority(coordinator: SubmissionOperationLedger, mutation: SubmissionOperationMutation): Promise<void> {
+  if (mutation.type === "claim" || mutation.type === "initialize_authority") {
+    await coordinator.initializeAuthority(mutation.context);
+  }
+}
+
+function isSubmissionMutationMessage(value: unknown, sender: chrome.runtime.MessageSender): value is { type: "NOOS_SUBMISSION_MUTATION"; mutation: SubmissionOperationMutation } {
+  if (!value || typeof value !== "object") return false;
+  const message = value as Partial<{ type: string; mutation: SubmissionOperationMutation }>;
+  return message.type === "NOOS_SUBMISSION_MUTATION" &&
+    sender.frameId === 0 &&
+    Number.isSafeInteger(sender.tab?.id) &&
+    isAllowedProviderSender(sender) &&
+    isSubmissionOperationMutation(message.mutation);
+}
+
+async function applySubmissionMutation(coordinator: SubmissionOperationLedger, mutation: SubmissionOperationMutation): Promise<unknown> {
+  switch (mutation.type) {
+    case "list":
+      return coordinator.list();
+    case "initialize_authority":
+      return true;
+    case "recover":
+      return coordinator.recover(mutation.operationId, mutation.context, mutation.now);
+    case "prepare":
+      return coordinator.prepare(mutation.input);
+    case "claim":
+      return coordinator.claim(mutation.operationId, mutation.context, mutation.now);
+    case "record":
+      return coordinator.record(mutation.operationId, mutation.state, mutation.details);
+    case "rearm":
+      return coordinator.rearm(mutation.operationId, mutation.baseline, mutation.fence, mutation.now);
+    case "reconcile":
+      return coordinator.reconcile(mutation.operationId, mutation.observation);
+    default:
+      throw new Error("unsupported_submission_mutation");
+  }
+}
+
+function isAllowedProviderSender(sender: chrome.runtime.MessageSender): boolean {
+  if (sender.id && chrome.runtime.id && sender.id !== chrome.runtime.id) return false;
+  if (!sender.url) return false;
+  try {
+    const url = new URL(sender.url);
+    return url.protocol === "https:" && (url.hostname === "chatgpt.com" || url.hostname.endsWith(".chatgpt.com") || url.hostname === "chat.openai.com");
+  } catch {
+    return false;
+  }
+}
+
+function isSubmissionOperationMutation(value: unknown): value is SubmissionOperationMutation {
+  if (!value || typeof value !== "object") return false;
+  const mutation = value as Partial<SubmissionOperationMutation>;
+  if (typeof mutation.type !== "string") return false;
+  if (mutation.type === "list") return true;
+  if (mutation.type === "initialize_authority") return isClaimContext(mutation.context);
+  if (mutation.type === "recover") return Boolean(isOperationId(mutation.operationId) && isFiniteInteger(mutation.now) && isClaimContext(mutation.context));
+  if (mutation.type === "claim") return Boolean(isOperationId(mutation.operationId) && isFiniteInteger(mutation.now) && isClaimContext(mutation.context));
+  if (mutation.type === "prepare") return isPrepareInput(mutation.input);
+  if (mutation.type === "record") return Boolean(isOperationId(mutation.operationId) && isRecordableState(mutation.state) && isRecordDetails(mutation.details));
+  if (mutation.type === "rearm") return Boolean(isOperationId(mutation.operationId) && isFiniteInteger(mutation.now) && isBaseline(mutation.baseline) && isDispatchFence(mutation.fence));
+  if (mutation.type === "reconcile") return Boolean(isOperationId(mutation.operationId) && isObservation(mutation.observation));
+  return false;
+}
+
+function isPrepareInput(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const input = value as Record<string, unknown>;
+  return isOperationId(input.operationId) &&
+    ["GO", "REANCHOR_GOAL", "BOOTSTRAP", "REVIEW_DISPATCH", "SEDIMENT", "DELIVER_CHILD_RESULT"].includes(input.operationKind as string) &&
+    isNonEmptyString(input.workItemId) &&
+    isNonEmptyString(input.logicalThreadId) &&
+    isNonEmptyString(input.targetCarrierRef) &&
+    isNonEmptyString(input.providerConversationRef) &&
+    isDispatchFence(input.dispatchFence) &&
+    (input.dispatchFence as Record<string, unknown>).providerConversationRef === input.providerConversationRef &&
+    (input.dispatchFence as Record<string, unknown>).targetCarrierRef === input.targetCarrierRef &&
+    isNonEmptyString(input.payloadFingerprint) &&
+    (input.payload === undefined || typeof input.payload === "string") &&
+    (input.parentEpoch === undefined || (isFiniteInteger(input.parentEpoch) && input.parentEpoch >= 0)) &&
+    isBaseline(input.preSubmitBaseline);
+}
+
+function isClaimContext(value: unknown): boolean {
+  if (!isDispatchFence(value)) return false;
+  const context = value as Record<string, unknown>;
+  return typeof context.logicalThreadId === "string" && context.logicalThreadId.trim().length > 0 &&
+    context.carrierState === "READY" && context.logicalControl === "CONTINUE" && context.explicitGo === true &&
+    isFiniteInteger(context.sourceEpoch) && context.sourceEpoch >= 0 &&
+    isFiniteInteger(context.sourceObservedAt) && context.sourceObservedAt >= 0;
+}
+
+function isDispatchFence(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const fence = value as Record<string, unknown>;
+  return typeof fence.providerConversationRef === "string" &&
+    fence.providerConversationRef.length > 0 &&
+    isFiniteInteger(fence.bindingEpoch) &&
+    fence.bindingEpoch >= 0 &&
+    isFiniteInteger(fence.leaseGeneration) &&
+    fence.leaseGeneration >= 0 &&
+    typeof fence.leaseOwnerRef === "string" &&
+    fence.leaseOwnerRef.length > 0 &&
+    typeof fence.targetCarrierRef === "string" &&
+    fence.targetCarrierRef.length > 0;
+}
+
+function isBaseline(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const baseline = value as Record<string, unknown>;
+  return typeof baseline.routeRef === "string" &&
+    isFiniteInteger(baseline.assistantMessageCount) &&
+    baseline.assistantMessageCount >= 0 &&
+    isFiniteInteger(baseline.userMessageCount) &&
+    baseline.userMessageCount >= 0 &&
+    isFiniteInteger(baseline.observedAt) &&
+    (baseline.conversationRef === undefined || typeof baseline.conversationRef === "string") &&
+    (baseline.lastUserMessageFingerprint === undefined || typeof baseline.lastUserMessageFingerprint === "string") &&
+    (baseline.lastAssistantMessageFingerprint === undefined || typeof baseline.lastAssistantMessageFingerprint === "string") &&
+    (baseline.headFingerprint === undefined || typeof baseline.headFingerprint === "string");
+}
+
+function isObservation(value: unknown): boolean {
+  if (!isBaseline(value)) return false;
+  const observation = value as Record<string, unknown>;
+  return (observation.conversationRef === undefined || typeof observation.conversationRef === "string") &&
+    isFiniteInteger(observation.sourceEpoch) &&
+    observation.sourceEpoch >= 0 &&
+    isDispatchFence(observation.dispatchFence) &&
+    (observation.generationActive === undefined || typeof observation.generationActive === "boolean") &&
+    (observation.stableSince === undefined || (isFiniteInteger(observation.stableSince) && observation.stableSince >= 0)) &&
+    (observation.providerFailure === undefined || typeof observation.providerFailure === "boolean") &&
+    (observation.assistantMessageCount === undefined || isFiniteInteger(observation.assistantMessageCount)) &&
+    (observation.userMessageCount === undefined || isFiniteInteger(observation.userMessageCount)) &&
+    (observation.lastUserMessageFingerprint === undefined || typeof observation.lastUserMessageFingerprint === "string") &&
+    (observation.lastAssistantMessageFingerprint === undefined || typeof observation.lastAssistantMessageFingerprint === "string") &&
+    (observation.headFingerprint === undefined || typeof observation.headFingerprint === "string");
+}
+
+function isFiniteInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isOperationId(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/.test(value);
+}
+
+function isRecordableState(value: unknown): boolean {
+  return value === "DISPATCHING" || value === "COMPLETED" || value === "UNCERTAIN" || value === "CANCELLED";
+}
+
+function isRecordDetails(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const details = value as Record<string, unknown>;
+  return (details.now === undefined || isFiniteInteger(details.now)) &&
+    (details.error === undefined || typeof details.error === "string") &&
+    (details.resultingTurnRef === undefined || typeof details.resultingTurnRef === "string") &&
+    (details.dispatchReceipt === undefined || isDispatchReceipt(details.dispatchReceipt));
+}
+
+function isDispatchReceipt(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const receipt = value as Record<string, unknown>;
+  return isFiniteInteger(receipt.claimedAt) && receipt.claimedAt >= 0 &&
+    isFiniteInteger(receipt.attemptedAt) && receipt.attemptedAt >= receipt.claimedAt &&
+    (receipt.outcome === "dispatched" || receipt.outcome === "uncertain") &&
+    isDispatchFence(receipt.fence);
+}
 
 interface VaultSaveMessage {
   type: "NOOS_SAVE_HANDOFF_TO_VAULT";
