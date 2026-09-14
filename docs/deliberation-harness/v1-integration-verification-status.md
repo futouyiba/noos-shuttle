@@ -29,25 +29,35 @@
 | R1 delivery → projection model | `0fd2de1`, `5044cca` | APPROVE ×2 (closed) |
 | R2a settle_submission_dispatch | `8624cd7` | APPROVE (closed) |
 | R4 Provider Execution Journal | `ad8ce8d`, `6b76c8b` | APPROVE ×2 (closed) |
-| R2b delta kernel (ApplyResult/audit/replay) | `738ced5` | REQUEST_CHANGES → fix `d483e94` in re-review |
+| R2b delta kernel (ApplyResult/audit/replay) | `738ced5`, `d483e94` | APPROVE after fix |
+| R2c rename OperationalStateReducer | `e37dbab`, `bca117f` | APPROVE (mechanical rename verified) |
+| W1 settle-from-evidence glue | `31f8e2d`, `35faeb5` | APPROVE after fix |
+| W2 DELIVER_CHILD_RESULT transport composer | `865ac7f`, `ee03b1d` | APPROVE (MINOR-1 tracked as pre-wiring gap) |
 
 ## 3. Verification evidence (current)
 
 - `npm run typecheck` — 0 errors.
-- `npm test` — **26 files / 280 tests pass**, including playwright browser smokes
+- `npm test` — **28 files / 299 tests pass**, including playwright browser smokes
   rebuilt from this tree (Human GO real-ledger dispatch; durable Goal Re-anchor
   end-to-end).
 - Commit-message test counts are taken from the last clean-tree run.
 
 ## 4. Open items
 
-- R2b re-review of `d483e94` in flight (fable).
-- R2c rename `HarnessReducer` → `OperationalStateReducer` (adjudication
-  item 3) — queued behind R2b to avoid touching files under review.
-- Wiring slices (blocked on nothing external, ordered): execution-journal fence
-  field mapping vs reducer DispatchFence; DELIVER_CHILD_RESULT transport on the
-  submission ledger; child spawn/return producers in the service worker;
-  settle evidence producers feeding the journal then the reducer.
+- **Tracked design gap (pre-wiring blocker, W2 review MINOR-1)**: a
+  PREPARED-but-unclaimed DELIVER_CHILD_RESULT (or any submission operation)
+  cannot re-fence after a parent rollover before the dispatch claim — the
+  ledger freezes the fence at prepare, `recover`/`rearm` do not cover PREPARED,
+  and re-preparing under the derived delivery id raises
+  `operation_id_reuse_conflict`. Fail-closed (no duplicate-insert risk), but the
+  E2E §5/§7 rollover example cannot be honored until the submission ledger
+  gains an authority-proven PREPARED re-fence path. Root cause sits in the
+  reviewed `submission-operation.ts`, not the composer.
+- Wiring slices (blocked on nothing external, ordered): service-worker
+  producers for child spawn/return; settle evidence producers (journal append →
+  settleFromEvidence); delivery transport driving (prepare → claim → dispatch
+  → reconcile → mint → complete). Wiring order for delivery: reconcile → mint
+  → await turn → record COMPLETED (to shrink the permanent-wedge window).
 - Semantic run-state handlers (commit_decision, open_question, …) share the
   delta kernel per adjudication item 5 — not started, explicitly V1-later.
 
