@@ -45,7 +45,7 @@
 ## 3. Verification evidence (current)
 
 - `npm run typecheck` — 0 errors.
-- `npm test` — **29 files / 317 tests pass**, including playwright browser smokes (now also the child-lifecycle lanes and the full child-result delivery loop)
+- `npm test` — **29 files / 321 tests pass**, including playwright browser smokes (now also the child-lifecycle lanes and the full child-result delivery loop)
   rebuilt from this tree (Human GO real-ledger dispatch; durable Goal Re-anchor
   end-to-end).
 - Commit-message test counts are taken from the last clean-tree run.
@@ -60,10 +60,10 @@
   baseline to the new conversation, and leave identity fields untouched. The
   previously deadlocked scenario (prepare → rollover → retarget → claim under
   the new fence) is covered end to end; cross-thread retargeting is rejected.
-- Wiring follow-ups: the journal → reducer settle hop (settleFromEvidence is
-  implemented and reviewed but not yet invoked by a runtime); a Path-A stamp
-  test (foreign acceptance later corrected by a matching observation) is
-  deferred; spawn producers (real browser fork adapter is blocked on the
+- Wiring follow-ups: the journal → reducer settle hop — framed in
+  `w11-settle-hop-design.md` with the fence-minting question (A/B/C) awaiting
+  adjudication before implementation; the Path-A stamp test is covered
+  (`bbcf7bf`); spawn producers (real browser fork adapter is blocked on the
   fork-adapter proposal). The rollover re-arm escape is closed (W10).
 - Semantic run-state handlers (commit_decision, open_question, …) share the
   delta kernel per adjudication item 5 — not started, explicitly V1-later.
