@@ -44,7 +44,7 @@
 ## 3. Verification evidence (current)
 
 - `npm run typecheck` — 0 errors.
-- `npm test` — **29 files / 316 tests pass**, including playwright browser smokes (now also the child-lifecycle lanes and the full child-result delivery loop)
+- `npm test` — **29 files / 317 tests pass**, including playwright browser smokes (now also the child-lifecycle lanes and the full child-result delivery loop)
   rebuilt from this tree (Human GO real-ledger dispatch; durable Goal Re-anchor
   end-to-end).
 - Commit-message test counts are taken from the last clean-tree run.
@@ -59,16 +59,14 @@
   baseline to the new conversation, and leave identity fields untouched. The
   previously deadlocked scenario (prepare → rollover → retarget → claim under
   the new fence) is covered end to end; cross-thread retargeting is rejected.
-- Wiring follow-ups (from W5 review NOTEs): wire the Provider Execution
-  Journal into the dispatch/reconcile loop (append attempt/ack/acceptance/
-  completion, then settleFromEvidence for control-state settlement); a
-  FAILED_SAFE delivery needs the ledger rearm path surfaced in the runtime
-  (symmetry with the reanchor runtime); the acceptance-evidence overwrite
-  window (a later legitimate user message replacing the acceptance evidence's
-  fingerprint before the minting probe → fail-closed false negative) may need
-  an acceptance-time fingerprint persisted on the delivery record; spawn
-  producers (real browser fork adapter is blocked on the fork-adapter
-  proposal).
+- Wiring follow-ups: the journal → reducer settle hop (settleFromEvidence
+  is implemented and reviewed but not yet invoked by a runtime); a FAILED_SAFE
+  delivery whose destination rolled over BEFORE the re-arm probe has no
+  escape — deterministic delivery ids cannot rotate like the reanchor
+  runtime's fresh ids, so the ledger needs a re-arm-with-new-fence path
+  (W9 review finding 1); a Path-A stamp test (foreign acceptance later
+  corrected by a matching observation) is deferred; spawn producers (real
+  browser fork adapter is blocked on the fork-adapter proposal).
 - Semantic run-state handlers (commit_decision, open_question, …) share the
   delta kernel per adjudication item 5 — not started, explicitly V1-later.
 
