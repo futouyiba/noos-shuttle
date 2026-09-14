@@ -40,6 +40,7 @@
 | W7 durable acceptance stamp | `08ef188`, `0c10be6` | APPROVE ×2 (residual closed, re-arm clears stamp) |
 | W8 execution journal in delivery runtime | `cc645c2`, `da7f30c` | APPROVE after notes |
 | W9 FAILED_SAFE re-arm symmetry | `3a9f4bc` | APPROVE |
+| W10 FAILED_SAFE rollover escape (fresh-attempt retarget) | `42161a2`, `602968d`, `a793905` | APPROVE (lane separation enforced, states pinned) |
 
 ## 3. Verification evidence (current)
 
@@ -59,14 +60,11 @@
   baseline to the new conversation, and leave identity fields untouched. The
   previously deadlocked scenario (prepare → rollover → retarget → claim under
   the new fence) is covered end to end; cross-thread retargeting is rejected.
-- Wiring follow-ups: the journal → reducer settle hop (settleFromEvidence
-  is implemented and reviewed but not yet invoked by a runtime); a FAILED_SAFE
-  delivery whose destination rolled over BEFORE the re-arm probe has no
-  escape — deterministic delivery ids cannot rotate like the reanchor
-  runtime's fresh ids, so the ledger needs a re-arm-with-new-fence path
-  (W9 review finding 1); a Path-A stamp test (foreign acceptance later
-  corrected by a matching observation) is deferred; spawn producers (real
-  browser fork adapter is blocked on the fork-adapter proposal).
+- Wiring follow-ups: the journal → reducer settle hop (settleFromEvidence is
+  implemented and reviewed but not yet invoked by a runtime); a Path-A stamp
+  test (foreign acceptance later corrected by a matching observation) is
+  deferred; spawn producers (real browser fork adapter is blocked on the
+  fork-adapter proposal). The rollover re-arm escape is closed (W10).
 - Semantic run-state handlers (commit_decision, open_question, …) share the
   delta kernel per adjudication item 5 — not started, explicitly V1-later.
 
