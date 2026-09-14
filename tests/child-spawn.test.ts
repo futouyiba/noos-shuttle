@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ChildWorkerLedger, createChromeChildWorkerStore, type ChildWorkerRecord } from "../src/core/child-worker";
-import { SpawnUncertainError, spawnChildWorker, reconcileChildSpawn, type SpawnAdapter, type SpawnDependencies } from "../src/core/child-spawn";
+import { SpawnUncertainError, spawnChildWorker, reconcileChildSpawn, type SpawnAdapter, type SpawnAdapterCapabilities } from "../src/core/child-spawn";
 
 function makeChildren() {
   const backing: Record<string, unknown> = {};
@@ -16,15 +16,24 @@ const intent = {
   workItemId: "wi-1",
   role: "Sedimentation / Memory Curator",
   creationMode: "FORKED" as const,
+  contextSource: "PROVIDER_INHERITED" as const,
+  contextFidelity: "PROVIDER_INHERITANCE_REQUIRED" as const,
   operationGoal: "preserve missing durable reasoning",
   operationScope: "do not continue the main design trajectory",
   returnRoute: "thread:pdlt-l1"
 };
 
+const NATIVE_FORK_CAPS = { supportsNativeFork: true, transcriptExportAvailable: true } as const;
+
 function countingAdapter(
-  outcome: () => Promise<{ providerConversationRef: string; carrierRef: string }>
+  outcome: () => Promise<{ providerConversationRef: string; carrierRef: string }>,
+  capabilities: SpawnAdapterCapabilities = NATIVE_FORK_CAPS
 ): SpawnAdapter & { calls: number } {
-  const adapter = { calls: 0, spawn: async (child: ChildWorkerRecord) => { adapter.calls += 1; return outcome(); } };
+  const adapter = {
+    calls: 0,
+    capabilities: () => capabilities,
+    spawn: async (child: ChildWorkerRecord) => { adapter.calls += 1; return outcome(); }
+  };
   return adapter;
 }
 
@@ -132,6 +141,36 @@ describe("spawn child worker", () => {
     await expect(spawnChildWorker({ children, adapter }, intent)).rejects.toBeInstanceOf(SpawnUncertainError);
     const cancelled = await reconcileChildSpawn(children, "child-l2");
     expect(cancelled.state).toBe("CANCELLED");
+  });
+
+  it("refuses FORKED spawn when the adapter reports no native fork (NEEDS_HUMAN, no silent fallback)", async () => {
+    const children = makeChildren();
+    const adapter = countingAdapter(async () => ({ providerConversationRef: "conv-x", carrierRef: "tab-x" }), { supportsNativeFork: false, transcriptExportAvailable: true } as const);
+    await expect(spawnChildWorker({ children, adapter }, intent)).rejects.toThrow("spawn_needs_human:native_fork_unavailable");
+    // Nothing was spawned and the intent stays PLANNED for a human decision.
+    expect(adapter.calls).toBe(0);
+    expect((await children.get("child-l2"))?.state).toBe("PLANNED");
+  });
+
+  it("refuses a Sedimentation child whose fidelity is not satisfied by the context source", async () => {
+    const children = makeChildren();
+    const adapter = countingAdapter(async () => ({ providerConversationRef: "conv-x", carrierRef: "tab-x" }));
+    // FRESH + durable pack can never relabel as inherited (adjudication D2 §2).
+    await expect(spawnChildWorker({ children, adapter }, {
+      ...intent, creationMode: "FRESH" as const, contextSource: "DURABLE_CONTEXT_PACK" as const
+    })).rejects.toThrow("spawn_needs_human:provider_inheritance_unsatisfied");
+    expect(adapter.calls).toBe(0);
+  });
+
+  it("allows a FRESH reviewer with independent fidelity and minimal bootstrap", async () => {
+    const children = makeChildren();
+    const adapter = countingAdapter(async () => ({ providerConversationRef: "conv-r", carrierRef: "tab-r" }), { supportsNativeFork: false, transcriptExportAvailable: false } as const);
+    const child = await spawnChildWorker({ children, adapter }, {
+      ...intent, childThreadId: "child-l3", creationMode: "FRESH" as const,
+      contextSource: "MINIMAL_BOOTSTRAP" as const, contextFidelity: "INDEPENDENT" as const
+    });
+    expect(child.state).toBe("ACTIVE");
+    expect(adapter.calls).toBe(1);
   });
 
   it("refuses to cancel a child that is not reconcilable", async () => {

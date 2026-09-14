@@ -621,6 +621,8 @@ describe("content script smoke flow", () => {
       workItemId: "wi-1",
       role: "Sedimentation / Memory Curator",
       creationMode: "FORKED",
+      contextSource: "PROVIDER_INHERITED" as const,
+      contextFidelity: "PROVIDER_INHERITANCE_REQUIRED" as const,
       operationGoal: "preserve missing durable reasoning",
       operationScope: "do not continue the main design trajectory",
       returnRoute: "thread:pdlt-l1",
@@ -760,6 +762,8 @@ describe("content script smoke flow", () => {
     const intent = {
       childThreadId: "child-l2", parentThreadId: "thread:noos-content-smoke", workItemId: "work-1",
       role: "Sedimentation / Memory Curator", creationMode: "FORKED",
+      contextSource: "PROVIDER_INHERITED" as const,
+      contextFidelity: "PROVIDER_INHERITANCE_REQUIRED" as const,
       operationGoal: "preserve missing durable reasoning", operationScope: "do not continue the main design trajectory",
       returnRoute: "thread:thread:noos-content-smoke", now: 100
     };

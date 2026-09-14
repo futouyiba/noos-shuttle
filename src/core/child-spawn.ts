@@ -25,7 +25,17 @@ export interface SpawnBinding {
   carrierRef: string;
 }
 
+/** Capability facts the adapter reports; it never decides semantic equivalence. */
+export interface SpawnAdapterCapabilities {
+  supportsNativeFork: boolean;
+  transcriptExportAvailable: boolean;
+  /** Additional facts may be reported; policy reads them, adapters never conclude. */
+  [fact: string]: boolean | string | number;
+}
+
 export interface SpawnAdapter {
+  /** Reports provider capability facts (adjudication D2 §7). */
+  capabilities: () => SpawnAdapterCapabilities;
   /** Performs the fork/new-conversation browser action (§5). */
   spawn: (child: ChildWorkerRecord) => Promise<SpawnBinding>;
 }
@@ -44,8 +54,34 @@ function isSpawnUncertain(error: unknown): boolean {
   return error instanceof SpawnUncertainError || (error as { name?: unknown } | null)?.name === "SpawnUncertainError";
 }
 
+/**
+ * Conforming-strategy selection (adjudication D2 §6): the child's required
+ * fidelity × the adapter's reported capabilities. No conforming strategy is a
+ * NEEDS_HUMAN/DEFER refusal — never a silent degradation.
+ */
+export function selectSpawnStrategy(
+  child: Pick<ChildWorkerRecord, "creationMode" | "contextSource" | "contextFidelity">,
+  capabilities: SpawnAdapterCapabilities
+): { conforming: true } | { conforming: false; reason: string } {
+  if (child.creationMode === "FORKED" && !capabilities.supportsNativeFork) {
+    return { conforming: false, reason: "spawn_needs_human:native_fork_unavailable" };
+  }
+  if (child.contextFidelity === "PROVIDER_INHERITANCE_REQUIRED" && child.contextSource !== "PROVIDER_INHERITED") {
+    return { conforming: false, reason: "spawn_needs_human:provider_inheritance_unsatisfied" };
+  }
+  if (child.contextFidelity === "TRANSCRIPT_RECONSTRUCTION_REQUIRED" &&
+    child.contextSource !== "TRANSCRIPT_RECONSTRUCTION" && child.contextSource !== "PROVIDER_INHERITED") {
+    return { conforming: false, reason: "spawn_needs_human:transcript_reconstruction_unavailable" };
+  }
+  return { conforming: true };
+}
+
 export async function spawnChildWorker(deps: SpawnDependencies, input: CreateChildIntentInput): Promise<ChildWorkerRecord> {
   let child = await deps.children.createIntent(input);
+  {
+    const strategy = selectSpawnStrategy(input, deps.adapter.capabilities());
+    if (!strategy.conforming) throw new Error(strategy.reason);
+  }
   if (child.state === "PLANNED") {
     child = await deps.children.beginSpawn(child.childThreadId);
   } else if (child.state === "ACTIVE") {

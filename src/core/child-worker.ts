@@ -19,6 +19,18 @@ export type ChildLifecycleState =
   | "CANCELLED";
 
 export type ChildCreationMode = "FORKED" | "FRESH";
+/** Where the child's working context actually comes from (adjudication D2 axis B). */
+export type ChildContextSource =
+  | "PROVIDER_INHERITED"
+  | "DURABLE_CONTEXT_PACK"
+  | "TRANSCRIPT_RECONSTRUCTION"
+  | "MINIMAL_BOOTSTRAP";
+/** The minimum context fidelity the worker's operation contract demands (axis C). */
+export type ChildContextFidelity =
+  | "INDEPENDENT"
+  | "DURABLE_CONTEXT_SUFFICIENT"
+  | "TRANSCRIPT_RECONSTRUCTION_REQUIRED"
+  | "PROVIDER_INHERITANCE_REQUIRED";
 
 export interface ChildWorkerRecord {
   childThreadId: string;
@@ -26,6 +38,8 @@ export interface ChildWorkerRecord {
   workItemId: string;
   role: string;
   creationMode: ChildCreationMode;
+  contextSource: ChildContextSource;
+  contextFidelity: ChildContextFidelity;
   operationGoal: string;
   operationScope: string;
   /** Logical-thread routing ref. Never a raw tabId (§11). */
@@ -49,6 +63,8 @@ export interface CreateChildIntentInput {
   workItemId: string;
   role: string;
   creationMode: ChildCreationMode;
+  contextSource: ChildContextSource;
+  contextFidelity: ChildContextFidelity;
   operationGoal: string;
   operationScope: string;
   returnRoute: string;
@@ -121,6 +137,8 @@ export class ChildWorkerLedger {
         workItemId: input.workItemId,
         role: input.role.trim(),
         creationMode: input.creationMode,
+        contextSource: input.contextSource,
+        contextFidelity: input.contextFidelity,
         operationGoal: input.operationGoal.trim(),
         operationScope: input.operationScope.trim(),
         returnRoute: input.returnRoute,
@@ -268,6 +286,8 @@ export function isChildWorkerRecord(value: unknown): value is ChildWorkerRecord 
     isNonEmptyString(record.workItemId) &&
     isNonEmptyString(record.role) &&
     (record.creationMode === "FORKED" || record.creationMode === "FRESH") &&
+    isContextSource(record.contextSource) &&
+    isContextFidelity(record.contextFidelity) &&
     isNonEmptyString(record.operationGoal) &&
     isNonEmptyString(record.operationScope) &&
     isReturnRoute(record.returnRoute) &&
@@ -295,6 +315,8 @@ export function isCreateChildIntentInput(value: unknown): value is CreateChildIn
     isNonEmptyString(input.workItemId) &&
     isNonEmptyString(input.role) &&
     (input.creationMode === "FORKED" || input.creationMode === "FRESH") &&
+    isContextSource(input.contextSource) &&
+    isContextFidelity(input.contextFidelity) &&
     isNonEmptyString(input.operationGoal) &&
     isNonEmptyString(input.operationScope) &&
     isReturnRoute(input.returnRoute) &&
@@ -308,6 +330,8 @@ function sameChildIdentity(existing: ChildWorkerRecord, input: CreateChildIntent
     existing.workItemId === input.workItemId &&
     existing.role === input.role.trim() &&
     existing.creationMode === input.creationMode &&
+    existing.contextSource === input.contextSource &&
+    existing.contextFidelity === input.contextFidelity &&
     existing.operationGoal === input.operationGoal.trim() &&
     existing.operationScope === input.operationScope.trim() &&
     existing.returnRoute === input.returnRoute;
@@ -330,6 +354,17 @@ function cloneRecord(record: ChildWorkerRecord): ChildWorkerRecord {
     relevantArtifactRefs: [...record.relevantArtifactRefs],
     supersededConversationRefs: record.supersededConversationRefs ? [...record.supersededConversationRefs] : undefined
   };
+}
+
+const CONTEXT_SOURCES: ChildContextSource[] = ["PROVIDER_INHERITED", "DURABLE_CONTEXT_PACK", "TRANSCRIPT_RECONSTRUCTION", "MINIMAL_BOOTSTRAP"];
+const CONTEXT_FIDELITIES: ChildContextFidelity[] = ["INDEPENDENT", "DURABLE_CONTEXT_SUFFICIENT", "TRANSCRIPT_RECONSTRUCTION_REQUIRED", "PROVIDER_INHERITANCE_REQUIRED"];
+
+function isContextSource(value: unknown): value is ChildContextSource {
+  return typeof value === "string" && (CONTEXT_SOURCES as string[]).includes(value);
+}
+
+function isContextFidelity(value: unknown): value is ChildContextFidelity {
+  return typeof value === "string" && (CONTEXT_FIDELITIES as string[]).includes(value);
 }
 
 function isChildLifecycleState(value: unknown): value is ChildLifecycleState {

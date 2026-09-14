@@ -30,6 +30,8 @@ const intent = {
   workItemId: "wi-1",
   role: "Sedimentation / Memory Curator",
   creationMode: "FORKED" as const,
+  contextSource: "PROVIDER_INHERITED" as const,
+  contextFidelity: "PROVIDER_INHERITANCE_REQUIRED" as const,
   operationGoal: "preserve missing durable reasoning",
   operationScope: "do not continue the main design trajectory",
   returnRoute: "thread:pdlt-l1"

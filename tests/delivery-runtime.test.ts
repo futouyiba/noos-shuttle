@@ -60,6 +60,8 @@ async function seedResultReadyChild(deps: ReturnType<typeof harness>["deps"], pa
   await deps.children.createIntent({
     childThreadId: "child-l2", parentThreadId, workItemId: "work-1",
     role: "Sedimentation / Memory Curator", creationMode: "FORKED",
+    contextSource: "PROVIDER_INHERITED" as const,
+    contextFidelity: "PROVIDER_INHERITANCE_REQUIRED" as const,
     operationGoal: "preserve missing durable reasoning", operationScope: "do not continue the main design trajectory",
     returnRoute: `thread:${parentThreadId}`, now: 50
   });
