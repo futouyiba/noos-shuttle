@@ -270,6 +270,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 type ChildWorkerMutation =
+  | { type: "list" }
   | { type: "create_intent"; input: CreateChildIntentInput }
   | { type: "begin_spawn" | "mark_spawn_uncertain" | "prove_non_creation" | "activate" | "begin_return" | "complete" | "retire" | "mark_broken" | "cancel"; childThreadId: string; now?: number }
   | { type: "bind_conversation"; childThreadId: string; binding: { providerConversationRef: string; carrierRef: string }; now?: number }
@@ -290,6 +291,7 @@ function isChildWorkerMutation(value: unknown): value is ChildWorkerMutation {
   const mutation = value as Partial<ChildWorkerMutation> & { childThreadId?: unknown; input?: unknown; binding?: unknown; result?: unknown; now?: unknown };
   if (typeof mutation.type !== "string") return false;
   const soloTypes = ["begin_spawn", "mark_spawn_uncertain", "prove_non_creation", "activate", "begin_return", "complete", "retire", "mark_broken", "cancel"];
+  if (mutation.type === "list") return true;
   if (mutation.type === "create_intent") return isCreateChildIntentInput(mutation.input);
   if (soloTypes.includes(mutation.type)) return isOperationId(mutation.childThreadId) && (mutation.now === undefined || isFiniteInteger(mutation.now));
   if (mutation.type === "bind_conversation") {
@@ -311,6 +313,7 @@ function isChildWorkerMutation(value: unknown): value is ChildWorkerMutation {
 
 async function applyChildMutation(ledger: ChildWorkerLedger, mutation: ChildWorkerMutation): Promise<unknown> {
   switch (mutation.type) {
+    case "list": return ledger.list();
     case "create_intent": return ledger.createIntent(mutation.input);
     case "begin_spawn": return ledger.beginSpawn(mutation.childThreadId, mutation.now);
     case "mark_spawn_uncertain": return ledger.markSpawnUncertain(mutation.childThreadId, mutation.now);

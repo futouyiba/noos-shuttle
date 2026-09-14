@@ -650,6 +650,9 @@ describe("content script smoke flow", () => {
     expect(persisted).toHaveLength(1);
     expect(persisted[0]).toMatchObject({ state: "RETIRED", resultRef: "docs/memory.md", providerConversationRef: "conv-l2" });
 
+    // The lane can list records — the content side needs this for §16 spawn
+    // reconciliation (finding SPAWN_UNCERTAIN children after a restart).
+    expect(((await mutate({ type: "list" })) as any).result).toHaveLength(1);
     // Illegal transitions and malformed mutations fail closed.
     expect(((await mutate({ type: "activate", childThreadId: "child-l2", now: 180 })) as any).ok).toBe(false);
     expect(((await mutate({ type: "begin_spawn", childThreadId: "ghost", now: 180 })) as any).ok).toBe(false);
