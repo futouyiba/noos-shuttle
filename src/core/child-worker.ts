@@ -68,6 +68,9 @@ export const CHILD_WORKERS_KEY = "noosChildWorkers";
 
 const TERMINAL_STATES = new Set<ChildLifecycleState>(["RETIRED", "CANCELLED"]);
 
+/** States that only exist once a conversation is bound to the child (§16). */
+const BOUND_STATES = new Set<ChildLifecycleState>(["BOOTSTRAPPING", "ACTIVE", "RESULT_READY", "RETURNING", "COMPLETED", "RETIRED"]);
+
 /** Legal lifecycle edges. Every transition outside this table is a conflict. */
 const TRANSITIONS: Record<ChildLifecycleState, ChildLifecycleState[]> = {
   PLANNED: ["SPAWNING", "CANCELLED"],
@@ -75,7 +78,8 @@ const TRANSITIONS: Record<ChildLifecycleState, ChildLifecycleState[]> = {
   SPAWN_UNCERTAIN: ["BOOTSTRAPPING", "CANCELLED", "BROKEN"],
   BOOTSTRAPPING: ["ACTIVE", "BROKEN", "CANCELLED"],
   ACTIVE: ["RESULT_READY", "BROKEN", "CANCELLED"],
-  RESULT_READY: ["RETURNING", "BROKEN", "CANCELLED"],
+  // §15: a result that needs no return transport may be completed directly.
+  RESULT_READY: ["RETURNING", "COMPLETED", "BROKEN", "CANCELLED"],
   RETURNING: ["COMPLETED", "BROKEN", "CANCELLED"],
   COMPLETED: ["RETIRED"],
   RETIRED: [],
@@ -156,7 +160,10 @@ export class ChildWorkerLedger {
     if (!isConversationBinding(binding)) throw new Error("child_binding_invalid");
     return this.transition(childThreadId, "BOOTSTRAPPING", operation => {
       if (operation.providerConversationRef && operation.providerConversationRef !== binding.providerConversationRef) {
-        operation.supersededConversationRefs = [...(operation.supersededConversationRefs ?? []), operation.providerConversationRef];
+        const superseded = new Set(operation.supersededConversationRefs ?? []);
+        superseded.add(operation.providerConversationRef);
+        superseded.delete(binding.providerConversationRef);
+        operation.supersededConversationRefs = [...superseded];
       }
       operation.providerConversationRef = binding.providerConversationRef;
       operation.carrierRef = binding.carrierRef;
@@ -266,6 +273,7 @@ export function isChildWorkerRecord(value: unknown): value is ChildWorkerRecord 
     isReturnRoute(record.returnRoute) &&
     Array.isArray(record.relevantArtifactRefs) && record.relevantArtifactRefs.every(isNonEmptyString) &&
     isChildLifecycleState(record.state) &&
+    (!BOUND_STATES.has(record.state) || isNonEmptyString(record.providerConversationRef)) &&
     isFiniteInteger(record.createdAt) &&
     isFiniteInteger(record.updatedAt) &&
     (record.spawnAttemptedAt === undefined || isFiniteInteger(record.spawnAttemptedAt)) &&
@@ -297,8 +305,11 @@ function isCreateChildIntentInput(value: unknown): value is CreateChildIntentInp
 function sameChildIdentity(existing: ChildWorkerRecord, input: CreateChildIntentInput): boolean {
   return existing.parentThreadId === input.parentThreadId &&
     existing.workItemId === input.workItemId &&
-    existing.role === input.role &&
-    existing.creationMode === input.creationMode;
+    existing.role === input.role.trim() &&
+    existing.creationMode === input.creationMode &&
+    existing.operationGoal === input.operationGoal.trim() &&
+    existing.operationScope === input.operationScope.trim() &&
+    existing.returnRoute === input.returnRoute;
 }
 
 function isConversationBinding(value: unknown): value is { providerConversationRef: string; carrierRef: string } {
@@ -324,9 +335,9 @@ function isChildLifecycleState(value: unknown): value is ChildLifecycleState {
   return typeof value === "string" && value in TRANSITIONS;
 }
 
-/** Logical-thread-shaped refs only; a bare tabId is rejected (§11, §19.5). */
+/** Whitelist: a return route must be a logical-thread ref, never a tab/carrier ref (§11, §19.5). */
 function isReturnRoute(value: unknown): value is string {
-  return isThreadId(value) && !/^(tab[:-]?)?\d+$/i.test(value);
+  return typeof value === "string" && /^thread:[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/.test(value);
 }
 
 function isThreadId(value: unknown): value is string {
