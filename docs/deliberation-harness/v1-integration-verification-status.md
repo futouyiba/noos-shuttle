@@ -1,6 +1,6 @@
 # V1 Integration Branch — Verification Status
 
-> Branch: `codex/child-lifecycle-next` @ `d483e94`. Post-adjudication work
+> Branch: `codex/control-lane-followup` @ `106988f` (W13/W14 land here on top of merged main 59ad928; earlier slices were merged from `codex/child-lifecycle-next`). Post-adjudication work
 > (see `v1-adjudication-record.md`, authority baseline noos_docs @ a49303ca)
 > is landing on top of the merged integration line (b4e1c70). All work lives in
 > the Claude worktree `.claude/worktrees/github-workflow-integration-dad5e2`;
@@ -44,11 +44,13 @@
 | W11a three-identity dispatch model | `6119f2b`, `9102ffb` | APPROVE after fix |
 | W11b control-state lockstep in delivery runtime | `0f76801`, `33e59ba` | APPROVE after fix (crash-window settle backfill, mint replay, restore health) |
 | W12 context provenance × source × fidelity | `3e1f028`, `8422351`, `0f76801` | APPROVE after fix ×2 (identity coverage, matrix gaps, inheritance exemption — all mutation-locked) |
+| W13 browser FRESH spawn (activation-safe adoption) | `fb7ee65`, `09f3563` | APPROVE after fix (gate-before-tab, single-live pending) |
+| W14 control-lane re-arm (A-prime, F18) | `968826e`, `38583c9` | APPROVE after fix (tests, clock, evidence ref) |
 
 ## 3. Verification evidence (current)
 
 - `npm run typecheck` — 0 errors.
-- `npm test` — **29 files / 334 tests pass**, including playwright browser smokes (now also the child-lifecycle lanes and the full child-result delivery loop)
+- `npm test` — **30 files / 348 tests pass**, including playwright browser smokes (now also the child-lifecycle lanes and the full child-result delivery loop)
   rebuilt from this tree (Human GO real-ledger dispatch; durable Goal Re-anchor
   end-to-end).
 - Commit-message test counts are taken from the last clean-tree run.
@@ -67,16 +69,20 @@
   baseline to the new conversation, and leave identity fields untouched. The
   previously deadlocked scenario (prepare → rollover → retarget → claim under
   the new fence) is covered end to end; cross-thread retargeting is rejected.
-- Wiring follow-ups: the spawn adapter's real-browser capabilities
-  implementation (the capability interface and conforming-strategy gating
-  landed in W12; the fork-adapter adjudication is honored — no FRESH relabel
-  path exists). The rollover re-arm escape is closed (W10); Path-A stamp test
-  covered; W11b lockstep closed (`0f76801` + `33e59ba`).
-- Control-lane follow-ups (from the W11b review): the re-arm fence semantics
-  — W9's same-fence re-arm versus the adjudication's F18 wording — and the
-  FAILED_SAFE/retarget propagation into the control lane (a rolled-over
-  control operation currently stays execution-owning and blocks control-side
-  binding moves) need one explicit design pass.
+- The spawn adapter's real-browser wiring landed (W13, `fb7ee65` +
+  `09f3563`): activation-safe two-phase FRESH spawn (request lane gates on the
+  reported adapter capabilities, opens the tab only after gating, and adopts
+  only once the new tab reports a stable conversation identity; FORKED
+  refusals leave the durable PLANNED intent for a human). The control-lane
+  re-arm adjudication is implemented and approved (W14, `968826e` +
+  `38583c9`: rearmSubmissionDispatch retires a FAILED_SAFE attempt on the same
+  logical operation; F18 mints at the next claim; rollover rolls control
+  binding/lease first; the Q4 evidence predicate requires reconciliation
+  outcome PROVEN_NOT_ACCEPTED). The rollover re-arm escape is closed (W10);
+  Path-A stamp test covered; W11b lockstep closed.
+- ~~Control-lane follow-ups~~ **CLOSED**: the re-arm fence semantics and
+  FAILED_SAFE propagation were adjudicated (v1-adjudication-control-lane.md)
+  and implemented in W14.
 - Semantic run-state handlers (commit_decision, open_question, …) share the
   delta kernel per adjudication item 5 — not started, explicitly V1-later.
 
