@@ -167,7 +167,6 @@ interface PageContext {
   pathname: string;
   conversationId: string;
   pageKind: PageKind;
-  textFingerprint: string;
   signature: string;
 }
 
@@ -178,6 +177,7 @@ const CAPTURE_RETRY_MS = 1_200;
 const CAPTURE_POLL_MS = 1_500;
 const PAGE_CONTEXT_POLL_MS = 1_000;
 const PAGE_CONTEXT_DEBOUNCE_MS = 250;
+const PROJECT_IMPORT_REFRESH_MIN_INTERVAL_MS = 500;
 const FAB_SIZE = 44;
 const EDGE_GAP = 12;
 const SHUTTLE_ICON_URL = getExtensionAssetUrl("icons/icon-128.png");
@@ -196,7 +196,10 @@ let preferredVaultAttachRoot: HTMLElement | null = null;
 const runtimeObservationLedger = new RuntimeObservationLedger();
 let observationRoute = "";
 let observationRouteSince = 0;
-let observationOutput = "";
+// Tail fingerprint of the assistant output (count:lastLength:hash), never the
+// full conversation text — re-serializing it per observation is what starved
+// ChatGPT's main thread while streaming (#22).
+let observationOutputFingerprint = "";
 let observationOutputChangedAt: number | null = null;
 let activeSubmission: { operationId: string; fence: SubmissionDispatchFence; claimedAt: number } | null = null;
 let submissionRecoveryRequestedAt = -Infinity;
@@ -2079,8 +2082,11 @@ function installConversationWatcher(app: HTMLElement): void {
     if (relevant) {
       // Structural post-processing also breaks quiet, even when text is unchanged.
       // A route change below resets this heartbeat against the new DOM baseline.
+      // The timestamp is recorded per mutation batch, but the expensive
+      // observation pass is debounced above: the quiet-window rules in
+      // runtime-observer.ts sample stability on 1-2s windows anyway (#22).
       observationOutputChangedAt = Date.now();
-      checkPageContext(app);
+      scheduleContextCheck();
     }
   });
   let outputRoot = document.querySelector("main");
@@ -2096,7 +2102,27 @@ function installProjectImportBridge(app: HTMLElement): void {
   projectImportBridgeInstalled = true;
   const refresh = () => upsertProjectImportButton(app);
   refresh();
-  const observer = new MutationObserver(() => window.setTimeout(refresh, 100));
+  // ChatGPT mutates the body dozens of times per second while streaming, so a
+  // per-mutation timer pile-up is itself a cost. Refresh at most twice a
+  // second, with a trailing call kept fresh (#22).
+  let lastRefreshAt = Date.now();
+  let trailingRefreshId: number | null = null;
+  const scheduleRefresh = () => {
+    const elapsed = Date.now() - lastRefreshAt;
+    if (elapsed >= PROJECT_IMPORT_REFRESH_MIN_INTERVAL_MS) {
+      lastRefreshAt = Date.now();
+      refresh();
+      return;
+    }
+    if (trailingRefreshId === null) {
+      trailingRefreshId = window.setTimeout(() => {
+        trailingRefreshId = null;
+        lastRefreshAt = Date.now();
+        refresh();
+      }, PROJECT_IMPORT_REFRESH_MIN_INTERVAL_MS - elapsed);
+    }
+  };
+  const observer = new MutationObserver(scheduleRefresh);
   observer.observe(document.body, { childList: true, subtree: true });
 }
 
@@ -2537,15 +2563,23 @@ function checkPageContext(app: HTMLElement): void {
 function observeRuntimePage(context: PageContext): CarrierObservation {
   const now = Date.now();
   const route = `${context.origin}${context.pathname}`;
-  const output = Array.from(document.querySelectorAll("[data-message-author-role='assistant']"))
-    .map(node => node.textContent ?? "").join("\n");
+  // Output change is sampled from the tail only: mutation records are the
+  // primary change signal, so re-serializing every assistant message here
+  // bought no fidelity and cost O(conversation length) per observation (#22).
+  const assistantMessages = document.querySelectorAll("[data-message-author-role='assistant']");
+  const lastAssistantMessage = assistantMessages[assistantMessages.length - 1];
+  const outputFingerprint = [
+    assistantMessages.length,
+    lastAssistantMessage?.textContent?.length ?? 0,
+    fingerprintText(lastAssistantMessage?.textContent ?? "")
+  ].join(":");
   if (route !== observationRoute) {
     observationRoute = route;
     observationRouteSince = now;
-    observationOutput = output;
+    observationOutputFingerprint = outputFingerprint;
     observationOutputChangedAt = null;
-  } else if (output !== observationOutput) {
-    observationOutput = output;
+  } else if (outputFingerprint !== observationOutputFingerprint) {
+    observationOutputFingerprint = outputFingerprint;
     observationOutputChangedAt = now;
   }
   // Only the provider's main composer is readiness evidence. Historical-message
@@ -2567,7 +2601,7 @@ function observeRuntimePage(context: PageContext): CarrierObservation {
       (composer instanceof HTMLTextAreaElement || composer.isContentEditable)),
     stopGenerationControlPresent: stopControl || isChatbotGenerating(),
     assistantOutputMutating: observationOutputChangedAt !== null && now - observationOutputChangedAt < 1_000,
-    assistantMessageCount: document.querySelectorAll("[data-message-author-role='assistant']").length,
+    assistantMessageCount: assistantMessages.length,
     userMessageCount: document.querySelectorAll("[data-message-author-role='user']").length,
     providerErrorSurfacePresent: Array.from(document.querySelectorAll<HTMLElement>("[role='alert'], [data-testid='conversation-error']"))
       .some(element => isVisibleForObservation(element) && !element.closest("[data-message-author-role]") &&
@@ -2886,7 +2920,6 @@ function getPageContext(): PageContext {
   const url = new URL(window.location.href);
   const pageKind = detectPageKind(url);
   const conversationId = detectConversationId(url);
-  const textFingerprint = fingerprintText(document.querySelector("main")?.textContent ?? document.body.textContent ?? "");
   const signature = [url.origin, normalizedPathname(url), conversationId, pageKind].join("|");
 
   return {
@@ -2895,7 +2928,6 @@ function getPageContext(): PageContext {
     pathname: url.pathname,
     conversationId,
     pageKind,
-    textFingerprint,
     signature
   };
 }
@@ -2921,22 +2953,29 @@ function detectConversationId(url: URL): string {
 function detectPageKind(url: URL): PageKind {
   const host = url.hostname.toLowerCase();
   const path = url.pathname.toLowerCase();
-  const text = (document.querySelector("main")?.textContent ?? document.body.textContent ?? "").toLowerCase();
-  const hasComposer = Boolean(document.querySelector("textarea, div[contenteditable='true'], [role='textbox']"));
 
   if (!isSupportedChatHost(host)) {
     return "unsupported";
   }
-  if (/login|auth|signin|sign-in|oauth|登录|登入/.test(path) || /log in|sign in|sign up|登录|注册/.test(text)) {
+  if (/login|auth|signin|sign-in|oauth|登录|登入/.test(path)) {
+    return "login";
+  }
+  if (detectConversationId(url)) {
+    // Conversation routes never rescan page text: a reply merely containing
+    // phrases like "not found" must not flip the context signature mid-stream,
+    // and long conversations must not pay a full-text scan per observation (#22).
+    return "conversation";
+  }
+  // Text-based login/error detection only runs off conversation routes, where
+  // the page text is short.
+  const text = (document.querySelector("main")?.textContent ?? document.body.textContent ?? "").toLowerCase();
+  if (/log in|sign in|sign up|登录|注册/.test(text)) {
     return "login";
   }
   if (/not found|conversation not found|unable to load|you do not have access|找不到|无法访问|没有权限/.test(text)) {
     return "unavailable";
   }
-  if (detectConversationId(url)) {
-    return "conversation";
-  }
-  if (hasComposer) {
+  if (document.querySelector("textarea, div[contenteditable='true'], [role='textbox']")) {
     return "composer";
   }
 
