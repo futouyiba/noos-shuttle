@@ -112,8 +112,13 @@ export type FixtureEventSource =
 export type FixtureTone = "neutral" | "ready" | "warn" | "error";
 
 /**
- * Read-only diagnostic merge of existing runtime records. Rows are ordered
- * by timestamp for display only — the sources have no shared seq.
+ * Read-only diagnostic merge of existing runtime records. Frozen inclusion
+ * scope (Designer review, PR #20): this is the evidence surface for the
+ * Primary Thread and the current (or most recent relevant) operation only —
+ * NOT a WorkItem-wide log pool. Child-worker events stay in the Child
+ * Threads summary unless directly correlated with the current primary
+ * operation; WorkItem mutations surface on the scope strip. Rows are
+ * ordered by timestamp for display only — the sources share no seq.
  */
 export interface ConsoleEvent {
   timestamp: number;

@@ -1804,29 +1804,19 @@ ul {
   min-height: 22px;
 }
 
+/* Neutral projection-build pill — no aging/stale thresholds: the runtime
+   defines no cadence/TTL contract, so the UI states the age as a fact. */
 .hc-freshness {
   display: inline-flex;
   min-height: 26px;
   align-items: center;
-  border: 1px solid rgba(29, 107, 79, 0.24);
+  border: 1px solid rgba(23, 32, 26, 0.12);
   border-radius: 999px;
-  background: #dff2e7;
-  color: #14573d;
+  background: #ffffff;
+  color: #45554c;
   font: 750 11px/1 system-ui, sans-serif;
   padding: 0 10px;
   white-space: nowrap;
-}
-
-.hc-freshness[data-state="aging"] {
-  border-color: rgba(139, 90, 17, 0.28);
-  background: #fff0d9;
-  color: #704100;
-}
-
-.hc-freshness[data-state="stale"] {
-  border-color: rgba(155, 39, 39, 0.28);
-  background: #fae2df;
-  color: #8a1d1d;
 }
 
 .hc-reobserve {

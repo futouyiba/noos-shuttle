@@ -32,23 +32,25 @@ export function formatAge(ms: number): string {
 }
 
 /**
- * Console-level freshness is about the PROJECTION build time only. It says
- * nothing about harness health, and it does not claim every contained fact
- * was observed at that moment — per-source ages are rendered where the
- * facts live.
+ * Neutral projection-build freshness text. The runtime defines no push/
+ * heartbeat cadence or TTL contract yet, so the UI must not invent
+ * aging/stale thresholds — it only states how long ago the projection was
+ * assembled, and says nothing about harness health or per-fact freshness
+ * (per-source ages are rendered where the facts live).
  */
-export function projectionFreshness(
-  projectionBuiltAt: number,
-  now = Date.now()
-): { state: "live" | "aging" | "stale"; text: string } {
+export function projectionBuiltText(projectionBuiltAt: number, now = Date.now()): string {
   const age = Math.max(0, now - projectionBuiltAt);
-  if (age >= 30 * 1000) {
-    return { state: "stale", text: `projection stale · built ${formatAge(age)} ago` };
-  }
-  if (age >= 5 * 1000) {
-    return { state: "aging", text: `projection aging · built ${formatAge(age)} ago` };
-  }
-  return { state: "live", text: `projection live · built ${formatAge(age)} ago` };
+  return `projection · built ${formatAge(age)} ago`;
+}
+
+/**
+ * Live age cell: rendered once, then advanced every tick by the ticker in
+ * main.ts (which owns [data-hc-age] elements). Diagnostic ages must track
+ * real elapsed time while the page stays open.
+ */
+function ageSpan(epochMs: number): string {
+  const age = formatAge(Math.max(0, Date.now() - epochMs));
+  return `<span data-hc-age="${epochMs}">${escapeHtml(age)}</span>`;
 }
 
 function formatClock(timestamp: number): string {
@@ -117,8 +119,6 @@ function operationStateTone(state: FixtureOperationState): FixtureTone {
 }
 
 export function renderHarnessConsole(snapshot: HarnessConsoleSnapshot): string {
-  const freshness = projectionFreshness(snapshot.projectionBuiltAt);
-
   return `
     <section class="hc-toolbar">
       <div class="hc-tabs" aria-label="fixture scenario">
@@ -131,7 +131,7 @@ export function renderHarnessConsole(snapshot: HarnessConsoleSnapshot): string {
       </div>
       <div class="hc-toolbar-right">
         <span class="check-tag check-tag--partial hc-fixture-tag" title="投影应由扩展 background coordinator 构建并经 17642 bridge 推送；Hub 仅渲染。当前为 fixture。">FIXTURE · 未接 bridge</span>
-        <span class="hc-freshness" data-hc-freshness data-state="${freshness.state}" title="投影构建时间 — 不代表每条事实同时被观察，也不表达 Harness 健康">${escapeHtml(freshness.text)}</span>
+        <span class="hc-freshness" data-hc-freshness title="投影构建时间 — 不代表每条事实同时被观察，也不表达 Harness 健康；runtime 尚未定义 cadence/TTL，故不做阈值判断">${escapeHtml(projectionBuiltText(snapshot.projectionBuiltAt))}</span>
         <button type="button" class="hc-reobserve" data-hc-reobserve title="重新生成 fixture 投影（仅 dev 观察，不是 Harness 动作）">重建投影</button>
       </div>
     </section>
@@ -166,7 +166,7 @@ function renderWorkItemStrip(snapshot: HarnessConsoleSnapshot): string {
         <span><strong>status</strong> ${pill(workItem.status, toneFor(workItem.status))}</span>
         <span><strong>revision</strong> ${escapeHtml(String(workItem.revision))}</span>
         <span><strong>cold start</strong> ${pill(workItem.coldStart, toneFor(workItem.coldStart))}</span>
-        <span><strong>updated</strong> ${escapeHtml(formatAge(Date.now() - workItem.updatedAt))} 前</span>
+        <span><strong>updated</strong> ${ageSpan(workItem.updatedAt)} 前</span>
       </div>
     </section>
   `;
@@ -179,10 +179,6 @@ function renderPrimaryThread(snapshot: HarnessConsoleSnapshot): string {
   const lease = runtime.lease;
   const authority = runtime.authority;
   const observation = runtime.carrierObservation;
-
-  const observationAge = observation ? Date.now() - observation.observedAt : null;
-  const observationTone: FixtureTone =
-    observationAge !== null && observationAge >= 20 * 1000 ? "error" : "neutral";
 
   return `
     <article class="hc-thread">
@@ -203,7 +199,7 @@ function renderPrimaryThread(snapshot: HarnessConsoleSnapshot): string {
           ${factRow("Active binding", `${pill("ACTIVE", "ready")} ${refValue(binding.carrierRef)}`)}
           ${factRow("Provider conversation", refValue(binding.providerConversationRef))}
           ${factRow("Binding generation", escapeHtml(String(binding.generation)))}
-          ${factRow("Committed", `${escapeHtml(formatAge(Date.now() - binding.mutationAt))} 前`)}
+          ${factRow("Committed", `${ageSpan(binding.mutationAt)} 前`)}
         </dl>
       </section>
 
@@ -217,7 +213,7 @@ function renderPrimaryThread(snapshot: HarnessConsoleSnapshot): string {
             lease
               ? factRow(
                   "Lease / execution owner",
-                  `${escapeHtml(lease.claimedBy)} · lease gen ${escapeHtml(String(lease.leaseGeneration))} · carrier ${refValue(lease.carrierRef)} · claimed ${escapeHtml(formatAge(Date.now() - lease.claimedAt))} 前`
+                  `${escapeHtml(lease.claimedBy)} · lease gen ${escapeHtml(String(lease.leaseGeneration))} · carrier ${refValue(lease.carrierRef)} · claimed ${ageSpan(lease.claimedAt)} 前`
                 )
               : factRow("Lease / execution owner", "no lease held")
           }
@@ -225,7 +221,7 @@ function renderPrimaryThread(snapshot: HarnessConsoleSnapshot): string {
             authority
               ? factRow(
                   "Claim authority",
-                  `gen ${escapeHtml(String(authority.authorityGeneration))} · ${pill(authority.carrierState, toneFor(authority.carrierState))} · logical control ${escapeHtml(authority.logicalControl)} · explicit go ${authority.explicitGo ? "yes" : "no"} · established ${escapeHtml(formatAge(Date.now() - authority.authorityEstablishedAt))} 前`
+                  `gen ${escapeHtml(String(authority.authorityGeneration))} · ${pill(authority.carrierState, toneFor(authority.carrierState))} · logical control ${escapeHtml(authority.logicalControl)} · explicit go ${authority.explicitGo ? "yes" : "no"} · established ${ageSpan(authority.authorityEstablishedAt)} 前`
                 )
               : ""
           }
@@ -233,7 +229,7 @@ function renderPrimaryThread(snapshot: HarnessConsoleSnapshot): string {
             observation
               ? factRow(
                   "Carrier observation",
-                  `${pill(observation.carrierState, observationTone)} observed ${escapeHtml(formatAge(observationAge ?? 0))} 前${observation.providerFailure ? ` · ${pill("providerFailure", "error")}` : ""}${observation.lastTurnRef ? ` · last turn ${refValue(observation.lastTurnRef)}` : ""} ${sourceTag("carrier-observation")}`
+                  `${pill(observation.carrierState, toneFor(observation.carrierState))} observed ${ageSpan(observation.observedAt)} 前${observation.providerFailure ? ` · ${pill("providerFailure", "error")}` : ""}${observation.lastTurnRef ? ` · last turn ${refValue(observation.lastTurnRef)}` : ""} ${sourceTag("carrier-observation")}`
                 )
               : ""
           }
@@ -264,7 +260,7 @@ function renderCurrentOperation(snapshot: HarnessConsoleSnapshot): string {
         </header>
         ${
           last
-            ? `<p class="hc-last-completed">Last completed · ${escapeHtml(last.operationKind)} ${refValue(last.operationId)} · COMPLETED${last.resultingTurnRef ? ` · turn ${escapeHtml(last.resultingTurnRef)}` : ""} · ${escapeHtml(formatAge(Date.now() - last.completedAt))} 前</p>`
+            ? `<p class="hc-last-completed">Last completed · ${escapeHtml(last.operationKind)} ${refValue(last.operationId)} · COMPLETED${last.resultingTurnRef ? ` · turn ${escapeHtml(last.resultingTurnRef)}` : ""} · ${ageSpan(last.completedAt)} 前</p>`
             : ""
         }
       </article>
@@ -292,7 +288,7 @@ function renderCurrentOperation(snapshot: HarnessConsoleSnapshot): string {
             ${factRow("Target carrier", refValue(operation.targetCarrierRef))}
             ${operation.providerConversationRef ? factRow("Provider conversation", refValue(operation.providerConversationRef)) : ""}
             ${factRow("Payload fingerprint", refValue(operation.payloadFingerprint))}
-            ${factRow("Created / observed", `created ${escapeHtml(formatAge(Date.now() - operation.createdAt))} 前 · last observed ${escapeHtml(formatAge(Date.now() - operation.lastObservedAt))} 前`)}
+            ${factRow("Created / observed", `created ${ageSpan(operation.createdAt)} 前 · last observed ${ageSpan(operation.lastObservedAt)} 前`)}
             ${operation.error ? factRow("Error", `<span class="hc-error-text">${escapeHtml(operation.error)}</span>`) : ""}
           </dl>
         </section>
@@ -302,7 +298,7 @@ function renderCurrentOperation(snapshot: HarnessConsoleSnapshot): string {
           <dl class="hc-facts">
             ${factRow("Conversation turns", `assistant ${escapeHtml(String(operation.preSubmitBaseline.assistantMessageCount))} · user ${escapeHtml(String(operation.preSubmitBaseline.userMessageCount))}`)}
             ${factRow("Head fingerprint", refValue(operation.preSubmitBaseline.headFingerprint))}
-            ${factRow("Observed", `${escapeHtml(formatAge(Date.now() - operation.preSubmitBaseline.observedAt))} 前`)}
+            ${factRow("Observed", `${ageSpan(operation.preSubmitBaseline.observedAt)} 前`)}
           </dl>
         </section>
 
@@ -313,14 +309,14 @@ function renderCurrentOperation(snapshot: HarnessConsoleSnapshot): string {
               operation.dispatchClaim
                 ? factRow(
                     "Claim",
-                    `claimed ${escapeHtml(formatAge(Date.now() - operation.dispatchClaim.claimedAt))} 前 · lease gen ${escapeHtml(String(operation.dispatchClaim.leaseGeneration))} · owner ${refValue(operation.dispatchClaim.leaseOwnerRef)}`
+                    `claimed ${ageSpan(operation.dispatchClaim.claimedAt)} 前 · lease gen ${escapeHtml(String(operation.dispatchClaim.leaseGeneration))} · owner ${refValue(operation.dispatchClaim.leaseOwnerRef)}`
                   )
                 : factRow("Claim", `${pill("NOT CLAIMED", "warn")} PREPARED 持久化，尚未取得 dispatch fence`)}
             ${
               operation.dispatchReceipt
                 ? factRow(
                     "Receipt",
-                    `attempted ${escapeHtml(formatAge(Date.now() - operation.dispatchReceipt.attemptedAt))} 前 · outcome ${pill(operation.dispatchReceipt.outcome, toneFor(operation.dispatchReceipt.outcome))}`
+                    `attempted ${ageSpan(operation.dispatchReceipt.attemptedAt)} 前 · outcome ${pill(operation.dispatchReceipt.outcome, toneFor(operation.dispatchReceipt.outcome))}`
                   )
                 : ""
             }
@@ -332,7 +328,7 @@ function renderCurrentOperation(snapshot: HarnessConsoleSnapshot): string {
             ? `<section class="hc-group">
           <header><strong>Reconciliation — 证据裁决</strong></header>
           <dl class="hc-facts">
-            ${factRow("Outcome", `${pill(operation.reconciliation.outcome, toneFor(operation.reconciliation.outcome))} observed ${escapeHtml(formatAge(Date.now() - operation.reconciliation.observedAt))} 前`)}
+            ${factRow("Outcome", `${pill(operation.reconciliation.outcome, toneFor(operation.reconciliation.outcome))} observed ${ageSpan(operation.reconciliation.observedAt)} 前`)}
           </dl>
         </section>`
             : ""
@@ -390,7 +386,7 @@ function renderChildThreads(snapshot: HarnessConsoleSnapshot): string {
               </div>
               ${pill(child.state, childStateTone(child.state))}
             </div>
-            <p class="hc-child-fact">${escapeHtml(child.fact)} · updated ${escapeHtml(formatAge(Date.now() - child.updatedAt))} 前</p>
+            <p class="hc-child-fact">${escapeHtml(child.fact)} · updated ${ageSpan(child.updatedAt)} 前</p>
           </li>`
           )
           .join("")}
@@ -406,7 +402,7 @@ function renderRecentEvents(snapshot: HarnessConsoleSnapshot): string {
       <header class="hc-panel-head">
         <div>
           <p class="eyebrow">Recent Runtime Events</p>
-          <p class="hc-panel-sub">现有来源的只读诊断合并，按时间排序显示 — 各来源间没有全局 seq</p>
+          <p class="hc-panel-sub">仅收录与 Primary Thread / 当前（或最近）operation 直接相关的证据；child 事件在 Child Threads 看 · 跨来源无全局 seq，按时间排序</p>
         </div>
       </header>
       <div class="hc-event-header" aria-hidden="true">

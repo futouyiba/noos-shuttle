@@ -16,6 +16,10 @@
  *
  * Future/exploratory vocabulary (ROLLOVER, policy AUTHORIZED, first-apply
  * gate) is deliberately absent until matching runtime support exists.
+ *
+ * Recent Runtime Events scope is frozen to Primary Thread / current (or
+ * last) operation evidence — no work-item or standalone child-ledger rows
+ * (they surface on the scope strip and Child Threads respectively).
  */
 
 import type {
@@ -160,9 +164,7 @@ function createIdleSnapshot(): HarnessConsoleSnapshot {
       { ageSec: 22, source: "reducer-audit", eventType: "delta.applied", subjectRef: "claim:sub-0173", correlationRef: "dispatch claim (reducer-minted attempt)" },
       { ageSec: 26, source: "submission-ledger", eventType: "prepared", subjectRef: "sub-0173", correlationRef: "GO" },
       { ageSec: 40, source: "reducer-audit", eventType: "delta.applied", subjectRef: "transferActuationLease", correlationRef: "T-014 · lease gen 2" },
-      { ageSec: 65, source: "reducer-audit", eventType: "delta.applied", subjectRef: "commitCurrentConversationBinding", correlationRef: "conv-8821 · gen 4" },
-      { ageSec: 6 * 60 + 30, source: "child-ledger", eventType: "state", subjectRef: "review-thread", correlationRef: "COMPLETED" },
-      { ageSec: 95 + 5, source: "work-item", eventType: "updated", subjectRef: "WI-dogfood-001", correlationRef: "rev 61" }
+      { ageSec: 65, source: "reducer-audit", eventType: "delta.applied", subjectRef: "commitCurrentConversationBinding", correlationRef: "conv-8821 · gen 4" }
     ])
   };
 }
@@ -290,10 +292,8 @@ function createActiveSubmissionSnapshot(): HarnessConsoleSnapshot {
       { ageSec: 9, source: "submission-ledger", eventType: "recorded", subjectRef: "sub-0181", correlationRef: "DISPATCHING" },
       { ageSec: 11, source: "reducer-audit", eventType: "delta.applied", subjectRef: "claim:sub-0181", correlationRef: "dispatch claim (reducer-minted attempt)" },
       { ageSec: 17, source: "submission-ledger", eventType: "prepared", subjectRef: "sub-0181", correlationRef: "GO" },
-      { ageSec: 24, source: "reducer-audit", eventType: "delta.applied", subjectRef: "transferActuationLease", correlationRef: "T-014 · lease gen 3" },
-      { ageSec: 12, source: "work-item", eventType: "updated", subjectRef: "WI-dogfood-001", correlationRef: "rev 62" }
-    ])
-  };
+      { ageSec: 24, source: "reducer-audit", eventType: "delta.applied", subjectRef: "transferActuationLease", correlationRef: "T-014 · lease gen 3" }
+    ])  };
 }
 
 /**
@@ -423,14 +423,11 @@ function createAttentionRecoverySnapshot(): HarnessConsoleSnapshot {
     events: events(now, [
       { ageSec: 31, source: "execution-journal", eventType: "RECONCILIATION_EVIDENCE", subjectRef: "sub-0186", correlationRef: "STILL_AMBIGUOUS", severity: "warning", detail: "baseline head 未推进，无法证明 acceptance" },
       { ageSec: 33, source: "submission-ledger", eventType: "recorded", subjectRef: "sub-0186", correlationRef: "UNCERTAIN", severity: "warning" },
-      { ageSec: 35, source: "child-ledger", eventType: "state", subjectRef: "integration-thread", correlationRef: "SPAWN_UNCERTAIN", severity: "warning", detail: "spawn ack 未确认" },
       { ageSec: 38, source: "carrier-observation", eventType: "carrier_state", subjectRef: "C-8821", correlationRef: "SUSPENDED", severity: "warning", detail: "providerFailure=true" },
       { ageSec: 40, source: "execution-journal", eventType: "PROVIDER_ACK", subjectRef: "sub-0186", correlationRef: "ack epoch 19" },
       { ageSec: 41, source: "execution-journal", eventType: "BLIND_DISPATCH_ATTEMPT", subjectRef: "sub-0186", correlationRef: "fence:7e02" },
       { ageSec: 43, source: "reducer-audit", eventType: "delta.applied", subjectRef: "claim:sub-0186", correlationRef: "dispatch claim (reducer-minted attempt)" },
-      { ageSec: 45, source: "submission-ledger", eventType: "prepared", subjectRef: "sub-0186", correlationRef: "GO" },
-      { ageSec: 70, source: "child-ledger", eventType: "state", subjectRef: "integration-thread", correlationRef: "SPAWNING" },
-      { ageSec: 4 * 60 + 5, source: "work-item", eventType: "updated", subjectRef: "WI-dogfood-001", correlationRef: "rev 63" }
+      { ageSec: 45, source: "submission-ledger", eventType: "prepared", subjectRef: "sub-0186", correlationRef: "GO" }
     ])
   };
 }

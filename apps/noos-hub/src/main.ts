@@ -9,7 +9,7 @@ import { mockHealth, mockSleepRecoveryStatus } from "./mock";
 import { renderAdapters } from "./pages/adapters";
 import { renderConfig, type ConfigData } from "./pages/config";
 import { renderDashboard } from "./pages/dashboard";
-import { renderHarnessConsole, projectionFreshness } from "./pages/harness-console";
+import { renderHarnessConsole, formatAge, projectionBuiltText } from "./pages/harness-console";
 import { renderHelp } from "./pages/help";
 import { renderVault } from "./pages/vault";
 import { createVaultBrowserState, renderVaultBrowser, type VaultBrowserState } from "./pages/vault-browser";
@@ -404,19 +404,27 @@ function bindHarnessConsoleEvents(root: ParentNode): void {
 }
 
 /**
- * Keeps the projection-freshness pill ticking. This is the Console's view
- * of when the projection was BUILT — deliberately independent of any
- * harness-side fact (lease, carrier observation, or health).
+ * Advances every time-derived display while the console stays open: the
+ * projection-built pill plus each [data-hc-age] cell (WorkItem updated,
+ * binding committed, lease claimed, authority established, carrier
+ * observed, operation timestamps, child updated). Ages are neutral facts —
+ * the ticker applies no health thresholds (no cadence/TTL contract exists).
  */
 function startHarnessFreshnessTicker(): void {
   if (harnessFreshnessTimer !== null) return;
   harnessFreshnessTimer = window.setInterval(() => {
     if (activeSection !== "harness" || !harnessSnapshot) return;
+    const now = Date.now();
     const pill = appElement.querySelector<HTMLElement>("[data-hc-freshness]");
-    if (!pill) return;
-    const display = projectionFreshness(harnessSnapshot.projectionBuiltAt);
-    pill.dataset.state = display.state;
-    pill.textContent = display.text;
+    if (pill) {
+      pill.textContent = projectionBuiltText(harnessSnapshot.projectionBuiltAt, now);
+    }
+    appElement.querySelectorAll<HTMLElement>("[data-hc-age]").forEach((cell) => {
+      const epochMs = Number(cell.dataset.hcAge);
+      if (Number.isFinite(epochMs)) {
+        cell.textContent = formatAge(Math.max(0, now - epochMs));
+      }
+    });
   }, 1000);
 }
 
