@@ -289,9 +289,12 @@ await prepareChildDeliveryTransport(deps, { childThreadId: "child-l2", destinati
     expect((await deps.submissions.list())).toHaveLength(1);
     // Intentional contract: a same-fence re-dispatch folds into the journal's
     // first entry (the idempotency key does not count attempts) — the fact
-    // "an attempt happened under this fence" stays true and single.
+    // "an attempt happened under this fence" stays true and single — plus the
+    // adjudicated PROVEN_NOT_ACCEPTED reconciliation fact from the re-arm.
     const kinds = (await journal.list()).map(entry => entry.eventKind).sort();
-    expect(kinds).toEqual(["BLIND_DISPATCH_ATTEMPT", "PROVIDER_ACK"]);
+    expect(kinds).toEqual(["BLIND_DISPATCH_ATTEMPT", "PROVIDER_ACK", "RECONCILIATION_EVIDENCE"]);
+    const notAccepted = (await journal.list()).find(entry => entry.eventKind === "RECONCILIATION_EVIDENCE");
+    expect(notAccepted?.evidence).toMatchObject({ outcome: "PROVEN_NOT_ACCEPTED" });
   });
 
   it("escapes a FAILED_SAFE delivery whose destination rolled over before re-arm", async () => {

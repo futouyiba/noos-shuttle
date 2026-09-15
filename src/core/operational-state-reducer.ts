@@ -27,7 +27,12 @@ export type ReducerErrorCode =
   | "DISPATCH_ALREADY_OWNED"
   | "SETTLE_FENCE_MISMATCH"
   | "SETTLE_TRANSITION_INVALID"
-  | "SETTLE_REVISION_MISMATCH";
+  | "SETTLE_REVISION_MISMATCH"
+  | "REARM_STATE_MISMATCH"
+  | "REARM_REVISION_MISMATCH"
+  | "REARM_FENCE_MISMATCH"
+  | "REARM_AUTHORITY_MISMATCH"
+  | "REARM_EXECUTION_CONFLICT";
 
 export interface CurrentConversationBinding {
   logicalThreadId: string;
@@ -145,6 +150,26 @@ export interface SettleSubmissionDispatchInput {
   /** Journal/evidence ref proving the observed transport fact. */
   executionEvidenceRef: string;
   /** Durable audit rationale carried on the delta's audit record. */
+  reason: string;
+  actor: ReducerActor;
+  now: number;
+}
+
+export interface RearmSubmissionDispatchInput {
+  operationId: string;
+  /** CAS expectation: the operation revision the caller last observed. */
+  expectedOperationRevision: number;
+  /** The failed attempt this re-arm retires; never resurrected. */
+  expectedFailedDispatchFenceId: string;
+  /** Journal evidence ref proving that attempt was not accepted. */
+  provenNotAcceptedEvidenceRef: string;
+  /** The canonical current authority the next attempt will run under. */
+  nextAuthority: {
+    providerConversationRef: string;
+    bindingGeneration: number;
+    carrierRef: string;
+    leaseGeneration: number;
+  };
   reason: string;
   actor: ReducerActor;
   now: number;
@@ -543,6 +568,113 @@ export class OperationalStateReducer {
     // The attempt identity (fence) never changes on a settle hop; only the
     // local authoritative revision advances.
     operation.operationRevision += 1;
+    this.state.lastMutationActor = input.actor;
+    this.state.lastMutationAt = input.now;
+    return this.ok(cloneOperation(operation));
+  }
+
+  /**
+   * Attempt-terminal re-arm (adjudication control-lane A′): retire a FAILED_SAFE
+   * attempt and re-establish PREPARED eligibility on the SAME logical
+   * operation. This never mints a fence — only the subsequent claim does
+   * (F18). nextAuthority must equal the canonical current binding AND lease
+   * (rollover happens through the independent binding/lease transitions
+   * first, never here); a conflicting execution owner refuses.
+   */
+  rearmSubmissionDispatch(
+    input: RearmSubmissionDispatchInput,
+  ): ReducerResult<ReducerSubmissionOperation> {
+    const inputError = validateMutationInput(input.actor, input.now);
+    if (inputError) return this.fail("INVALID_MUTATION_INPUT", inputError);
+    const orderError = this.validateMutationOrder(input.now);
+    if (orderError) return this.fail("INVALID_MUTATION_INPUT", orderError);
+    const identityError = validateIdentities(
+      ["operationId", input.operationId],
+      ["provenNotAcceptedEvidenceRef", input.provenNotAcceptedEvidenceRef],
+    );
+    if (identityError) return this.fail("INVALID_MUTATION_INPUT", identityError);
+    if (typeof input.reason !== "string" || input.reason.trim().length === 0) {
+      return this.fail("INVALID_MUTATION_INPUT", "reason is required");
+    }
+    const authority = input.nextAuthority;
+    if (!isRecord(authority) ||
+      typeof authority.providerConversationRef !== "string" || authority.providerConversationRef.length === 0 ||
+      typeof authority.carrierRef !== "string" || authority.carrierRef.length === 0 ||
+      !Number.isSafeInteger(authority.bindingGeneration) || authority.bindingGeneration < 1 ||
+      !Number.isSafeInteger(authority.leaseGeneration) || authority.leaseGeneration < 1) {
+      return this.fail("INVALID_MUTATION_INPUT", "nextAuthority is invalid");
+    }
+    const operation = this.state.operations[input.operationId];
+    if (!operation) {
+      return this.fail(
+        "OPERATION_NOT_FOUND",
+        `submission operation ${input.operationId} does not exist`,
+      );
+    }
+    if (!Number.isSafeInteger(input.expectedOperationRevision) || input.expectedOperationRevision < 0) {
+      return this.fail("INVALID_MUTATION_INPUT", "expectedOperationRevision must be a non-negative integer");
+    }
+    if (operation.state !== "FAILED_SAFE") {
+      return this.fail(
+        "REARM_STATE_MISMATCH",
+        `submission operation ${input.operationId} is ${operation.state}, not FAILED_SAFE`,
+      );
+    }
+    if (operation.operationRevision !== input.expectedOperationRevision) {
+      return this.fail(
+        "REARM_REVISION_MISMATCH",
+        `submission operation ${input.operationId} is at revision ${operation.operationRevision}, not ${input.expectedOperationRevision}`,
+      );
+    }
+    if (
+      !operation.dispatchFence ||
+      operation.dispatchFence.dispatchFenceId !== input.expectedFailedDispatchFenceId
+    ) {
+      return this.fail(
+        "REARM_FENCE_MISMATCH",
+        `re-arm fence does not match the failed attempt recorded on ${input.operationId}`,
+      );
+    }
+    const binding = this.state.bindings[operation.logicalThreadId];
+    const lease = this.state.leases[operation.logicalThreadId];
+    if (
+      !binding ||
+      binding.providerConversationRef !== authority.providerConversationRef ||
+      binding.generation !== authority.bindingGeneration ||
+      !lease ||
+      lease.providerConversationRef !== authority.providerConversationRef ||
+      lease.carrierRef !== authority.carrierRef ||
+      lease.bindingGeneration !== authority.bindingGeneration ||
+      lease.leaseGeneration !== authority.leaseGeneration
+    ) {
+      return this.fail(
+        "REARM_AUTHORITY_MISMATCH",
+        `next authority does not match the canonical current binding and lease for ${operation.logicalThreadId}`,
+      );
+    }
+    const conflictingOwner = Object.values(this.state.operations).find(
+      (candidate) =>
+        candidate.operationId !== operation.operationId &&
+        candidate.providerConversationRef === authority.providerConversationRef &&
+        candidate.carrierRef === authority.carrierRef &&
+        executionOwningStates.has(candidate.state),
+    );
+    if (conflictingOwner) {
+      return this.fail(
+        "REARM_EXECUTION_CONFLICT",
+        `execution authority is already owned by ${conflictingOwner.operationId}`,
+      );
+    }
+    // Retire the failed attempt and re-establish PREPARED under the canonical
+    // next authority; the next claim mints a fresh fence id (F18).
+    operation.state = "PREPARED";
+    operation.operationRevision += 1;
+    operation.dispatchFence = undefined;
+    operation.dispatchClaimedAt = undefined;
+    operation.providerConversationRef = authority.providerConversationRef;
+    operation.carrierRef = authority.carrierRef;
+    operation.bindingGeneration = authority.bindingGeneration;
+    operation.leaseGeneration = authority.leaseGeneration;
     this.state.lastMutationActor = input.actor;
     this.state.lastMutationAt = input.now;
     return this.ok(cloneOperation(operation));
@@ -967,12 +1099,18 @@ function assertReplacementOperations(
         `INVALID_STATE_SNAPSHOT: operation ${operationId} cannot be removed during restore`,
       );
     }
+    const isPersistedRearm =
+      previous.state === "FAILED_SAFE" &&
+      next.state === "PREPARED" &&
+      previous.logicalThreadId === next.logicalThreadId;
     if (
       previous.logicalThreadId !== next.logicalThreadId ||
-      previous.providerConversationRef !== next.providerConversationRef ||
-      previous.carrierRef !== next.carrierRef ||
-      previous.bindingGeneration !== next.bindingGeneration ||
-      previous.leaseGeneration !== next.leaseGeneration ||
+      (!isPersistedRearm && (
+        previous.providerConversationRef !== next.providerConversationRef ||
+        previous.carrierRef !== next.carrierRef ||
+        previous.bindingGeneration !== next.bindingGeneration ||
+        previous.leaseGeneration !== next.leaseGeneration
+      )) ||
       previous.requestFingerprint !== next.requestFingerprint
     ) {
       throw new Error(
@@ -992,7 +1130,8 @@ function assertReplacementOperations(
       next.dispatchClaimedAt !== undefined;
     if (
       Boolean(previous.dispatchFence) !== Boolean(next.dispatchFence) &&
-      !isPersistedClaim
+      !isPersistedClaim &&
+      !isPersistedRearm
     ) {
       throw new Error(
         `INVALID_STATE_SNAPSHOT: operation ${operationId} dispatch fence presence changed during restore`,
@@ -1032,6 +1171,11 @@ function isAllowedLifecycleTransition(
       to === "FAILED_SAFE" ||
       to === "CANCELLED"
     );
+  }
+  if (from === "FAILED_SAFE") {
+    // Attempt-terminal / rearmable: the only legal move is the explicit
+    // re-arm back to PREPARED (a fresh claim then mints a new fence id).
+    return to === "PREPARED";
   }
   return false;
 }
