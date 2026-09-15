@@ -77,7 +77,7 @@ async function claimControlPermit(
       providerConversationRef: context.providerConversationRef,
       expected: binding ?? null,
       actor: "system",
-      now: context.sourceObservedAt
+      now: Date.now()
     }));
     binding = control.getBinding(context.logicalThreadId);
   }
@@ -91,7 +91,7 @@ async function claimControlPermit(
       expectedLeaseGeneration: lease?.leaseGeneration ?? null,
       carrierRef: context.targetCarrierRef,
       actor: "system",
-      now: context.sourceObservedAt + 1
+      now: Date.now()
     }));
     lease = control.snapshot().leases[context.logicalThreadId];
   }
@@ -196,6 +196,14 @@ async function rearmControlAttempt(
   const binding = control.getBinding(context.logicalThreadId);
   const lease = control.snapshot().leases[context.logicalThreadId];
   if (!binding || !lease) return;
+  // Bind the re-arm to the actual durable evidence entry, so an audit can walk
+  // from the ApplyResult to the journal fact it relied on.
+  const evidenceRef = deps.journal
+    ? ((await deps.journal.list(operationId)).find(candidate =>
+        candidate.eventKind === "RECONCILIATION_EVIDENCE" &&
+        (candidate.evidence as Record<string, unknown> | undefined)?.outcome === "PROVEN_NOT_ACCEPTED"
+      )?.executionAttemptId ?? `${operationId}:notaccepted`)
+    : `${operationId}:notaccepted`;
   await control.applyDelta({
     deltaId: `rearm:${operationId}:${ropFence.dispatchFenceId}`,
     deltaFingerprint: `rearm:${operationId}:${ropFence.dispatchFenceId}:${binding.generation}:${lease.leaseGeneration}`,
@@ -204,7 +212,7 @@ async function rearmControlAttempt(
       operationId,
       expectedOperationRevision: rop.operationRevision,
       expectedFailedDispatchFenceId: ropFence.dispatchFenceId,
-      provenNotAcceptedEvidenceRef: `${operationId}:notaccepted`,
+      provenNotAcceptedEvidenceRef: evidenceRef,
       nextAuthority: {
         providerConversationRef: binding.providerConversationRef,
         bindingGeneration: binding.generation,
@@ -403,7 +411,7 @@ async function recoverOnce(
             providerConversationRef: context.providerConversationRef,
             expected: binding ?? null,
             actor: "system",
-            now: context.sourceObservedAt
+            now: Date.now()
           })).catch(() => undefined);
         }
         const leaseSnapshot = control.snapshot().leases[context.logicalThreadId];
@@ -418,7 +426,7 @@ async function recoverOnce(
             expectedLeaseGeneration: leaseSnapshot?.leaseGeneration ?? null,
             carrierRef: context.targetCarrierRef,
             actor: "system",
-            now: context.sourceObservedAt + 1
+            now: Date.now()
           })).catch(() => undefined);
         }
       }

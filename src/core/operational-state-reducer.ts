@@ -1011,8 +1011,14 @@ function assertReplacementTimes(
   }
   for (const [operationId, operation] of Object.entries(current.operations)) {
     const next = replacement.operations[operationId];
+    const isRearmSnapshot =
+      next &&
+      operation.state === "FAILED_SAFE" &&
+      next.state === "PREPARED" &&
+      next.dispatchFence === undefined;
     if (
       next &&
+      !isRearmSnapshot &&
       operation.dispatchClaimedAt !== undefined &&
       (next.dispatchClaimedAt === undefined ||
         next.dispatchClaimedAt < operation.dispatchClaimedAt)
@@ -1139,7 +1145,8 @@ function assertReplacementOperations(
     }
     if (
       previous.dispatchFence &&
-      !sameFenceComponents(previous.dispatchFence, next.dispatchFence!)
+      next.dispatchFence &&
+      !sameFenceComponents(previous.dispatchFence, next.dispatchFence)
     ) {
       throw new Error(
         `INVALID_STATE_SNAPSHOT: operation ${operationId} dispatch fence changed during restore`,
