@@ -9,13 +9,19 @@
 >
 > Verdict scale: **ACCEPTED** (implemented, independently reviewed, tested),
   **PARTIAL** (core implemented; a named residual remains), **NOT_ACCEPTED**
-  (out of V1 scope by adjudication or unimplemented).
+  (out of V1 scope by adjudication or unimplemented). Review provenance is
+  two-tier and stated per row where it matters: slices built on this line
+  carry fable-reviewer APPROVE verdicts with mutation-verified test locks;
+  the Work Item / Freeze / provider-verification modules were **carried in
+  from upstream reviewed lines** (byte-identical to their reviewed branches;
+  PR #4 records the provider-verification merge) — their reviewer trails live
+  upstream, and this audit re-verified their behavior through the carried
+  tests and the browser smokes that exercise them on this baseline.
 
 ## 1. How to read the evidence column
 
-Every ACCEPTED/PARTIAL row cites the module(s) and the independent-review
-trail (all slices carry fable-reviewer APPROVE verdicts with
-mutation-verified test locks; the full table is in
+Every ACCEPTED/PARTIAL row cites the module(s) and its review provenance
+(two-tier as defined above; the slice table is in
 `v1-integration-verification-status.md`). Test totals at the audited commit:
 **30 files / 348 tests**, typecheck clean, release-workflow parity green
 (29 files / 321 tests excluding the playwright smoke per the workflow, all
@@ -34,7 +40,7 @@ eight release scripts, packaging OK).
 | Carrier Runtime State | SUPPORTED | **ACCEPTED** | Observation contract implemented with conservative READY conjunction and quiet-window STABILIZING (`runtime-observer.test.ts`). |
 | Logical Control State | SUPPORTED | **PARTIAL** | Mechanical `WAIT_REVIEW/WAIT_WORKER` implemented with wait-clearing on delivery completion (`result-delivery.ts`); the full orthogonal CONTINUE/WAIT_*/BOUNDARY_REACHED semantic-control surface belongs to the semantic run-state handlers — adjudicated **V1-later**. |
 | Submission Operation | SUPPORTED | **ACCEPTED** | Persist-before-actuate, pre-submit baselines, one blind dispatch, UNCERTAIN reconciliation (`submission-operation.ts`, 47+ tests); create-or-get identity; durable acceptance stamp. |
-| Operation persistence | SUPPORTED, runtime NOT_IMPLEMENTED | **ACCEPTED** | Durable chrome.storage ledgers; worker-restart non-duplication proven in browser smokes (Human GO reload test; reanchor worker-reload test). |
+| Operation persistence | SUPPORTED, runtime NOT_IMPLEMENTED | **ACCEPTED** | Durable chrome.storage ledgers; restart non-duplication covered across smokes: the reanchor test re-injects the worker script after completion and asserts exactly one dispatch, the Human GO test drives post-dispatch recovery probes (stale claim and old-attempt claim both refused), and the human-go runtime test asserts a stable operation id is reused without resending blindly. |
 | UNCERTAIN reconcile | SUPPORTED | **ACCEPTED** | Proven-not-accepted → re-arm (W9/W14), proven-accepted → INSERTED (W7 stamp), ambiguity parks; runtime recovery probes drive both directions. |
 | Goal / Scope inheritance | SUPPORTED | **ACCEPTED** | Intent fields durable per child; inheritance wired through Work Item goal/scope into probes (goal-reanchor runtime) and child records. |
 | Human authority | SUPPORTED | **ACCEPTED** | Freeze/Promote human-gated (`review-freeze.ts` authority records); re-anchor and delivery are not approval gates anywhere in the runtime. |
@@ -49,7 +55,7 @@ eight release scripts, packaging OK).
 
 | Trace | Audit verdict | Evidence |
 | --- | --- | --- |
-| 3.1 Service-worker restart | **ACCEPTED** | Durable operation identity + persist-before-actuate; restart reconciles DISPATCHING/UNCERTAIN first (recovery probes), never creates a new operation for a lost callback (deterministic ids + create-or-get). Browser smoke: worker reloaded mid-flight, exactly one dispatch. |
+| 3.1 Service-worker restart | **ACCEPTED** | Durable operation identity + persist-before-actuate; restart reconciles DISPATCHING/UNCERTAIN first (recovery probes), never creates a new operation for a lost callback (deterministic ids + create-or-get). Evidence is composite: the reanchor smoke re-injects the worker script post-completion (dispatch count stays one), the Human GO smoke drives post-dispatch recovery probes that refuse stale claims, and the delivery lockstep tests cover the mid-flight crash windows (lost mint, stranded settles) with deterministic-id replay. |
 | 3.2 Duplicate tab | **ACCEPTED** | One lease per conversation; observed duplicates cannot actuate. |
 | 3.3 Uncertain GO | **ACCEPTED** | Full lifecycle incl. manual-pause semantics: ambiguity parks UNCERTAIN indefinitely; only proven-not-accepted re-arms. |
 | 3.4 Uncertain fork | **ACCEPTED** | `SPAWN_UNCERTAIN` parks; recovery = rebind recovered conversation or proveNonCreation; never a blind second spawn (W13 adoption lane honors the same rule). |
@@ -62,27 +68,35 @@ eight release scripts, packaging OK).
 | --- | --- | --- |
 | Durable Work Item / PDLT / child / binding records | **ACCEPTED** | work-item-inbox, child-worker, binding ledger — all durable + reviewed. |
 | Reducer ops + crash-consistent ApplyResults | **ACCEPTED** | `commit_current_conversation_binding`/`transfer_actuation_lease`/`claim_submission_dispatch`/`settle_submission_dispatch`/`rearm_submission_dispatch` on the durable delta kernel (ApplyResult/audit/idempotent replay, one durable transaction). |
-| Carrier observer state machine + conformance receipts | **PARTIAL** | State machine accepted; formal *provider adapter conformance receipts* are folded into the capability-reporting model (W12/W13) rather than a separate receipt artifact — an adjudicated simplification, residual recorded. |
+| Carrier observer state machine + conformance receipts | **PARTIAL** | State machine accepted; formal *provider adapter conformance receipts* remain a separate artifact that was never issued (the issue-3 report records this); the capability-reporting model (W12/W13) implements the adjudicated report-only principle but was not itself an adjudication about receipts — recorded as a design residual, not a closed item. |
 | Canonical attachment/lease transfer + restart recovery | **ACCEPTED** | Lease generations + restore guards + crash-window backfills (W11b/W14). |
-| SubmissionOperation ledger + baselines + reconciliation | **ACCEPTED** | 649-line ledger, 47+ tests. |
+| SubmissionOperation ledger + baselines + reconciliation | **ACCEPTED** | 712-line ledger at the audited commit, 47 tests. |
 | Step Mode GO + sparse re-anchor hooks/counter | **ACCEPTED** | Goal-reanchor runtime (B line, 3× APPROVE) incl. rollover trigger + durable recovery. |
 | Idempotent Sedimentation fork + Fresh Reviewer creation | **PARTIAL** | FRESH creation fully wired browser-real (W13: activation-safe adoption). FORKED is *deliberately* not automated: the adapter honestly reports `supportsNativeFork: false` and the harness refuses with `spawn_needs_human` — the fork-adapter adjudication (D2) holds; native fork remains provider-blocked, tracked as the standing gap. |
-| Freeze Snapshot + immutable Review Report/WorkerResult | **ACCEPTED** | `review-freeze.ts` (immutable snapshots, authority provenance; 10 tests). |
+| Freeze Snapshot + immutable Review Report/WorkerResult | **ACCEPTED** | `review-freeze.ts` (immutable snapshots, authority provenance; 9 tests). |
 | `DELIVER_CHILD_RESULT` create-or-get / key lookup / receipts / wait clearing | **ACCEPTED** | The adjudicated projection model + transport composer + runtime lockstep (W2–W14). |
 
 ## 5. Final verdict
 
-- **17 of 19 seams ACCEPTED**; 2 PARTIAL for adjudicated reasons (semantic
-  control surface and provider conformance receipts → V1-later simplifications),
+- **18 of 19 seams ACCEPTED**; 1 PARTIAL (Logical Control State — the
+  semantic control surface is adjudicated V1-later). The readiness inventory
+  below adds two PARTIAL items of its own (conformance receipts as a separate
+  artifact; FORKED deliberately unautomated pending provider capability).
   0 NOT_ACCEPTED.
 - **All 6 recovery traces ACCEPTED**, including the two former GAP traces
   (rollover routing, returning-result restart).
 - Standing, explicitly out-of-V1 items: semantic run-state handlers
   (commit_decision / open_question / … — adjudication item 5), native FORKED
   spawn (provider capability), provider adapter conformance receipts as a
-  separate artifact.
+  separate artifact. One conditional architecture note: the control lane's
+  generation projection stays sound only under the single-writer probe; a
+  multi-writer control lane would make it a required follow-up
+  (`w11-settle-hop-design.md`, implementation note).
 
 **Acceptance statement: the V1 Deliberation Harness design scope as amended
-by the four adjudications is implemented to acceptance — every implemented
-slice independently reviewed with mutation-verified tests, and the residuals
-are adjudicated deferrals rather than open engineering.**
+by the four adjudications is implemented to acceptance — every slice built on
+this line carries an independent reviewer APPROVE with mutation-verified
+tests, the carried-in upstream modules are byte-identical to their reviewed
+branches and re-verified through the tests and smokes on this baseline, and
+the residuals are adjudicated deferrals or recorded design residuals rather
+than open engineering.**
