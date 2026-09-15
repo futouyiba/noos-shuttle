@@ -1172,6 +1172,7 @@ export class CrossAgentMailbox {
       let liveMaxRevision = 0;
       let liveMaxClaimedFingerprint: string | undefined;
       let liveMaxContentFingerprint: string | undefined;
+      const sameRevisionDivergences: DiscoveredPacketDivergence[] = [];
       const liveResultMarkers: DiscoveredResultMarker[] = [];
       for (const parsed of parsedComments) {
         for (const marker of parsed.markers) {
@@ -1180,14 +1181,30 @@ export class CrossAgentMailbox {
           }
           if (
             marker.envelope.marker_kind === "ESCALATION_PACKET" &&
-            marker.envelope.escalation.escalation_id === escalation.escalationId &&
-            marker.envelope.packet.packet_revision > liveMaxRevision
+            marker.envelope.escalation.escalation_id === escalation.escalationId
           ) {
-            liveMaxRevision = marker.envelope.packet.packet_revision;
-            liveMaxClaimedFingerprint = marker.envelope.packet.packet_fingerprint;
+            const claimed = marker.envelope.packet.packet_fingerprint;
             // Verify the live CONTENT, not just the claimed fingerprint field:
             // a tampered copy can leave the claimed string untouched.
-            liveMaxContentFingerprint = await packetContentFingerprintFromWire(escalation.escalationId, marker.envelope.packet);
+            const content = await packetContentFingerprintFromWire(escalation.escalationId, marker.envelope.packet);
+            const revision = marker.envelope.packet.packet_revision;
+            if (revision > liveMaxRevision) {
+              liveMaxRevision = revision;
+              liveMaxClaimedFingerprint = claimed;
+              liveMaxContentFingerprint = content;
+            } else if (
+              revision === liveMaxRevision &&
+              (claimed !== liveMaxClaimedFingerprint || content !== liveMaxContentFingerprint)
+            ) {
+              // Two live copies claim the same max revision but diverge; surface
+              // the divergence instead of silently checking only the first one.
+              sameRevisionDivergences.push({
+                commentRef: parsed.commentRef,
+                packetId: marker.envelope.packet.packet_id,
+                claimedFingerprint: claimed,
+                contentFingerprint: content
+              });
+            }
           }
           if (marker.envelope.marker_kind === "ESCALATION_RESULT" && marker.envelope.result.source_escalation_id === escalation.escalationId) {
             const result = marker.envelope.result;
@@ -1229,6 +1246,7 @@ export class CrossAgentMailbox {
           liveMaxClaimedFingerprint === undefined || liveMaxContentFingerprint === undefined
             ? undefined
             : liveMaxClaimedFingerprint === liveMaxContentFingerprint,
+        sameRevisionDivergences,
         observedResults: observedResults.map((observation) => ({
           resultId: observation.resultId,
           resultFingerprint: observation.resultFingerprint,
@@ -1459,6 +1477,13 @@ export interface DiscoveredResultMarker {
   observed: boolean;
 }
 
+export interface DiscoveredPacketDivergence {
+  commentRef: string;
+  packetId: string;
+  claimedFingerprint: string;
+  contentFingerprint: string;
+}
+
 export interface DiscoveredEscalation {
   escalationId: string;
   kind: MailboxEscalationKind;
@@ -1480,6 +1505,8 @@ export interface DiscoveredEscalation {
   packetFingerprintMatchesLive?: boolean;
   /** The live marker's claimed fingerprint field matches its own content. */
   livePacketClaimIntegrity?: boolean;
+  /** Live packet copies claiming the same max revision but diverging in content or claim. */
+  sameRevisionDivergences: readonly DiscoveredPacketDivergence[];
   observedResults: readonly { resultId: string; resultFingerprint: string; commentObservationId: string; authorityRole: string }[];
   liveResultMarkers: readonly DiscoveredResultMarker[];
   conflictIds: readonly string[];

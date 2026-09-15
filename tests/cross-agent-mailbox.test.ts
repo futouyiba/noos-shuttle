@@ -592,6 +592,25 @@ describe("restart-safe marker discovery", () => {
     expect(claimTampered.escalations[0].livePacketClaimIntegrity).toBe(false);
   });
 
+  it("surfaces same-revision divergent live packet copies in either order", async () => {
+    const { mailbox, rendered } = await preparedMailboxWithPostedPacket();
+    const tampered = rendered.body.replace("Close the delivery-vs-reducer interpretation conflict.", "TAMPERED goal");
+    const comment = (ref: string, body: string) => ({
+      commentRef: `futouyiba/noos-shuttle#10/comment/${ref}`,
+      author: "impl-agent",
+      updatedAt: "2026-09-16T00:00:00Z",
+      body
+    });
+    const honestFirst = await mailbox.discover([comment("100", rendered.body), comment("101", tampered)]);
+    expect(honestFirst.escalations[0].sameRevisionDivergences).toHaveLength(1);
+    expect(honestFirst.escalations[0].sameRevisionDivergences[0].commentRef).toBe("futouyiba/noos-shuttle#10/comment/101");
+    const tamperedFirst = await mailbox.discover([comment("101", tampered), comment("100", rendered.body)]);
+    expect(tamperedFirst.escalations[0].sameRevisionDivergences).toHaveLength(1);
+    expect(tamperedFirst.escalations[0].sameRevisionDivergences[0].commentRef).toBe("futouyiba/noos-shuttle#10/comment/100");
+    const single = await mailbox.discover([comment("100", rendered.body)]);
+    expect(single.escalations[0].sameRevisionDivergences).toEqual([]);
+  });
+
   it("surfaces foreign ESCALATION_RESULT markers targeting unknown escalations", async () => {
     const { mailbox, rendered } = await preparedMailboxWithPostedPacket();
     const foreignResult = await buildResultEnvelope({

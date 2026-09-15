@@ -44,12 +44,12 @@ anchor and validates 40-hex SHAs and `owner/name#number` refs).
   verifies live packet CONTENT by recomputing the semantic fingerprint (not just the marker's claimed
   fingerprint field, reported separately as claim integrity), and envelope rendering round-trip-checks
   the fenced marker so text containing ``` is rejected instead of emitting an unparseable marker.
-- `tests/cross-agent-mailbox.test.ts` (33 tests) — persist-before-post, create-or-get variants, packet
+- `tests/cross-agent-mailbox.test.ts` (34 tests) — persist-before-post, create-or-get variants, packet
   revision lineage, envelope determinism and round-trip safety, forbidden-field rejection (including
   smuggled `result_kind`/`is_sufficient` markers), observation freezing, edit conflicts, competing
   results, forced-interleaving concurrency (the lost-update window the revision fence closes),
-  discovery cross-checks (content-vs-claim fingerprints, unobserved markers, foreign packet AND result
-  markers), restart-safety, and launch instructions.
+  discovery cross-checks (content-vs-claim fingerprints, same-revision divergences, unobserved markers,
+  foreign packet AND result markers), restart-safety, and launch instructions.
 - `scripts/noos-mailbox.mjs` + `npm run mailbox` — thin `gh`-backed CLI (`init`, `open`, `revise-packet`,
   `record-post`, `render-result`, `discover`, `observe`, `show`). Comment ingestion uses
   `gh api --paginate --slurp` so multi-page issue comment threads parse correctly. The ledger defaults
@@ -79,7 +79,7 @@ Executed from repository root on this branch:
 
 ```sh
 npm run typecheck
-npx vitest run tests/cross-agent-mailbox.test.ts        # 33 passed
+npx vitest run tests/cross-agent-mailbox.test.ts        # 34 passed
 npx vitest run tests/noos-mailbox-cli.test.ts           # 6 passed
 npm test -- --exclude tests/content-ui-smoke.test.ts    # full suite without the browser fixture
 node --check scripts/noos-mailbox.mjs
@@ -110,6 +110,15 @@ one P2 (review comment preserved on the PR). Disposition, all applied and regres
 - **F8 (P3) usage text** — `init --ledger` and `open --escalation-id` documented as required (the
   explicit id keeps reruns create-or-get idempotent after a lost post acknowledgement); the core can
   still mint an id when omitted.
+
+The focused re-review of `e75f48c` returned `APPROVE` (F1–F8 all CLOSED) with two new P3 findings, both
+also addressed:
+
+- **N1 (P3) same-revision divergent live copies** — discovery now surfaces
+  `sameRevisionDivergences` when multiple live packet copies claim the same max revision but diverge in
+  content or claimed fingerprint (order-independent); regression-tested in both orders.
+- **N2 (P3) foreign-result CLI print** — `discover` prints the result id for foreign result markers
+  instead of an undefined work-item parenthetical.
 
 ## Known limits
 

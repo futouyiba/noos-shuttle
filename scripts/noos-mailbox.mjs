@@ -460,7 +460,10 @@ async function commandDiscover(values) {
     process.stdout.write(`  resume instruction:\n  ${instructions.resumeInstruction}\n`);
   }
   for (const foreign of report.foreignEscalations) {
-    process.stdout.write(`- FOREIGN escalation ${foreign.escalationId} (${foreign.workItemRef}) at ${foreign.commentRef} — not in this ledger\n`);
+    const detail = foreign.resultId
+      ? `result ${foreign.resultId}`
+      : `${foreign.workItemRef ?? "unknown work item"} / packet ${foreign.packetId ?? "?"}`;
+    process.stdout.write(`- FOREIGN marker for escalation ${foreign.escalationId} (${detail}) at ${foreign.commentRef} — not in this ledger\n`);
   }
   for (const malformed of report.malformedMarkers) {
     process.stdout.write(`- MALFORMED marker at ${malformed.commentRef} (${malformed.reason}): ${malformed.detail}\n`);
