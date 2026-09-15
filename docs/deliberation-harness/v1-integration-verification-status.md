@@ -42,7 +42,7 @@
 | W9 FAILED_SAFE re-arm symmetry | `3a9f4bc` | APPROVE |
 | W10 FAILED_SAFE rollover escape (fresh-attempt retarget) | `42161a2`, `602968d`, `a793905`, `13cd373` | APPROVE (lane separation enforced, states pinned) |
 | W11a three-identity dispatch model | `6119f2b`, `9102ffb` | APPROVE after fix |
-| W12 context provenance × source × fidelity | `3e1f028`, `8422351`, `0f76801` | re-review passed the exemption fix; full verdict with W11b |
+| W12 context provenance × source × fidelity | `3e1f028`, `8422351`, `0f76801` | APPROVE after fix ×2 (identity coverage, matrix gaps, inheritance exemption — all mutation-locked) |
 
 ## 3. Verification evidence (current)
 
