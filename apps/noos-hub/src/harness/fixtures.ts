@@ -11,8 +11,8 @@
  *                                observation pending; settle cap: receipt
  *                                evidence alone can only establish UNCERTAIN).
  *   C · Attention / Recovery   — GO in UNCERTAIN with ambiguous reconciliation,
- *                                stale carrier observation, one child in
- *                                SPAWN_UNCERTAIN.
+ *                                carrier observation SUSPENDED + providerFailure,
+ *                                one child in SPAWN_UNCERTAIN.
  *
  * Future/exploratory vocabulary (ROLLOVER, policy AUTHORIZED, first-apply
  * gate) is deliberately absent until matching runtime support exists.
@@ -240,7 +240,12 @@ function createActiveSubmissionSnapshot(): HarnessConsoleSnapshot {
       providerConversationRef: "conv-8821",
       payloadFingerprint: "fp:7d41",
       createdAt: now - 24 * 1000,
-      lastObservedAt: now - 4 * 1000,
+      // Ledger-anchored: the operation record was last updated from the
+      // PROVIDER_ACK observation (18s). The fresher carrier observation (4s)
+      // belongs to the runtime zone's own source clock — per reconcile()
+      // semantics an observation written into the submission would also
+      // migrate DISPATCHING, so it must not date this record.
+      lastObservedAt: now - 18 * 1000,
 
       preSubmitBaseline: {
         assistantMessageCount: 221,
@@ -305,11 +310,10 @@ function createActiveSubmissionSnapshot(): HarnessConsoleSnapshot {
 
 /**
  * Scenario C — Attention / Recovery: the GO submission sits in UNCERTAIN
- * after an ambiguous reconciliation (STILL_AMBIGUOUS); the carrier
- * observation has gone stale with a provider failure flag; one child worker
- * is parked in SPAWN_UNCERTAIN. Canonical layers stay healthy — the page
- * must show runtime/observation trouble without inventing a global health
- * state.
+ * after an ambiguous reconciliation (STILL_AMBIGUOUS); the carrier reports
+ * SUSPENDED with a providerFailure flag; one child worker is parked in
+ * SPAWN_UNCERTAIN. Canonical layers stay healthy — the page must show
+ * runtime/observation trouble without inventing a global health state.
  */
 function createAttentionRecoverySnapshot(): HarnessConsoleSnapshot {
   const now = Date.now();
