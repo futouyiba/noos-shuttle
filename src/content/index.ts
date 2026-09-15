@@ -5,15 +5,19 @@ import { captureNoosThreads } from "../core/thread-capture";
 import { captureNoosCrystals } from "../core/crystal-capture";
 import type { NoosThread } from "../core/noos-thread";
 import type { NoosCrystal } from "../core/noos-crystal";
+import { HumanGoRuntime, type HumanGoCarrierSnapshot, type HumanGoLedger } from "../core/human-go-runtime";
+import type { SubmissionOperation, SubmissionOperationMutation, SubmissionReconcileResult } from "../core/submission-operation";
 import { EXTENSION_CONTEXT_INVALID, sendExtensionMessage } from "../shared/extension-runtime";
 import { COPY, type ShuttleLocale, getStoredLocale, storeLocale } from "../shared/i18n";
 import { ClipboardAdapter } from "../storage/ClipboardAdapter";
 import { DownloadAdapter } from "../storage/DownloadAdapter";
 import { NoosVaultAdapter } from "../storage/NoosVaultAdapter";
-import { attachMarkdownFilesToChatInput, getPageText, insertIntoChatInput, isChatbotGenerating, submitChatInput } from "./chatgpt-dom";
+import { attachMarkdownFilesToChatInput, getChatComposer, getPageText, insertIntoChatInput, isChatbotGenerating, submitChatInput } from "./chatgpt-dom";
 import { captureChatGptTranscriptWithScroll, captureRenderedChatGptTranscript } from "./chatgpt-transcript";
 import { RuntimeObservationLedger, type CarrierObservation } from "./runtime-observer";
 import styles from "./styles.css?inline";
+
+const SUBMISSION_STABLE_WINDOW_MS = 2_000;
 
 type ShuttleState = "idle" | "prompt-ready" | "waiting" | "captured" | "needs-choice" | "warning" | "saved" | "error";
 type DeliveryMode = "copy" | "download" | "vault";
@@ -194,6 +198,39 @@ let observationRoute = "";
 let observationRouteSince = 0;
 let observationOutput = "";
 let observationOutputChangedAt: number | null = null;
+let activeSubmission: { operationId: string; fence: SubmissionDispatchFence; claimedAt: number } | null = null;
+let submissionRecoveryRequestedAt = -Infinity;
+let submissionReconcileInFlight = false;
+
+interface SubmissionDispatchFence {
+  providerConversationRef: string;
+  bindingEpoch: number;
+  leaseGeneration: number;
+  leaseOwnerRef: string;
+  targetCarrierRef: string;
+}
+
+interface SubmissionBaseline {
+  conversationRef?: string;
+  routeRef: string;
+  assistantMessageCount: number;
+  userMessageCount: number;
+  lastUserMessageFingerprint?: string;
+  lastAssistantMessageFingerprint?: string;
+  headFingerprint?: string;
+  observedAt: number;
+}
+
+interface PersistedSubmissionOperation {
+  operationId: string;
+  logicalThreadId?: string;
+  state: "PREPARED" | "DISPATCHING" | "OBSERVED_ACCEPTED" | "COMPLETED" | "UNCERTAIN" | "FAILED_SAFE" | "CANCELLED";
+  targetCarrierRef: string;
+  providerConversationRef?: string;
+  dispatchFence?: SubmissionDispatchFence;
+  dispatchClaimedAt?: number;
+  createdAt?: number;
+}
 
 const viewState: ViewState = {
   open: false,
@@ -1189,16 +1226,12 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
 
   if (action === "generate") {
     cancelActiveWait();
-    const inserted = insertIntoChatInput(createGenerateThreadPrompt(window.location.href, viewState.locale));
-    viewState.state = inserted ? "prompt-ready" : "error";
+    const sent = await dispatchHumanGo(createGenerateThreadPrompt(window.location.href, viewState.locale), getPageContext(), "noos-generate");
+    viewState.state = sent ? "prompt-ready" : "error";
     closePanels();
-    viewState.message = inserted ? copy.promptInserted : copy.inputNotFound;
+    viewState.message = sent ? copy.promptInserted : copy.inputNotFound;
     render(app);
-    if (inserted) {
-      const sent = await submitChatInput();
-      viewState.message = sent ? copy.promptSent : copy.sendNotFound;
-      render(app);
-    }
+    if (sent) { viewState.message = copy.promptSent; render(app); }
     return;
   }
 
@@ -1249,9 +1282,8 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
 async function generateAndCollect(app: HTMLElement): Promise<void> {
   const copy = COPY[viewState.locale];
   const baselineBegin = newestMarkerBegin(captureNoosThreads(getPageText()).threads);
-  const inserted = insertIntoChatInput(createGenerateThreadPrompt(window.location.href, viewState.locale));
-
-  if (!inserted) {
+  const sent = await dispatchHumanGo(createGenerateThreadPrompt(window.location.href, viewState.locale), getPageContext(), "noos-generate-handoff");
+  if (!sent) {
     viewState.state = "error";
     viewState.message = copy.inputNotFound;
     render(app);
@@ -1264,13 +1296,6 @@ async function generateAndCollect(app: HTMLElement): Promise<void> {
   viewState.message = copy.waitingForHandoff;
   render(app);
 
-  const sent = await submitChatInput();
-  if (!sent) {
-    viewState.message = copy.sendNotFound;
-    render(app);
-    return;
-  }
-
   viewState.message = copy.generationSubmitted;
   render(app);
   waitForGeneratedHandoff(app, baselineBegin);
@@ -1279,9 +1304,8 @@ async function generateAndCollect(app: HTMLElement): Promise<void> {
 async function generateAndCollectCrystal(app: HTMLElement): Promise<void> {
   const copy = COPY[viewState.locale];
   const baselineBegin = newestCrystalMarkerBegin(captureNoosCrystals(getPageText()).crystals);
-  const inserted = insertIntoChatInput(createGenerateCrystalPrompt(window.location.href, viewState.locale));
-
-  if (!inserted) {
+  const sent = await dispatchHumanGo(createGenerateCrystalPrompt(window.location.href, viewState.locale), getPageContext(), "noos-generate-crystal");
+  if (!sent) {
     viewState.state = "error";
     viewState.message = copy.inputNotFound;
     render(app);
@@ -1294,16 +1318,138 @@ async function generateAndCollectCrystal(app: HTMLElement): Promise<void> {
   viewState.message = copy.waitingForCrystal;
   render(app);
 
-  const sent = await submitChatInput();
-  if (!sent) {
-    viewState.message = copy.sendNotFound;
-    render(app);
-    return;
-  }
-
   viewState.message = copy.crystalSubmitted;
   render(app);
   waitForGeneratedCrystal(app, baselineBegin);
+}
+
+async function dispatchHumanGo(payload: string, context: PageContext, workItemId: string): Promise<boolean> {
+  let observation = runtimeObservationLedger.value;
+  const deadline = Date.now() + 6_000;
+  while ((!observation || observation.state !== "READY" || observation.carrierIdentityState !== "browser-tab") && Date.now() < deadline) {
+    await new Promise(resolve => window.setTimeout(resolve, 100));
+    observation = runtimeObservationLedger.value;
+  }
+  if (!observation || observation.state !== "READY" || !observation.providerConversationRef ||
+    observation.carrierIdentityState !== "browser-tab") return false;
+  const now = Date.now();
+  const baseline: SubmissionBaseline = {
+    conversationRef: observation.providerConversationRef,
+    routeRef: context.pathname,
+    assistantMessageCount: observation.assistantMessageCount ?? 0,
+    userMessageCount: observation.userMessageCount ?? 0,
+    ...readSubmissionMessageEvidence(),
+    observedAt: now
+  };
+  const operationId = `go-${now.toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  const runtime = globalThis.chrome?.runtime;
+  if (!runtime?.sendMessage) return false;
+  const humanGo = new HumanGoRuntime(
+    createContentSubmissionLedger(),
+    {
+      readCurrentCarrier: async () => {
+        const current = runtimeObservationLedger.value;
+        if (!current) throw new Error("carrier_unavailable");
+        return toHumanGoCarrierSnapshot(current);
+      },
+      dispatch: async (dispatchPayload, fence) => {
+        const current = observeRuntimePage(getPageContext());
+        const composer = getChatComposer();
+        if (!composer || !isCurrentSubmissionObservation(current, observation, fence)) {
+          throw new Error("chatgpt_composer_unavailable");
+        }
+        if (!insertIntoChatInput(dispatchPayload, composer) || !(await submitChatInput(composer))) {
+          throw new Error("chatgpt_composer_unavailable");
+        }
+      }
+    }
+  );
+  const result = await humanGo.execute({
+    operationId,
+    workItemId,
+    logicalThreadId: `thread:${observation.providerConversationRef}`,
+    payload,
+    payloadFingerprint: fingerprintText(payload),
+    preSubmitBaseline: baseline,
+    providerConversationRef: observation.providerConversationRef,
+    targetCarrierRef: observation.carrierRef,
+    bindingEpoch: observation.sourceEpoch,
+    leaseGeneration: observation.sourceEpoch,
+    leaseOwnerRef: observation.executionInstanceRef,
+    explicitGo: true,
+    sourceEpoch: observation.sourceEpoch,
+    sourceObservedAt: observation.observedAt,
+    now
+  });
+  if (result.status === "BLOCKED") return false;
+  activeSubmission = {
+    operationId: result.operation.operationId,
+    fence: result.operation.dispatchFence ?? {
+      providerConversationRef: observation.providerConversationRef,
+      bindingEpoch: observation.sourceEpoch,
+      leaseGeneration: observation.sourceEpoch,
+      leaseOwnerRef: observation.executionInstanceRef,
+      targetCarrierRef: observation.carrierRef
+    },
+    claimedAt: result.operation.dispatchClaimedAt ?? now
+  };
+  return result.status === "DISPATCHED";
+}
+
+function createContentSubmissionLedger(): HumanGoLedger {
+  const mutate = async <T>(mutation: SubmissionOperationMutation): Promise<T | undefined> => {
+    const response = await sendExtensionMessage<
+      { type: "NOOS_SUBMISSION_MUTATION"; mutation: SubmissionOperationMutation },
+      { ok?: boolean; result?: T }
+    >({ type: "NOOS_SUBMISSION_MUTATION", mutation });
+    return response?.ok ? response.result : undefined;
+  };
+  return {
+    initializeAuthority: async context => {
+      const response = await sendExtensionMessage<
+        { type: "NOOS_SUBMISSION_MUTATION"; mutation: SubmissionOperationMutation },
+        { ok?: boolean }
+      >({ type: "NOOS_SUBMISSION_MUTATION", mutation: { type: "initialize_authority", context } });
+      if (!response?.ok) {
+        throw new Error("submission_authority_unavailable");
+      }
+    },
+    prepare: async input => {
+      const result = await mutate<SubmissionOperation>({ type: "prepare", input });
+      if (!result) throw new Error("submission_prepare_unavailable");
+      return result;
+    },
+    claim: (operationId, context, now) => mutate<SubmissionOperation>({ type: "claim", operationId, context, now: now ?? Date.now() }),
+    get: async operationId => {
+      const records = await mutate<SubmissionOperation[]>({ type: "list" });
+      return records?.find(operation => operation.operationId === operationId);
+    },
+    record: (operationId, state, details) => mutate<SubmissionOperation>({ type: "record", operationId, state, details: details ?? {} }),
+    reconcile: async (operationId, observation) =>
+      (await mutate<SubmissionReconcileResult>({ type: "reconcile", operationId, observation })) ??
+      { outcome: "STILL_AMBIGUOUS" }
+  };
+}
+
+function toHumanGoCarrierSnapshot(observation: CarrierObservation): HumanGoCarrierSnapshot {
+  const carrierState: HumanGoCarrierSnapshot["carrierState"] =
+    observation.state === "READY" ? "READY" :
+      observation.state === "ATTACHING" ? "ATTACHING" :
+        observation.state === "STABILIZING" ? "STABILIZING" :
+          observation.state === "GENERATING" ? "GENERATING" : "BROKEN";
+  return {
+    logicalThreadId: `thread:${observation.providerConversationRef ?? observation.routeRef}`,
+    providerConversationRef: observation.providerConversationRef ?? "",
+    bindingEpoch: observation.sourceEpoch,
+    leaseGeneration: observation.sourceEpoch,
+    leaseOwnerRef: observation.executionInstanceRef,
+    targetCarrierRef: observation.carrierRef,
+    carrierState,
+    logicalControl: "CONTINUE",
+    explicitGo: true,
+    sourceEpoch: observation.sourceEpoch,
+    sourceObservedAt: observation.observedAt
+  };
 }
 
 function applyManualCapture(): void {
@@ -2408,7 +2554,7 @@ function observeRuntimePage(context: PageContext): CarrierObservation {
   const composer = mainComposer && isVisibleForObservation(mainComposer) ? mainComposer : null;
   const stopControl = Array.from(document.querySelectorAll<HTMLElement>("[data-testid*='stop'], button[aria-label*='Stop'], button[aria-label*='停止']"))
     .some((candidate) => isVisibleForObservation(candidate));
-  return runtimeObservationLedger.observe({
+  const observation = runtimeObservationLedger.observe({
     provider: context.origin,
     routeRef: context.pathname,
     // ChatGPT briefly exposes WEB: routes during first submission. They are
@@ -2428,6 +2574,281 @@ function observeRuntimePage(context: PageContext): CarrierObservation {
         /error|unable to load|not found|出错|无法加载|找不到/i.test(element.textContent ?? "")),
     routeStable: now - observationRouteSince >= 2_000
   });
+  if (activeSubmission && observation.providerConversationRef) {
+    void reconcileActiveSubmission(observation);
+  } else if (observation.carrierIdentityState === "browser-tab" && observation.providerConversationRef) {
+    void restoreActiveSubmission(observation);
+  }
+  void probeGoalReanchor(observation);
+  void probeChildDelivery(observation);
+  return observation;
+}
+
+let goalProbeInFlight = false;
+let goalProbeAt = 0;
+chrome.runtime?.onMessage?.addListener((message, sender, sendResponse) => {
+  if (message?.type !== "NOOS_DISPATCH_GOAL_REANCHOR") return false;
+  if (sender.id !== chrome.runtime.id) { sendResponse({ ok: false }); return false; }
+  const operation = message.operation;
+  const current = runtimeObservationLedger.value;
+  if (!current || current.state !== "READY" || activeSubmission ||
+    operation?.operationKind !== "REANCHOR_GOAL" || operation.state !== "DISPATCHING" ||
+    !isSubmissionFence(operation.dispatchFence) || typeof operation.payload !== "string" ||
+    operation.dispatchFence.leaseOwnerRef !== current.executionInstanceRef ||
+    operation.dispatchFence.bindingEpoch !== current.sourceEpoch ||
+    operation.dispatchFence.targetCarrierRef !== current.carrierRef ||
+    operation.dispatchFence.providerConversationRef !== current.providerConversationRef) {
+    sendResponse({ ok: false }); return false;
+  }
+  activeSubmission = { operationId: operation.operationId, fence: operation.dispatchFence, claimedAt: operation.dispatchClaimedAt };
+  const composer = getChatComposer();
+  if (!composer || !insertIntoChatInput(operation.payload, composer)) { sendResponse({ ok: false }); return false; }
+  submitChatInput(composer).then(sent => {
+    sendResponse({ ok: sent, observation: {
+      conversationRef: current.providerConversationRef, routeRef: getPageContext().pathname,
+      assistantMessageCount: document.querySelectorAll("[data-message-author-role='assistant']").length,
+      userMessageCount: document.querySelectorAll("[data-message-author-role='user']").length,
+      ...readSubmissionMessageEvidence(), observedAt: Date.now(), sourceEpoch: current.sourceEpoch,
+      generationActive: true, dispatchFence: operation.dispatchFence
+    } });
+  }).catch(() => sendResponse({ ok: false }));
+  return true;
+});
+
+let deliveryProbeInFlight = false;
+let deliveryProbeAt = 0;
+chrome.runtime?.onMessage?.addListener((message, sender, sendResponse) => {
+  if (message?.type !== "NOOS_DISPATCH_DELIVER_CHILD_RESULT") return false;
+  if (sender.id !== chrome.runtime.id) { sendResponse({ ok: false }); return false; }
+  const operation = message.operation;
+  const current = runtimeObservationLedger.value;
+  if (!current || current.state !== "READY" || activeSubmission ||
+    operation?.operationKind !== "DELIVER_CHILD_RESULT" || operation.state !== "DISPATCHING" ||
+    !isSubmissionFence(operation.dispatchFence) || typeof operation.payload !== "string" ||
+    operation.dispatchFence.leaseOwnerRef !== current.executionInstanceRef ||
+    operation.dispatchFence.bindingEpoch !== current.sourceEpoch ||
+    operation.dispatchFence.targetCarrierRef !== current.carrierRef ||
+    operation.dispatchFence.providerConversationRef !== current.providerConversationRef) {
+    sendResponse({ ok: false }); return false;
+  }
+  activeSubmission = { operationId: operation.operationId, fence: operation.dispatchFence, claimedAt: operation.dispatchClaimedAt };
+  const composer = getChatComposer();
+  if (!composer || !insertIntoChatInput(operation.payload, composer)) { sendResponse({ ok: false }); return false; }
+  submitChatInput(composer).then(sent => {
+    sendResponse({ ok: sent, observation: {
+      conversationRef: current.providerConversationRef, routeRef: getPageContext().pathname,
+      assistantMessageCount: document.querySelectorAll("[data-message-author-role='assistant']").length,
+      userMessageCount: document.querySelectorAll("[data-message-author-role='user']").length,
+      ...readSubmissionMessageEvidence(), observedAt: Date.now(), sourceEpoch: current.sourceEpoch,
+      generationActive: true, dispatchFence: operation.dispatchFence
+    } });
+  }).catch(() => sendResponse({ ok: false }));
+  return true;
+});
+
+async function probeChildDelivery(observation: CarrierObservation): Promise<void> {
+  if (deliveryProbeInFlight || activeSubmission || observation.state !== "READY" ||
+    observation.carrierIdentityState !== "browser-tab" || !observation.providerConversationRef ||
+    Date.now() - deliveryProbeAt < 1000) return;
+  deliveryProbeInFlight = true;
+  deliveryProbeAt = Date.now();
+  try {
+    await sendExtensionMessage({ type: "NOOS_CHILD_DELIVERY_PROBE",
+      context: toHumanGoCarrierSnapshot(observation), baseline: {
+        conversationRef: observation.providerConversationRef, routeRef: observation.routeRef,
+        assistantMessageCount: observation.assistantMessageCount ?? 0, userMessageCount: observation.userMessageCount ?? 0,
+        ...readSubmissionMessageEvidence(), observedAt: observation.observedAt
+      }
+    });
+  } catch { /* The next stable probe retries against durable identity. */ }
+  finally { deliveryProbeInFlight = false; }
+}
+
+async function probeGoalReanchor(observation: CarrierObservation): Promise<void> {
+  if (goalProbeInFlight || activeSubmission || observation.state !== "READY" ||
+    observation.carrierIdentityState !== "browser-tab" || !observation.providerConversationRef ||
+    Date.now() - goalProbeAt < 1000) return;
+  goalProbeInFlight = true;
+  goalProbeAt = Date.now();
+  try {
+    await sendExtensionMessage({ type: "NOOS_GOAL_REANCHOR_PROBE",
+      context: toHumanGoCarrierSnapshot(observation), baseline: {
+        conversationRef: observation.providerConversationRef, routeRef: observation.routeRef,
+        assistantMessageCount: observation.assistantMessageCount ?? 0, userMessageCount: observation.userMessageCount ?? 0,
+        ...readSubmissionMessageEvidence(), observedAt: observation.observedAt
+      }
+    });
+  } catch { /* The next stable probe retries against durable identity. */ }
+  finally { goalProbeInFlight = false; }
+}
+
+async function restoreActiveSubmission(observation: CarrierObservation): Promise<void> {
+  if (activeSubmission || Date.now() - submissionRecoveryRequestedAt < 1_000) return;
+  submissionRecoveryRequestedAt = Date.now();
+  try {
+    const response = await sendExtensionMessage<
+      { type: "NOOS_SUBMISSION_MUTATION"; mutation: { type: "list" } },
+      { ok?: boolean; result?: PersistedSubmissionOperation[] }
+    >({
+      type: "NOOS_SUBMISSION_MUTATION",
+      mutation: { type: "list" }
+    });
+    if (!response?.ok || !Array.isArray(response.result)) return;
+    const candidates = response.result
+      .filter(operation =>
+        (operation.state === "DISPATCHING" || operation.state === "UNCERTAIN" || operation.state === "OBSERVED_ACCEPTED") &&
+        operation.targetCarrierRef === observation.carrierRef &&
+        operation.providerConversationRef === observation.providerConversationRef &&
+        isSubmissionFence(operation.dispatchFence) &&
+        operation.dispatchFence.providerConversationRef === observation.providerConversationRef &&
+        operation.dispatchFence.targetCarrierRef === observation.carrierRef)
+      .sort((left, right) => (right.dispatchClaimedAt ?? right.createdAt ?? 0) - (left.dispatchClaimedAt ?? left.createdAt ?? 0));
+    const recovered = candidates[0];
+    if (!recovered?.dispatchFence) return;
+    if (observation.state !== "READY") return;
+    const recoveryFence = {
+      ...recovered.dispatchFence,
+      leaseOwnerRef: observation.executionInstanceRef
+    };
+    const recoveredResponse = await sendExtensionMessage<
+      { type: "NOOS_SUBMISSION_MUTATION"; mutation: Record<string, unknown> },
+      { ok?: boolean; result?: PersistedSubmissionOperation }
+    >({
+      type: "NOOS_SUBMISSION_MUTATION",
+      mutation: {
+        type: "recover",
+        operationId: recovered.operationId,
+        now: observation.observedAt,
+        context: {
+          logicalThreadId: recovered.logicalThreadId ?? `thread:${observation.providerConversationRef}`,
+          ...recoveryFence,
+          sourceEpoch: observation.sourceEpoch,
+          sourceObservedAt: observation.observedAt,
+          carrierState: "READY",
+          logicalControl: "CONTINUE",
+          explicitGo: true
+        }
+      }
+    });
+    const recoveredFence = recoveredResponse.result?.dispatchFence;
+    if (!recoveredResponse?.ok || !recoveredResponse.result || !recoveredFence) return;
+    if (recoveredResponse.result.operationId !== recovered.operationId ||
+      recoveredFence.providerConversationRef !== recoveryFence.providerConversationRef ||
+      recoveredFence.bindingEpoch !== recoveryFence.bindingEpoch ||
+      recoveredFence.leaseGeneration !== recoveryFence.leaseGeneration ||
+      recoveredFence.leaseOwnerRef !== observation.executionInstanceRef ||
+      recoveredFence.leaseOwnerRef !== recoveryFence.leaseOwnerRef ||
+      recoveredFence.targetCarrierRef !== observation.carrierRef ||
+      recoveredFence.targetCarrierRef !== recoveryFence.targetCarrierRef) return;
+    activeSubmission = {
+      operationId: recoveredResponse.result.operationId,
+      fence: recoveredFence,
+      claimedAt: recoveredResponse.result.dispatchClaimedAt ?? recoveredResponse.result.createdAt ?? Date.now()
+    };
+    await reconcileActiveSubmission(observation);
+  } catch {
+    // A restarting service worker leaves the durable operation for the next probe.
+  }
+}
+
+async function reconcileActiveSubmission(observation: CarrierObservation): Promise<void> {
+  if (!activeSubmission || !observation.providerConversationRef || submissionReconcileInFlight) return;
+  submissionReconcileInFlight = true;
+  const active = activeSubmission;
+  try {
+    const response = await sendExtensionMessage<
+      { type: "NOOS_SUBMISSION_MUTATION"; mutation: Record<string, unknown> },
+      { ok?: boolean; result?: { outcome?: string; operation?: { state?: string } } }
+    >({
+      type: "NOOS_SUBMISSION_MUTATION",
+      mutation: {
+        type: "reconcile",
+        operationId: active.operationId,
+        observation: {
+          conversationRef: observation.providerConversationRef,
+          routeRef: observation.routeRef,
+          assistantMessageCount: observation.assistantMessageCount ?? 0,
+          userMessageCount: observation.userMessageCount ?? 0,
+          ...readSubmissionMessageEvidence(),
+          observedAt: observation.observedAt,
+          sourceEpoch: observation.sourceEpoch,
+          stableSince: observation.quietSince ?? undefined,
+          providerFailure: observation.providerErrorSurfacePresent,
+          generationActive: observation.state === "GENERATING",
+          dispatchFence: active.fence
+        }
+      }
+    });
+    const result = response?.result;
+    if (!response?.ok || !result) return;
+    if (result.outcome === "PROVEN_NOT_ACCEPTED") {
+      if (activeSubmission?.operationId === active.operationId) activeSubmission = null;
+      return;
+    }
+    if (result.outcome !== "PROVEN_ACCEPTED") return;
+    if (!isStableSubmissionObservation(observation, active.claimedAt)) return;
+    const completed = await sendExtensionMessage<
+      { type: "NOOS_SUBMISSION_MUTATION"; mutation: Record<string, unknown> },
+      { ok?: boolean; result?: { state?: string } }
+    >({
+      type: "NOOS_SUBMISSION_MUTATION",
+      mutation: {
+        type: "record",
+        operationId: active.operationId,
+        state: "COMPLETED",
+        details: { now: Date.now() }
+      }
+    });
+    if (completed?.ok && completed.result?.state === "COMPLETED" &&
+      activeSubmission?.operationId === active.operationId) {
+      activeSubmission = null;
+    }
+  } catch {
+    // Keep the operation active and durable until a later observation can retry.
+  } finally {
+    submissionReconcileInFlight = false;
+  }
+}
+
+function isSubmissionFence(value: unknown): value is SubmissionDispatchFence {
+  if (!value || typeof value !== "object") return false;
+  const fence = value as Partial<SubmissionDispatchFence>;
+  return typeof fence.providerConversationRef === "string" &&
+    typeof fence.bindingEpoch === "number" &&
+    typeof fence.leaseGeneration === "number" &&
+    typeof fence.leaseOwnerRef === "string" &&
+    typeof fence.targetCarrierRef === "string";
+}
+
+function readSubmissionMessageEvidence(): Pick<SubmissionBaseline, "headFingerprint" | "lastUserMessageFingerprint" | "lastAssistantMessageFingerprint"> {
+  const lastMessage = (role: "user" | "assistant"): string | undefined => {
+    const messages = Array.from(document.querySelectorAll<HTMLElement>(`[data-message-author-role='${role}']`));
+    const message = messages[messages.length - 1];
+    return message ? fingerprintText(message.textContent ?? "") : undefined;
+  };
+  const allMessages = Array.from(document.querySelectorAll<HTMLElement>("[data-message-author-role]"));
+  const head = allMessages[allMessages.length - 1];
+  return {
+    lastUserMessageFingerprint: lastMessage("user"),
+    lastAssistantMessageFingerprint: lastMessage("assistant"),
+    headFingerprint: head ? fingerprintText(head.textContent ?? "") : undefined
+  };
+}
+
+function isStableSubmissionObservation(observation: CarrierObservation, claimedAt: number): boolean {
+  return observation.state === "READY" &&
+    observation.quietSince !== null &&
+    observation.observedAt - Math.max(claimedAt, observation.quietSince) >= SUBMISSION_STABLE_WINDOW_MS;
+}
+
+function isCurrentSubmissionObservation(current: CarrierObservation, initial: CarrierObservation, fence: SubmissionDispatchFence): boolean {
+  return current.carrierIdentityState === "browser-tab" &&
+    current.state === "READY" &&
+    current.providerConversationRef === initial.providerConversationRef &&
+    current.carrierRef === initial.carrierRef &&
+    current.executionInstanceRef === initial.executionInstanceRef &&
+    current.sourceEpoch === initial.sourceEpoch &&
+    current.providerConversationRef === fence.providerConversationRef;
 }
 
 function publishRuntimeObservation(observation: CarrierObservation | null): void {
@@ -2445,6 +2866,8 @@ function isVisibleForObservation(element: HTMLElement): boolean {
 
 function resetForConversationChange(app: HTMLElement): void {
   cancelActiveWait();
+  activeSubmission = null;
+  submissionRecoveryRequestedAt = -Infinity;
   closePanels();
   viewState.settingsOpen = false;
   viewState.state = "idle";

@@ -35,9 +35,13 @@ export function getPageText(): string {
   return collectMarkdownAndComments(main ?? document.body).trim();
 }
 
-export function insertIntoChatInput(text: string): boolean {
-  const input = findChatInput();
-  if (!input) {
+export function getChatComposer(): HTMLElement | null {
+  return findChatInput();
+}
+
+export function insertIntoChatInput(text: string, expectedComposer?: HTMLElement): boolean {
+  const input = expectedComposer ?? findChatInput();
+  if (!input || !isUsableComposer(input) || (expectedComposer && findChatInput() !== expectedComposer)) {
     return false;
   }
 
@@ -81,18 +85,17 @@ export function attachMarkdownFilesToChatInput(
   return true;
 }
 
-export async function submitChatInput(): Promise<boolean> {
+export async function submitChatInput(expectedComposer?: HTMLElement): Promise<boolean> {
   await waitForComposerUpdate();
 
-  const button = findSendButton();
+  const input = expectedComposer ?? findChatInput();
+  if (!input || !isUsableComposer(input) || (expectedComposer && findChatInput() !== expectedComposer)) {
+    return false;
+  }
+  const button = findSendButton(input);
   if (button) {
     button.click();
     return true;
-  }
-
-  const input = findChatInput();
-  if (!input) {
-    return false;
   }
 
   input.dispatchEvent(
@@ -112,9 +115,11 @@ export function isChatbotGenerating(): boolean {
 }
 
 function findChatInput(): HTMLElement | null {
+  const primary = document.querySelector<HTMLElement>("#prompt-textarea");
+  if (primary) return isUsableComposer(primary) ? primary : null;
   for (const selector of INPUT_SELECTORS) {
     const candidates = Array.from(document.querySelectorAll<HTMLElement>(selector));
-    const visible = candidates.find((candidate) => isVisible(candidate) && !candidate.closest("[aria-hidden='true']"));
+    const visible = candidates.find((candidate) => isUsableComposer(candidate));
     if (visible) {
       return visible;
     }
@@ -135,22 +140,31 @@ function findFileInput(root: ParentNode): HTMLInputElement | null {
   return null;
 }
 
-function findSendButton(): HTMLButtonElement | null {
+function findSendButton(composer?: HTMLElement): HTMLButtonElement | null {
+  const scope = composer ? composer.closest("form,[data-testid*='composer'],[class*='composer']") ?? composer.parentElement : document;
   for (const selector of SEND_BUTTON_SELECTORS) {
-    const candidates = Array.from(document.querySelectorAll<HTMLButtonElement>(selector));
+    const candidates = Array.from(scope?.querySelectorAll<HTMLButtonElement>(selector) ?? []);
     const visible = candidates.find((candidate) => isVisible(candidate) && !candidate.disabled && !candidate.closest("[aria-hidden='true']"));
     if (visible) {
       return visible;
     }
   }
 
-  const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>("button"));
+  const buttons = Array.from(scope?.querySelectorAll<HTMLButtonElement>("button") ?? []);
   return (
     buttons.find((button) => {
       const label = `${button.getAttribute("aria-label") ?? ""} ${button.textContent ?? ""}`.trim();
       return isVisible(button) && !button.disabled && /send|发送/i.test(label);
     }) ?? null
   );
+}
+
+function isUsableComposer(candidate: HTMLElement): boolean {
+  return isVisible(candidate) &&
+    !candidate.closest("[aria-hidden='true'],[inert],[aria-disabled='true']") &&
+    !candidate.matches(":disabled,[readonly]") &&
+    candidate.getAttribute("aria-readonly") !== "true" &&
+    (candidate instanceof HTMLTextAreaElement || candidate.isContentEditable || candidate.getAttribute("role") === "textbox");
 }
 
 function findGenerationActiveButton(): HTMLButtonElement | null {
