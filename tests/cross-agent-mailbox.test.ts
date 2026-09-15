@@ -3,12 +3,15 @@ import {
   buildResultEnvelope,
   compileLaunchInstructions,
   CrossAgentMailbox,
+  emptyMailboxState,
   extractMarkerBlocks,
   findForbiddenEnvelopeFields,
   InMemoryMailboxStore,
   MailboxConflictError,
   MailboxInvariantError,
   parseEnvelopeJson,
+  type AtomicMailboxStore,
+  type CrossAgentMailboxState,
   type MailboxHandoffPacket,
   type OpenMailboxEscalationInput,
   type RawMailboxComment,
@@ -131,6 +134,67 @@ describe("escalation identity persisted before post", () => {
       mailbox.openEscalation(escalationInput({ escalationId: "esc-mailbox-2", workItemRef: "futouyiba/noos-shuttle#11" }))
     ).rejects.toMatchObject({ code: "scope_mismatch" });
   });
+
+  it("mints an escalation id when none is supplied", async () => {
+    const mailbox = new CrossAgentMailbox(new InMemoryMailboxStore());
+    const escalation = await mailbox.openEscalation(escalationInput({ escalationId: undefined }));
+    expect(escalation.escalationId.startsWith("esc-")).toBe(true);
+  });
+});
+
+describe("commit fence: concurrent writers cannot silently lose records", () => {
+  // Parks the first N reads so two commits interleave on the same base state
+  // before either CAS runs — the exact lost-update window the revision fence
+  // must close (F1 regression).
+  class InterleavingMailboxStore implements AtomicMailboxStore {
+    private delegate = new InMemoryMailboxStore();
+    private readCount = 0;
+    private gate: Promise<void>;
+    private openGate!: () => void;
+
+    constructor(private readonly parkFirstReads: number) {
+      this.gate = new Promise((resolve) => {
+        this.openGate = resolve;
+      });
+    }
+
+    async waitForReads(count: number): Promise<void> {
+      while (this.readCount < count) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    }
+
+    release(): void {
+      this.openGate();
+    }
+
+    async read(): Promise<CrossAgentMailboxState> {
+      this.readCount += 1;
+      const shouldPark = this.readCount <= this.parkFirstReads;
+      const value = await this.delegate.read();
+      if (shouldPark) {
+        await this.gate;
+      }
+      return value;
+    }
+
+    async compareAndSet(expectedRevision: number, next: CrossAgentMailboxState): Promise<boolean> {
+      return this.delegate.compareAndSet(expectedRevision, next);
+    }
+  }
+
+  it("serializes interleaved opens through the revision fence", async () => {
+    const store = new InterleavingMailboxStore(2);
+    const mailbox = new CrossAgentMailbox(store);
+    const openA = mailbox.openEscalation(escalationInput({ escalationId: "esc-a" }));
+    const openB = mailbox.openEscalation(escalationInput({ escalationId: "esc-b" }));
+    await store.waitForReads(2);
+    store.release();
+    await Promise.all([openA, openB]);
+    const state = await mailbox.snapshot();
+    expect(state.escalations.map((item) => item.escalationId).sort()).toEqual(["esc-a", "esc-b"]);
+    expect(state.revision).toBeGreaterThanOrEqual(2);
+  });
 });
 
 describe("immutable packet identity, revision, fingerprint", () => {
@@ -178,6 +242,25 @@ describe("immutable packet identity, revision, fingerprint", () => {
       expect(parsed.envelope.escalation.status).toBe("OPEN");
       expect(parsed.envelope.escalation.provenance.pull_request_head_sha).toBe(PROVENANCE.pullRequestHeadSha);
     }
+  });
+
+  it("rejects content that cannot round-trip through the fenced marker", async () => {
+    const { mailbox } = await openedMailbox();
+    const packet = await mailbox.compilePacket(packetInput("esc-mailbox-1", { goal: "Uses a ``` fenced block inside" }));
+    await expect(mailbox.renderPacketEnvelope("esc-mailbox-1", packet.packetId)).rejects.toMatchObject({
+      code: "marker_unsafe_content"
+    });
+    await expect(
+      buildResultEnvelope({
+        resultId: "res-unsafe",
+        sourceEscalationId: "esc-mailbox-1",
+        sourceRole: "PRIMARY_DESIGN",
+        authorityRole: "PRIMARY_DESIGN",
+        completionStatus: "COMPLETE",
+        summary: "Contains ``` which would terminate the marker fence.",
+        recommendedNextAction: "Continue."
+      })
+    ).rejects.toMatchObject({ code: "marker_unsafe_content" });
   });
 });
 
@@ -483,14 +566,49 @@ describe("restart-safe marker discovery", () => {
     expect(afterObservation.escalations[0].observedResults[0].resultId).toBe("res-adjudication-1");
   });
 
-  it("flags a live packet copy whose fingerprint diverged from the ledger", async () => {
+  it("verifies live packet CONTENT, not just the claimed fingerprint field", async () => {
     const { mailbox, rendered, packet } = await preparedMailboxWithPostedPacket();
-    const tamperedBody = rendered.body.replace(packet.packetFingerprint, "sha256:" + "c".repeat(64));
-    expect(tamperedBody).not.toBe(rendered.body);
+    const comment = (body: string) => ({
+      commentRef: "futouyiba/noos-shuttle#10/comment/100",
+      author: "impl-agent",
+      updatedAt: "2026-09-16T00:00:00Z",
+      body
+    });
+    // Untampered: content matches ledger and the claim is self-consistent.
+    const honest = await mailbox.discover([comment(rendered.body)]);
+    expect(honest.escalations[0].packetFingerprintMatchesLive).toBe(true);
+    expect(honest.escalations[0].livePacketClaimIntegrity).toBe(true);
+    // Content edited while the claimed fingerprint string is left untouched:
+    // recomputed content fingerprint no longer matches the ledger.
+    const editedGoal = rendered.body.replace("Close the delivery-vs-reducer interpretation conflict.", "TAMPERED goal");
+    const contentTampered = await mailbox.discover([comment(editedGoal)]);
+    expect(contentTampered.escalations[0].packetFingerprintMatchesLive).toBe(false);
+    expect(contentTampered.escalations[0].livePacketClaimIntegrity).toBe(false);
+    // Only the claimed fingerprint string is replaced: content still matches
+    // the ledger, but the marker's own claim is inconsistent.
+    const claimedTampered = rendered.body.replace(packet.packetFingerprint, "sha256:" + "c".repeat(64));
+    const claimTampered = await mailbox.discover([comment(claimedTampered)]);
+    expect(claimTampered.escalations[0].packetFingerprintMatchesLive).toBe(true);
+    expect(claimTampered.escalations[0].livePacketClaimIntegrity).toBe(false);
+  });
+
+  it("surfaces foreign ESCALATION_RESULT markers targeting unknown escalations", async () => {
+    const { mailbox, rendered } = await preparedMailboxWithPostedPacket();
+    const foreignResult = await buildResultEnvelope({
+      resultId: "res-foreign-1",
+      sourceEscalationId: "esc-not-in-ledger",
+      sourceRole: "PRIMARY_DESIGN",
+      authorityRole: "PRIMARY_DESIGN",
+      completionStatus: "COMPLETE",
+      summary: "Answered an escalation this ledger does not know.",
+      recommendedNextAction: "Route manually."
+    });
     const report = await mailbox.discover([
-      { commentRef: "futouyiba/noos-shuttle#10/comment/100", author: "impl-agent", updatedAt: "2026-09-16T00:00:00Z", body: tamperedBody }
+      { commentRef: "futouyiba/noos-shuttle#10/comment/100", author: "impl-agent", updatedAt: "2026-09-16T00:00:00Z", body: rendered.body },
+      markerComment("futouyiba/noos-shuttle#10/comment/120", foreignResult, "2026-09-16T03:00:00Z")
     ]);
-    expect(report.escalations[0].packetFingerprintMatchesLive).toBe(false);
+    expect(report.foreignEscalations).toHaveLength(1);
+    expect(report.foreignEscalations[0]).toMatchObject({ escalationId: "esc-not-in-ledger", resultId: "res-foreign-1" });
   });
 
   it("surfaces foreign escalations, malformed markers, and pending conflicts", async () => {

@@ -26,6 +26,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   CrossAgentMailbox,
   buildResultEnvelope,
@@ -39,12 +40,13 @@ const MULTI_VALUE_FLAGS = new Set(["authority", "evidence", "artifact", "non-goa
 
 function usage(exitCode = 0) {
   const text = `Usage:
-  npm run mailbox -- init [--ledger <path>]
-  npm run mailbox -- open --issue owner/name#N --kind NEEDS_DESIGN|NEEDS_EVIDENCE|NEEDS_HUMAN \\
+  npm run mailbox -- init --ledger <path>
+  npm run mailbox -- open --issue owner/name#N --escalation-id <id> \\
+      --kind NEEDS_DESIGN|NEEDS_EVIDENCE|NEEDS_HUMAN \\
       --source-role R --destination-role R --source-operation <durable-ref> \\
       --authority-basis <ref> --blocker <text|@file|-> --question <text|@file|-> \\
       --provenance <json|@file|-> [--authority <ref>]... [--evidence <ref>]... \\
-      [--escalation-id <id>] [--reason ...] [--goal ...] [--scope ...] \\
+      [--reason ...] [--goal ...] [--scope ...] \\
       [--non-goal <text>]... [--return ...] [--stop ...] [--artifact <ref>]... [--context <ref>]... \\
       [--post] [--ledger <path>]
   npm run mailbox -- revise-packet --escalation <id> --reason ... --goal ... --scope ... \\
@@ -186,8 +188,17 @@ function postIssueComment(issueRef, body) {
 
 function fetchIssueComments(issueRef) {
   const { repo, number } = parseIssueRef(issueRef);
-  const raw = runGh(["api", `repos/${repo}/issues/${number}/comments`, "--paginate"]);
-  return JSON.parse(raw).map((comment) => ({
+  // --paginate --slurp wraps every page into one outer JSON array; without
+  // --slurp, multi-page output is concatenated JSON arrays and JSON.parse throws.
+  const raw = runGh(["api", `repos/${repo}/issues/${number}/comments`, "--paginate", "--slurp"]);
+  return parsePaginatedComments(raw, issueRef);
+}
+
+/** Maps paginated gh api comment JSON to RawMailboxComment inputs. */
+export function parsePaginatedComments(raw, issueRef) {
+  const parsed = JSON.parse(raw);
+  const comments = Array.isArray(parsed?.[0]) ? parsed.flat() : parsed;
+  return comments.map((comment) => ({
     commentRef: `${issueRef}/comment/${comment.id}`,
     author: comment.user?.login ?? "",
     updatedAt: comment.updated_at ?? "",
@@ -274,7 +285,9 @@ async function commandOpen(values, flags) {
     fail(`--kind must be one of ${MAILBOX_ESCALATION_KINDS.join("|")}.`);
   }
   const escalation = await mailbox.openEscalation({
-    escalationId: values.get("escalation-id"),
+    // A stable explicit id keeps reruns create-or-get idempotent after a lost
+    // post acknowledgement; omitting it mints a fresh escalation instead.
+    escalationId: requireValue(values, "escalation-id"),
     workItemRef: issueRef,
     sourceOperationRef: requireValue(values, "source-operation"),
     sourceRole: requireValue(values, "source-role"),
@@ -542,6 +555,11 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  fail(error?.stack ?? String(error));
-});
+const invokedAsScript = import.meta.url === pathToFileURL(process.argv[1] ?? "").href;
+if (invokedAsScript) {
+  main().catch((error) => {
+    fail(error?.stack ?? String(error));
+  });
+}
+
+export { parseArgs, defaultLedgerPath, parseProvenanceInput, FileMailboxStore };

@@ -71,7 +71,7 @@ function canonicalize(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalize).join(",")}]`;
   const entries = Object.entries(value as Record<string, unknown>)
-    .sort(([a], [b]) => a.localeCompare(b))
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .map(([key, item]) => `${JSON.stringify(key)}:${canonicalize(item)}`);
   return `{${entries.join(",")}}`;
 }
@@ -752,6 +752,31 @@ function packetIdFor(escalationId: string, revision: number): string {
   return `${escalationId}/packet/r${revision}`;
 }
 
+/**
+ * Recomputes the packet content fingerprint from a parsed live marker using
+ * the same semantic field set as compilePacket, so discovery verifies live
+ * CONTENT rather than trusting the marker's claimed fingerprint field.
+ */
+async function packetContentFingerprintFromWire(
+  escalationId: string,
+  packet: PacketEnvelopeWire["packet"]
+): Promise<string> {
+  return fingerprint({
+    escalationId,
+    reason: packet.reason,
+    goal: packet.goal,
+    scope: packet.scope,
+    nonGoals: packet.non_goals,
+    exactAuthorityRefs: packet.exact_authority_refs,
+    implementationArtifactRefs: packet.implementation_artifact_refs,
+    evidenceRefs: packet.evidence_refs,
+    boundedContextRefs: packet.bounded_context_refs,
+    preciseQuestions: packet.precise_questions,
+    expectedReturnContract: packet.expected_return_contract,
+    stopCondition: packet.stop_condition
+  });
+}
+
 export class CrossAgentMailbox {
   private readonly store: AtomicMailboxStore;
   private readonly clock: () => string;
@@ -781,7 +806,7 @@ export class CrossAgentMailbox {
     if (!MAILBOX_ESCALATION_KINDS.includes(kind)) {
       throw new MailboxInvariantError("invalid_kind", `Unknown escalation kind: ${String(kind)}`);
     }
-    const escalationId = nonEmpty(input.escalationId, "escalation_id_required", "escalationId is required.");
+    const escalationId = input.escalationId?.trim() || `esc-${newId("escalation")}`;
     const workItemRef = nonEmpty(input.workItemRef, "work_item_ref_required", "workItemRef is required.");
     const semantic = {
       escalationId,
@@ -1132,7 +1157,7 @@ export class CrossAgentMailbox {
   async discover(comments?: readonly RawMailboxComment[]): Promise<MailboxDiscoveryReport> {
     const state = await this.snapshot();
     const parsedComments = comments ? await Promise.all(comments.map((comment) => parseCommentMarkers(comment))) : [];
-    const escalations: DiscoveredEscalation[] = state.escalations.map((escalation) => {
+    const escalations: DiscoveredEscalation[] = await Promise.all(state.escalations.map(async (escalation) => {
       const packets = state.packets
         .filter((packet) => packet.escalationId === escalation.escalationId)
         .sort((a, b) => a.packetRevision - b.packetRevision);
@@ -1145,7 +1170,8 @@ export class CrossAgentMailbox {
         (conflict) => conflict.escalationId === escalation.escalationId
       );
       let liveMaxRevision = 0;
-      let liveMaxFingerprint: string | undefined;
+      let liveMaxClaimedFingerprint: string | undefined;
+      let liveMaxContentFingerprint: string | undefined;
       const liveResultMarkers: DiscoveredResultMarker[] = [];
       for (const parsed of parsedComments) {
         for (const marker of parsed.markers) {
@@ -1158,7 +1184,10 @@ export class CrossAgentMailbox {
             marker.envelope.packet.packet_revision > liveMaxRevision
           ) {
             liveMaxRevision = marker.envelope.packet.packet_revision;
-            liveMaxFingerprint = marker.envelope.packet.packet_fingerprint;
+            liveMaxClaimedFingerprint = marker.envelope.packet.packet_fingerprint;
+            // Verify the live CONTENT, not just the claimed fingerprint field:
+            // a tampered copy can leave the claimed string untouched.
+            liveMaxContentFingerprint = await packetContentFingerprintFromWire(escalation.escalationId, marker.envelope.packet);
           }
           if (marker.envelope.marker_kind === "ESCALATION_RESULT" && marker.envelope.result.source_escalation_id === escalation.escalationId) {
             const result = marker.envelope.result;
@@ -1195,7 +1224,11 @@ export class CrossAgentMailbox {
             }
           : undefined,
         packetFingerprintMatchesLive:
-          liveMaxFingerprint === undefined ? undefined : liveMaxFingerprint === latestPacket?.packetFingerprint,
+          liveMaxContentFingerprint === undefined ? undefined : liveMaxContentFingerprint === latestPacket?.packetFingerprint,
+        livePacketClaimIntegrity:
+          liveMaxClaimedFingerprint === undefined || liveMaxContentFingerprint === undefined
+            ? undefined
+            : liveMaxClaimedFingerprint === liveMaxContentFingerprint,
         observedResults: observedResults.map((observation) => ({
           resultId: observation.resultId,
           resultFingerprint: observation.resultFingerprint,
@@ -1205,7 +1238,7 @@ export class CrossAgentMailbox {
         liveResultMarkers,
         conflictIds: conflicts.map((conflict) => conflict.conflictId)
       };
-    });
+    }));
     const malformedMarkers: DiscoveredMalformedMarker[] = [];
     const forbiddenFieldMarkers: DiscoveredForbiddenMarker[] = [];
     const knownEscalationIds = new Set(state.escalations.map((escalation) => escalation.escalationId));
@@ -1214,11 +1247,24 @@ export class CrossAgentMailbox {
       for (const marker of parsed.markers) {
         if (marker.ok) {
           const envelope = marker.envelope;
-          if (envelope.marker_kind === "ESCALATION_PACKET" && !knownEscalationIds.has(envelope.escalation.escalation_id)) {
+          if (
+            envelope.marker_kind === "ESCALATION_PACKET" &&
+            !knownEscalationIds.has(envelope.escalation.escalation_id)
+          ) {
             foreignEscalations.push({
               escalationId: envelope.escalation.escalation_id,
               workItemRef: envelope.escalation.work_item_ref,
               packetId: envelope.packet.packet_id,
+              commentRef: parsed.commentRef
+            });
+          }
+          if (
+            envelope.marker_kind === "ESCALATION_RESULT" &&
+            !knownEscalationIds.has(envelope.result.source_escalation_id)
+          ) {
+            foreignEscalations.push({
+              escalationId: envelope.result.source_escalation_id,
+              resultId: envelope.result.result_id,
               commentRef: parsed.commentRef
             });
           }
@@ -1253,9 +1299,13 @@ export class CrossAgentMailbox {
   ): Promise<T> {
     for (let attempt = 0; attempt < MAX_COMMIT_RETRIES; attempt += 1) {
       const current = normalizeState(await this.store.read());
-      const { next, result } = await mutator(clone(current));
+      const mutated = await mutator(clone(current));
+      // The ledger revision is the durable commit fence: every applied commit
+      // advances it, so concurrent writers lose CAS and retry instead of
+      // silently overwriting each other's persisted records.
+      const next: CrossAgentMailboxState = { ...mutated.next, revision: current.revision + 1 };
       if (await this.store.compareAndSet(current.revision, next)) {
-        return result;
+        return mutated.result;
       }
     }
     throw new MailboxConflictError("stale_revision", "The mailbox ledger changed concurrently. Retry.");
@@ -1286,6 +1336,22 @@ async function renderEnvelope(envelope: MailboxEnvelopeWire): Promise<RenderedEn
     "```",
     ""
   ].join("\n");
+  // Round-trip guard: text containing a fenced-block terminator (e.g. ```)
+  // would truncate the marker. Reject content that cannot survive transport.
+  const blocks = extractMarkerBlocks(body);
+  if (blocks.length !== 1) {
+    throw new MailboxInvariantError(
+      "marker_unsafe_content",
+      "Envelope content breaks the fenced marker encoding (e.g. contains ```); remove or rephrase it."
+    );
+  }
+  const parsedBack = await parseEnvelopeJson(blocks[0]);
+  if (!parsedBack.ok || canonicalize(parsedBack.envelope) !== canonicalize(envelope)) {
+    throw new MailboxInvariantError(
+      "marker_unsafe_content",
+      "Envelope does not round-trip through the fenced marker unchanged; remove or rephrase unsafe content."
+    );
+  }
   return { body, envelope, envelopeFingerprint };
 }
 
@@ -1410,7 +1476,10 @@ export interface DiscoveredEscalation {
     supersedesPacketId?: string;
     postCommentRefs: readonly string[];
   };
+  /** Recomputed live content fingerprint equals the ledger packet fingerprint. */
   packetFingerprintMatchesLive?: boolean;
+  /** The live marker's claimed fingerprint field matches its own content. */
+  livePacketClaimIntegrity?: boolean;
   observedResults: readonly { resultId: string; resultFingerprint: string; commentObservationId: string; authorityRole: string }[];
   liveResultMarkers: readonly DiscoveredResultMarker[];
   conflictIds: readonly string[];
@@ -1418,8 +1487,9 @@ export interface DiscoveredEscalation {
 
 export interface DiscoveredForeignEscalation {
   escalationId: string;
-  workItemRef: string;
-  packetId: string;
+  workItemRef?: string;
+  packetId?: string;
+  resultId?: string;
   commentRef: string;
 }
 

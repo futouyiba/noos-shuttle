@@ -39,16 +39,25 @@ anchor and validates 40-hex SHAs and `owner/name#number` refs).
 
 - `src/core/cross-agent-mailbox.ts` — pure, self-contained core (erasable-syntax TypeScript, no imports)
   implementing the whitelist semantics above plus `compileLaunchInstructions` (durable refs + short
-  instructions only).
-- `tests/cross-agent-mailbox.test.ts` — 29 tests covering persist-before-post, create-or-get variants,
-  packet revision lineage, envelope determinism, forbidden-field rejection (including smuggled
-  `result_kind`/`is_sufficient` markers), observation freezing, edit conflicts, competing results,
-  discovery cross-checks (fingerprint match, unobserved markers, foreign escalations), restart-safety,
-  and launch instructions.
+  instructions only). Every applied commit advances the ledger revision (durable commit fence), so
+  interleaved writers lose CAS and retry instead of silently overwriting persisted records; discovery
+  verifies live packet CONTENT by recomputing the semantic fingerprint (not just the marker's claimed
+  fingerprint field, reported separately as claim integrity), and envelope rendering round-trip-checks
+  the fenced marker so text containing ``` is rejected instead of emitting an unparseable marker.
+- `tests/cross-agent-mailbox.test.ts` (33 tests) — persist-before-post, create-or-get variants, packet
+  revision lineage, envelope determinism and round-trip safety, forbidden-field rejection (including
+  smuggled `result_kind`/`is_sufficient` markers), observation freezing, edit conflicts, competing
+  results, forced-interleaving concurrency (the lost-update window the revision fence closes),
+  discovery cross-checks (content-vs-claim fingerprints, unobserved markers, foreign packet AND result
+  markers), restart-safety, and launch instructions.
 - `scripts/noos-mailbox.mjs` + `npm run mailbox` — thin `gh`-backed CLI (`init`, `open`, `revise-packet`,
-  `record-post`, `render-result`, `discover`, `observe`, `show`). The ledger defaults to
-  `.noos/runtime/mailbox/<owner>__<repo>__issue-<n>.json` (gitignored runtime state, single ledger per
-  GitHub Issue work item). Node ≥ 23.6 native type stripping imports the core directly; no new dependency.
+  `record-post`, `render-result`, `discover`, `observe`, `show`). Comment ingestion uses
+  `gh api --paginate --slurp` so multi-page issue comment threads parse correctly. The ledger defaults
+  to `.noos/runtime/mailbox/<owner>__<repo>__issue-<n>.json` (gitignored runtime state, single ledger
+  per GitHub Issue work item). Node ≥ 23.6 native type stripping imports the core directly; no new
+  dependency. `tests/noos-mailbox-cli.test.ts` (6 tests) covers the CLI helpers (argument parsing,
+  ledger path derivation, provenance mapping, paginated comment flattening) and an end-to-end
+  open → discover → render-result → observe → discover flow against a fake `gh`.
 
 ## Represented loop (acceptance)
 
@@ -70,11 +79,37 @@ Executed from repository root on this branch:
 
 ```sh
 npm run typecheck
-npx vitest run tests/cross-agent-mailbox.test.ts        # 29 passed
+npx vitest run tests/cross-agent-mailbox.test.ts        # 33 passed
+npx vitest run tests/noos-mailbox-cli.test.ts           # 6 passed
 npm test -- --exclude tests/content-ui-smoke.test.ts    # full suite without the browser fixture
 node --check scripts/noos-mailbox.mjs
 npm run mailbox -- init/open/show/render-result smoke   # dry flow on a temp ledger (no gh calls)
 ```
+
+## Independent review and disposition
+
+An independent reviewer reviewed exact commit `f644a46` and returned `REQUEST_CHANGES` with one P1 and
+one P2 (review comment preserved on the PR). Disposition, all applied and regression-tested:
+
+- **F1 (P1) commit fence** — `commit()` never advanced the ledger revision, making CAS inert and allowing
+  silently lost records under interleaved writers. Fixed: every applied commit advances the revision;
+  forced-interleaving test added.
+- **F2 (P2) multi-page comments** — `gh api --paginate` output is concatenated JSON arrays, so issues
+  with >1 comment page crashed `discover`/`observe`. Fixed with `--slurp` + defensive flattening, covered
+  by tests.
+- **F3 (P2) test gaps** — added the concurrency test and CLI tests (fake-gh end-to-end flow).
+- **F4 (P3) claimed-fingerprint trust** — discovery now recomputes the packet content fingerprint from
+  live marker content (`packetFingerprintMatchesLive`) and reports marker self-consistency separately
+  (`livePacketClaimIntegrity`).
+- **F5 (P3) canonicalization determinism** — key sort switched from locale-aware `localeCompare` to
+  codepoint order.
+- **F6 (P3) fence-breaking content** — rendering rejects content that cannot round-trip through the
+  fenced marker (`marker_unsafe_content`) instead of emitting a truncated/unparseable marker.
+- **F7 (P3) foreign result markers** — `ESCALATION_RESULT` markers targeting unknown escalations are
+  surfaced in discovery alongside foreign packet markers.
+- **F8 (P3) usage text** — `init --ledger` and `open --escalation-id` documented as required (the
+  explicit id keeps reruns create-or-get idempotent after a lost post acknowledgement); the core can
+  still mint an id when omitted.
 
 ## Known limits
 
