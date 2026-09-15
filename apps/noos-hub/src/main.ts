@@ -3,10 +3,13 @@ import { listen } from "@tauri-apps/api/event";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
 import noosLogoUrl from "./assets/noos-logo.png";
+import { createHarnessSnapshot, harnessScenarioIds } from "./harness/fixtures";
+import type { HarnessConsoleSnapshot, HarnessScenarioId } from "./harness/types";
 import { mockHealth, mockSleepRecoveryStatus } from "./mock";
 import { renderAdapters } from "./pages/adapters";
 import { renderConfig, type ConfigData } from "./pages/config";
 import { renderDashboard } from "./pages/dashboard";
+import { renderHarnessConsole, projectionFreshness } from "./pages/harness-console";
 import { renderHelp } from "./pages/help";
 import { renderVault } from "./pages/vault";
 import { createVaultBrowserState, renderVaultBrowser, type VaultBrowserState } from "./pages/vault-browser";
@@ -17,7 +20,7 @@ import { renderUpdateBannerHtml, renderUpdateDialogHtml } from "./update/render"
 import { escapeHtml } from "./ui/html";
 import { setVaultFileActionDataRuns } from "./vault-file-actions";
 
-type SectionId = "home" | "vault" | "adapters" | "config" | "help";
+type SectionId = "home" | "vault" | "harness" | "adapters" | "config" | "help";
 
 const silentUpdateCheckDelayMs = 2500;
 interface SectionMeta {
@@ -42,6 +45,13 @@ const sectionMeta: Record<SectionId, SectionMeta> = {
     eyebrow: "NOOS Vault",
     title: "本机产物与交接",
     summary: "管理 Handoff、Crystal、Browser Mirror 和 Agent Projection。"
+  },
+  harness: {
+    id: "harness",
+    label: "Harness",
+    eyebrow: "Deliberation Harness",
+    title: "Dogfood Console",
+    summary: "观察 Primary Thread 的 canonical 绑定、runtime 租约、当前 operation 和最近事件。v0 为 fixture 数据。"
   },
   adapters: {
     id: "adapters",
@@ -70,6 +80,7 @@ const navItems: SectionMeta[] = [
   sectionMeta.home,
   sectionMeta.vault,
   sectionMeta.adapters,
+  sectionMeta.harness,
   sectionMeta.config
 ];
 
@@ -83,6 +94,9 @@ let healthLoadInFlight = false;
 let actionInFlight = false;
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
 let vaultBrowserState: VaultBrowserState = createVaultBrowserState();
+let harnessScenario: HarnessScenarioId = "idle";
+let harnessSnapshot: HarnessConsoleSnapshot | null = null;
+let harnessFreshnessTimer: ReturnType<typeof setInterval> | null = null;
 let currentConfig: ConfigData | null = null;
 let updateStatus: UpdateStatus = "idle";
 let updateDialogVisible = false;
@@ -101,12 +115,14 @@ if (!app) {
 const appElement = app;
 
 renderShell();
+applyRequestedHarnessScenario();
 window.addEventListener("popstate", restoreSectionFromLocation);
 window.addEventListener("hashchange", restoreSectionFromLocation);
 void installSleepRecoveryListeners();
 void installUpdateMenuListeners();
 void loadHealth();
 void loadSleepRecoveryStatus();
+startHarnessFreshnessTicker();
 scheduleSilentUpdateCheck();
 
 function renderShell(): void {
@@ -167,6 +183,14 @@ function renderShell(): void {
     void runAction("doctor", event.currentTarget as HTMLButtonElement);
   });
   appElement.querySelector('[data-action="clear-log"]')?.addEventListener("click", () => setLog(""));
+}
+
+/** Dev fixture deep link: ?scenario=idle|active-submission|attention-recovery (dogfood console only). */
+function applyRequestedHarnessScenario(): void {
+  const requestedScenario = new URLSearchParams(window.location.search).get("scenario");
+  if (requestedScenario && (harnessScenarioIds as string[]).includes(requestedScenario)) {
+    harnessScenario = requestedScenario as HarnessScenarioId;
+  }
 }
 
 function navButton(section: SectionId, label: string, className = ""): string {
@@ -355,6 +379,47 @@ function bindVaultBrowserEvents(root: ParentNode): void {
   });
 }
 
+function renderHarnessSection(): string {
+  if (!harnessSnapshot || harnessSnapshot.scenario !== harnessScenario) {
+    harnessSnapshot = createHarnessSnapshot(harnessScenario);
+  }
+  return renderHarnessConsole(harnessSnapshot);
+}
+
+function bindHarnessConsoleEvents(root: ParentNode): void {
+  root.querySelectorAll<HTMLButtonElement>("[data-hc-scenario]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const next = button.dataset.hcScenario;
+      if (!next || next === harnessScenario) return;
+      harnessScenario = next as HarnessScenarioId;
+      harnessSnapshot = createHarnessSnapshot(harnessScenario);
+      renderCurrentSection();
+    });
+  });
+
+  root.querySelector<HTMLButtonElement>("[data-hc-reobserve]")?.addEventListener("click", () => {
+    harnessSnapshot = createHarnessSnapshot(harnessScenario);
+    renderCurrentSection();
+  });
+}
+
+/**
+ * Keeps the projection-freshness pill ticking. This is the Console's view
+ * of when the projection was BUILT — deliberately independent of any
+ * harness-side fact (lease, carrier observation, or health).
+ */
+function startHarnessFreshnessTicker(): void {
+  if (harnessFreshnessTimer !== null) return;
+  harnessFreshnessTimer = window.setInterval(() => {
+    if (activeSection !== "harness" || !harnessSnapshot) return;
+    const pill = appElement.querySelector<HTMLElement>("[data-hc-freshness]");
+    if (!pill) return;
+    const display = projectionFreshness(harnessSnapshot.projectionBuiltAt);
+    pill.dataset.state = display.state;
+    pill.textContent = display.text;
+  }, 1000);
+}
+
 function mockVaultBrowse(folder: string, query: string): VaultBrowserState {
   const allObjects: VaultBrowserState["objects"] = [
     { object_type: "handoff", lookup_key: "noos-hub-vault", key: "noos-hub-vault", title: "NOOS Hub Vault 改版", name: "2026-05-20-noos-hub-vault.md", path: "/Users/you/.noos/vault/handoffs/active/2026-05-20-noos-hub-vault.md", modified_epoch: 1779290000, folder: "handoffs/active" },
@@ -532,6 +597,10 @@ function renderCurrentSection(): void {
     case "vault":
       content.innerHTML = renderVault(currentHealth);
       void loadVaultBrowse();
+      break;
+    case "harness":
+      content.innerHTML = renderHarnessSection();
+      bindHarnessConsoleEvents(content);
       break;
     case "adapters":
       content.innerHTML = renderAdapters(currentHealth);
