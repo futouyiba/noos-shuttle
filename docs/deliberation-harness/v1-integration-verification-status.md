@@ -47,7 +47,7 @@
 ## 3. Verification evidence (current)
 
 - `npm run typecheck` — 0 errors.
-- `npm test` — **29 files / 332 tests pass**, including playwright browser smokes (now also the child-lifecycle lanes and the full child-result delivery loop)
+- `npm test` — **29 files / 334 tests pass**, including playwright browser smokes (now also the child-lifecycle lanes and the full child-result delivery loop)
   rebuilt from this tree (Human GO real-ledger dispatch; durable Goal Re-anchor
   end-to-end).
 - Commit-message test counts are taken from the last clean-tree run.
@@ -70,7 +70,12 @@
   implementation (the capability interface and conforming-strategy gating
   landed in W12; the fork-adapter adjudication is honored — no FRESH relabel
   path exists). The rollover re-arm escape is closed (W10); Path-A stamp test
-  covered; W11b lockstep landed (`0f76801`, in review).
+  covered; W11b lockstep landed (`0f76801` + `33e59ba`, in re-review).
+- Control-lane follow-ups (from the W11b review): the re-arm fence semantics
+  — W9's same-fence re-arm versus the adjudication's F18 wording — and the
+  FAILED_SAFE/retarget propagation into the control lane (a rolled-over
+  control operation currently stays execution-owning and blocks control-side
+  binding moves) need one explicit design pass.
 - Semantic run-state handlers (commit_decision, open_question, …) share the
   delta kernel per adjudication item 5 — not started, explicitly V1-later.
 
