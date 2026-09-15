@@ -170,11 +170,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: false, error: "child_ledger_unavailable" });
       return false;
     }
-    (async () => {
+    // The tab opens only inside the openTab callback — after the strategy
+    // gate and intent validation, so a refusal (spawn_needs_human, reuse
+    // conflict, not-resumable) never leaks an orphan tab.
+    requestBrowserChildSpawn(ledger, chrome.storage.local, async () => {
       const tab = await chrome.tabs.create({ url: "https://chatgpt.com/", active: false });
       if (!Number.isSafeInteger(tab.id)) throw new Error("spawn_tab_unavailable");
-      return requestBrowserChildSpawn(ledger, chrome.storage.local, async () => tab.id!, { intent: message.intent });
-    })()
+      return tab.id!;
+    }, { intent: message.intent })
       .then(result => sendResponse({ ok: true, result: { childThreadId: result.child.childThreadId, state: result.child.state, tabId: result.tabId } }))
       .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : "child_spawn_failed" }));
     return true;
@@ -190,7 +193,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     adoptBrowserChildSpawn(ledger, chrome.storage.local, {
       tabId: sender.tab!.id!,
-      providerConversationRef: message.providerConversationRef
+      // When the tab URL already carries a conversation id, the claim must
+      // match it — a tab cannot adopt an identity from another conversation.
+      providerConversationRef: message.providerConversationRef === undefined
+        ? undefined
+        : ((): string => {
+            const urlRef = extractProviderConversationId(sender.tab?.url ?? "");
+            if (urlRef && urlRef !== message.providerConversationRef) {
+              throw new Error("adoption_url_mismatch");
+            }
+            return message.providerConversationRef;
+          })()
     })
       .then(result => sendResponse({ ok: true, result: result.status === "ADOPTED"
         ? { status: result.status, childThreadId: result.child.childThreadId, state: result.child.state }

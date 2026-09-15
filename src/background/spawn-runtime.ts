@@ -86,9 +86,16 @@ export async function requestBrowserChildSpawn(
     throw new Error(`spawn_not_resumable:${child.state}`);
   }
   const tabId = await openTab();
-  const pending = await readPending(store);
-  pending[String(tabId)] = { childThreadId: child.childThreadId, createdAt: Date.now() };
-  await store.set({ [PENDING_SPAWNS_KEY]: pending });
+  await withPendingLock(async () => {
+    const pending = await readPending(store);
+    // One live pending per child: a re-request supersedes any earlier tab's
+    // entry, so a forgotten first tab can never adopt later.
+    for (const key of Object.keys(pending)) {
+      if (pending[key].childThreadId === child.childThreadId) delete pending[key];
+    }
+    pending[String(tabId)] = { childThreadId: child.childThreadId, createdAt: Date.now() };
+    await store.set({ [PENDING_SPAWNS_KEY]: pending });
+  });
   return { child: (await children.get(child.childThreadId))!, tabId };
 }
 
@@ -115,34 +122,46 @@ export async function adoptBrowserChildSpawn(
   store: PendingSpawnStore,
   input: BrowserSpawnAdoptionInput
 ): Promise<AdoptionResult> {
-  const tabKey = String(input.tabId);
-  const pending = await readPending(store);
-  const entry = pending[tabKey];
-  if (!entry) return { status: "NO_PENDING_SPAWN" };
-  const child = await children.get(entry.childThreadId);
-  if (!child) {
+  return withPendingLock(async () => {
+    const tabKey = String(input.tabId);
+    const pending = await readPending(store);
+    const entry = pending[tabKey];
+    if (!entry) return { status: "NO_PENDING_SPAWN" } as AdoptionResult;
+    const child = await children.get(entry.childThreadId);
+    if (!child) {
+      delete pending[tabKey];
+      await store.set({ [PENDING_SPAWNS_KEY]: pending });
+      return { status: "NO_PENDING_SPAWN" } as AdoptionResult;
+    }
+    if (child.state !== "SPAWNING" && child.state !== "SPAWN_UNCERTAIN" && child.state !== "BROKEN") {
+      // Already bound/active/terminal — the pending entry is stale.
+      delete pending[tabKey];
+      await store.set({ [PENDING_SPAWNS_KEY]: pending });
+      return { status: "CHILD_NOT_ADOPTABLE", reason: `child_state:${child.state}` } as AdoptionResult;
+    }
+    if (!input.providerConversationRef || input.providerConversationRef.trim().length === 0) {
+      // Activation safety: never adopt a provisional tab onto a guessed identity.
+      return { status: "NEEDS_STABLE_IDENTITY" } as AdoptionResult;
+    }
+    const bound = await children.bindConversation(entry.childThreadId, {
+      providerConversationRef: input.providerConversationRef,
+      carrierRef: `browser-tab:${input.tabId}`
+    });
+    const active = await children.activate(entry.childThreadId);
     delete pending[tabKey];
     await store.set({ [PENDING_SPAWNS_KEY]: pending });
-    return { status: "NO_PENDING_SPAWN" };
-  }
-  if (child.state !== "SPAWNING" && child.state !== "SPAWN_UNCERTAIN" && child.state !== "BROKEN") {
-    // Already bound/active/terminal — the pending entry is stale.
-    delete pending[tabKey];
-    await store.set({ [PENDING_SPAWNS_KEY]: pending });
-    return { status: "CHILD_NOT_ADOPTABLE", reason: `child_state:${child.state}` };
-  }
-  if (!input.providerConversationRef || input.providerConversationRef.trim().length === 0) {
-    // Activation safety: never adopt a provisional tab onto a guessed identity.
-    return { status: "NEEDS_STABLE_IDENTITY" };
-  }
-  const bound = await children.bindConversation(entry.childThreadId, {
-    providerConversationRef: input.providerConversationRef,
-    carrierRef: `browser-tab:${input.tabId}`
+    return { status: "ADOPTED", child: active.state === "ACTIVE" ? active : bound } as AdoptionResult;
   });
-  const active = await children.activate(entry.childThreadId);
-  delete pending[tabKey];
-  await store.set({ [PENDING_SPAWNS_KEY]: pending });
-  return { status: "ADOPTED", child: active.state === "ACTIVE" ? active : bound };
+}
+
+let pendingMutation: Promise<unknown> = Promise.resolve();
+
+/** Serializes pending-map mutations so interleaved adopts cannot resurrect a
+ * consumed entry through a stale read-modify-write. */
+function withPendingLock<T>(work: () => Promise<T>): Promise<T> {
+  const chained = pendingMutation.then(work, work);
+  pendingMutation = chained.then(() => undefined, () => undefined);
+  return chained;
 }
 
 /** List pending spawns (for reconciliation UIs and probes). */

@@ -620,10 +620,11 @@ describe("content script smoke flow", () => {
         },
         tabs: {
           sendMessage: async () => ({ ok: false }),
-          create: async () => ({ id: 77 })
+          create: async () => { (globalThis as any).tabCreateCount += 1; return { id: 77 }; }
         },
         downloads: { download: async () => 1 }
       };
+      (globalThis as any).tabCreateCount = 0;
     });
     await page.addScriptTag({ content: `(function () {\n${serviceWorkerScript}\n})();` });
     const intent = {
@@ -645,6 +646,7 @@ describe("content script smoke flow", () => {
     }, intent);
     // A tab was opened (mock id 77) and the child is SPAWNING with a pending entry.
     expect(request).toMatchObject({ ok: true, result: { childThreadId: "child-r1", state: "SPAWNING", tabId: 77 } });
+    expect(await page.evaluate(() => (globalThis as any).tabCreateCount)).toBe(1);
     const pending = await page.evaluate(() => (globalThis as any).spawnBacking.noosPendingSpawns);
     expect(pending).toMatchObject({ "77": { childThreadId: "child-r1" } });
     // The new tab reports a provisional state first: activation safety holds.
@@ -662,6 +664,8 @@ describe("content script smoke flow", () => {
       return await send({ type: "NOOS_CHILD_SPAWN_REQUEST", intent });
     }, { ...intent, childThreadId: "child-r2", creationMode: "FORKED", contextSource: "PROVIDER_INHERITED", contextFidelity: "PROVIDER_INHERITANCE_REQUIRED" });
     expect(forked).toMatchObject({ ok: false, error: "spawn_needs_human:native_fork_unavailable" });
+    // The refusal must not leak an orphan tab: the count stays at one.
+    expect(await page.evaluate(() => (globalThis as any).tabCreateCount)).toBe(1);
     const forkedRecord = await page.evaluate(() => (globalThis as any).spawnBacking.noosChildWorkers[1]);
     expect(forkedRecord).toMatchObject({ childThreadId: "child-r2", state: "PLANNED" });
     await page.close();

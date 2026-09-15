@@ -46,11 +46,16 @@ describe("requestBrowserChildSpawn", () => {
     expect(tabId).toBe(42);
     expect(child.state).toBe("SPAWNING");
     expect((await listPendingSpawns(store))["42"]).toMatchObject({ childThreadId: "child-l3" });
-    // Idempotent re-request: the child is already SPAWNING — one tab, one entry.
+    // A re-request opens a second tab (the runtime cannot know the first is
+    // dead) but keeps ONE live pending per child: the newer entry supersedes
+    // the older tab's, so the forgotten tab can never adopt later.
     const again = await requestBrowserChildSpawn(children, store, async () => { opened += 1; return 43; }, { intent: freshIntent });
     expect(again.tabId).toBe(43);
     expect(opened).toBe(2);
     expect(child.state).toBe("SPAWNING");
+    const pendingAfter = await listPendingSpawns(store);
+    expect(pendingAfter["43"]).toMatchObject({ childThreadId: "child-l3" });
+    expect(pendingAfter["42"]).toBeUndefined();
   });
 
   it("refuses a FORKED child (needs human) without opening anything", async () => {
