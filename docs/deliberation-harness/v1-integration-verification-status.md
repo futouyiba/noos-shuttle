@@ -42,12 +42,12 @@
 | W9 FAILED_SAFE re-arm symmetry | `3a9f4bc` | APPROVE |
 | W10 FAILED_SAFE rollover escape (fresh-attempt retarget) | `42161a2`, `602968d`, `a793905`, `13cd373` | APPROVE (lane separation enforced, states pinned) |
 | W11a three-identity dispatch model | `6119f2b`, `9102ffb` | APPROVE after fix |
-| W12 context provenance × source × fidelity | `3e1f028`, `8422351` | REQUEST_CHANGES → fix in re-review |
+| W12 context provenance × source × fidelity | `3e1f028`, `8422351`, `0f76801` | re-review passed the exemption fix; full verdict with W11b |
 
 ## 3. Verification evidence (current)
 
 - `npm run typecheck` — 0 errors.
-- `npm test` — **29 files / 330 tests pass**, including playwright browser smokes (now also the child-lifecycle lanes and the full child-result delivery loop)
+- `npm test` — **29 files / 332 tests pass**, including playwright browser smokes (now also the child-lifecycle lanes and the full child-result delivery loop)
   rebuilt from this tree (Human GO real-ledger dispatch; durable Goal Re-anchor
   end-to-end).
 - Commit-message test counts are taken from the last clean-tree run.
@@ -66,13 +66,11 @@
   baseline to the new conversation, and leave identity fields untouched. The
   previously deadlocked scenario (prepare → rollover → retarget → claim under
   the new fence) is covered end to end; cross-thread retargeting is rejected.
-- Wiring follow-ups: the runtime lockstep (W11b — the worker-side durable
-  reducer driving the claim permit and settleFromEvidence from journal facts;
-  the identity model itself is implemented in W11a); the spawn adapter's
-  real-browser capabilities implementation (the capability interface and
-  conforming-strategy gating landed in W12; the fork-adapter proposal's
-  adjudication is recorded and honored — no FRESH relabel path exists). The
-  rollover re-arm escape is closed (W10); Path-A stamp test covered.
+- Wiring follow-ups: the spawn adapter's real-browser capabilities
+  implementation (the capability interface and conforming-strategy gating
+  landed in W12; the fork-adapter adjudication is honored — no FRESH relabel
+  path exists). The rollover re-arm escape is closed (W10); Path-A stamp test
+  covered; W11b lockstep landed (`0f76801`, in review).
 - Semantic run-state handlers (commit_decision, open_question, …) share the
   delta kernel per adjudication item 5 — not started, explicitly V1-later.
 
