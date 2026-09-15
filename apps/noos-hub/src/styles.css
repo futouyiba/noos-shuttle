@@ -1777,10 +1777,438 @@ ul {
   font: 500 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
+/* ===== Harness Dogfood Console ===== */
+
+.hc-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.hc-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.hc-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.hc-fixture-tag {
+  min-height: 22px;
+}
+
+/* Neutral projection-build pill — no aging/stale thresholds: the runtime
+   defines no cadence/TTL contract, so the UI states the age as a fact. */
+.hc-freshness {
+  display: inline-flex;
+  min-height: 26px;
+  align-items: center;
+  border: 1px solid rgba(23, 32, 26, 0.12);
+  border-radius: 999px;
+  background: #ffffff;
+  color: #45554c;
+  font: 750 11px/1 system-ui, sans-serif;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.hc-reobserve {
+  min-height: 26px;
+  padding: 0 10px;
+  font-size: 11px;
+}
+
+/* WorkItem scope strip — deliberately quieter than the primary thread */
+
+.hc-scope {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  flex-wrap: wrap;
+  border: 1px solid rgba(23, 32, 26, 0.08);
+  border-radius: 8px;
+  background: #f9fbf9;
+  padding: 12px 16px;
+}
+
+.hc-scope-main h2 {
+  font-size: 18px;
+}
+
+.hc-scope-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.hc-scope-facts span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid rgba(23, 32, 26, 0.1);
+  border-radius: 999px;
+  background: #ffffff;
+  font: 650 11px/1.2 system-ui, sans-serif;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+
+.hc-scope-facts strong {
+  color: #7d8a81;
+  font: 750 10px/1 system-ui, sans-serif;
+  text-transform: uppercase;
+}
+
+/* Main layout: primary thread dominates, evidence sits secondary */
+
+.hc-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.hc-primary,
+.hc-secondary {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.hc-thread,
+.hc-operation,
+.hc-children,
+.hc-events {
+  border: 1px solid rgba(23, 32, 26, 0.1);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 16px;
+}
+
+/* Primary thread is the page's visual protagonist */
+
+.hc-thread {
+  border-left: 4px solid #1d6b4f;
+}
+
+.hc-thread-head h2 {
+  font-size: 22px;
+}
+
+.hc-thread-head h2 code {
+  font-size: 19px;
+}
+
+.hc-thread-role {
+  margin-top: 4px;
+  color: #5c6860;
+  font: 650 12px/1.3 system-ui, sans-serif;
+}
+
+/* Canonical vs runtime zones — two layers of fact, visually distinct */
+
+.hc-zone {
+  margin-top: 12px;
+  border-radius: 7px;
+  padding: 12px;
+}
+
+.hc-zone--canonical {
+  border: 1px solid rgba(23, 32, 26, 0.08);
+  background: #ffffff;
+}
+
+.hc-zone--runtime {
+  border: 1px solid rgba(23, 32, 26, 0.06);
+  background: #f7faf7;
+}
+
+.hc-zone > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.hc-zone > header strong {
+  font: 850 11px/1.2 system-ui, sans-serif;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.hc-zone--canonical > header strong {
+  color: #1d6b4f;
+}
+
+.hc-zone--runtime > header strong {
+  color: #1d4b66;
+}
+
+.hc-zone > header span {
+  color: #7d8a81;
+  font: 600 10.5px/1.3 system-ui, sans-serif;
+}
+
+.hc-facts {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+
+.hc-fact {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+}
+
+.hc-fact dt {
+  color: #5c6860;
+  font: 650 11px/1.35 system-ui, sans-serif;
+}
+
+.hc-fact dd {
+  margin: 0;
+  color: #17201a;
+  font: 650 12px/1.5 system-ui, sans-serif;
+  overflow-wrap: anywhere;
+}
+
+.hc-fact dd .pill {
+  margin-right: 4px;
+}
+
+.hc-fact .check-tag {
+  margin-left: 4px;
+}
+
+/* Current operation — authority / eligibility / effect layers */
+
+.hc-operation {
+  border-left: 4px solid #8b5a11;
+}
+
+.hc-operation-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.hc-operation-head h3 {
+  font-size: 17px;
+}
+
+.hc-operation-head h3 code {
+  font-size: 14px;
+}
+
+.hc-operation--idle {
+  border-left-color: rgba(23, 32, 26, 0.14);
+}
+
+.hc-operation--idle h3 {
+  color: #4f5a53;
+  font-weight: 700;
+}
+
+.hc-last-completed {
+  margin-top: 10px;
+  color: #5c6860;
+  font: 600 12px/1.5 system-ui, sans-serif;
+}
+
+.hc-operation-groups {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.hc-group {
+  border: 1px solid rgba(23, 32, 26, 0.07);
+  border-radius: 7px;
+  padding: 10px 12px;
+}
+
+.hc-group > header {
+  margin-bottom: 8px;
+}
+
+.hc-group > header strong {
+  color: #4f5a53;
+  font: 750 11px/1.2 system-ui, sans-serif;
+}
+
+/* Secondary column: child threads + recent events */
+
+.hc-panel-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.hc-panel-sub {
+  margin-top: 3px;
+  color: #7d8a81;
+  font: 550 11px/1.4 system-ui, sans-serif;
+}
+
+.hc-children-list {
+  gap: 8px;
+}
+
+.hc-children-list li {
+  border: 1px solid rgba(23, 32, 26, 0.07);
+  border-radius: 7px;
+  background: #f9fbf9;
+  padding: 10px 12px;
+}
+
+.hc-child-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.hc-child-main strong code {
+  font-size: 12px;
+}
+
+.hc-child-main span {
+  display: block;
+  margin-top: 2px;
+  color: #657169;
+  font: 600 11px/1.3 system-ui, sans-serif;
+}
+
+.hc-child-fact {
+  margin-top: 6px;
+  color: #5c6860;
+  font: 550 11.5px/1.4 system-ui, sans-serif;
+}
+
+/* Event stream — compact evidence rows (diagnostic merge, no global seq) */
+
+.hc-event-header,
+.hc-event-row {
+  display: grid;
+  grid-template-columns: 58px minmax(72px, auto) minmax(0, 1.3fr) minmax(0, 0.8fr) minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+}
+
+.hc-event-header {
+  margin-bottom: 6px;
+  border-bottom: 1px solid rgba(23, 32, 26, 0.08);
+  padding-bottom: 6px;
+  color: #8a978e;
+  font: 750 10px/1.2 system-ui, sans-serif;
+  text-transform: uppercase;
+}
+
+.hc-event-list {
+  gap: 2px;
+}
+
+.hc-event-row {
+  font: 550 11px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.hc-event-row--warning {
+  background: #fff8ed;
+  border-radius: 4px;
+  padding: 0 4px;
+  margin: 0 -4px;
+}
+
+.hc-evt-source {
+  min-width: 0;
+}
+
+.hc-event-source {
+  min-height: 16px;
+  font-size: 9px;
+  vertical-align: 1px;
+}
+
+.hc-time {
+  color: #7d8a81;
+}
+
+.hc-evt {
+  color: #253129;
+  overflow-wrap: anywhere;
+}
+
+.hc-corr {
+  color: #1d6b4f;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hc-lifecycle-note {
+  margin-top: 10px;
+  color: #5c6860;
+  font: 600 11.5px/1.45 system-ui, sans-serif;
+}
+
+.hc-error-text {
+  color: #8a1d1d;
+}
+
+/* Observability gaps panel */
+
+.hc-gaps {
+  margin-top: 0;
+}
+
+.hc-gaps-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 12px 0 0;
+}
+
+.hc-gaps-list > div {
+  min-width: 0;
+  border-radius: 7px;
+  background: #ffffff;
+  padding: 10px 12px;
+}
+
+.hc-gaps-list dt {
+  color: #17201a;
+  font: 800 12px/1.3 system-ui, sans-serif;
+}
+
+.hc-gaps-list dd {
+  margin: 4px 0 0;
+  color: #5c6860;
+  font: 550 11.5px/1.45 system-ui, sans-serif;
+}
+
+
 
 @media (max-width: 1080px) {
   #app {
     grid-template-columns: 190px minmax(0, 1fr);
+  }
+
+  .hc-layout {
+    grid-template-columns: 1fr;
   }
 
   .db-status-cards {
@@ -1862,8 +2290,20 @@ ul {
   .help-layout,
   .help-terms,
   .help-status-list,
-  .help-flow {
+  .help-flow,
+  .hc-gaps-list {
     grid-template-columns: 1fr;
+  }
+
+  .hc-scope,
+  .hc-operation-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .hc-fact {
+    grid-template-columns: 1fr;
+    gap: 3px;
   }
 
   .help-panel--wide {
