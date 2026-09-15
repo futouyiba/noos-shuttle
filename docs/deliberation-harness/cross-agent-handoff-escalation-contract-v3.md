@@ -1,6 +1,6 @@
 # NOOS Deliberation Harness — Cross-Agent Handoff / Escalation Contract v3
 
-> Status: Consolidated Current Design Candidate / pending fresh independent review of this consolidation
+> Status: Consolidated Current Design Contract / independent consolidation review `APPROVE` at exact target `9ed74f263126ac43a1a4c1f926633594b2abf5c6` — K1/K2 CLOSED, no-regression vs the four frozen layers, no new findings (PR #14 comment `5685557913`)
 >
 > Supersedes as the current reading path (semantics fully absorbed herein; files retained as provenance tombstones):
 >
@@ -27,6 +27,7 @@ Exact historical review targets and verdict lineage:
 | v1 contract (re-review) | `6f7c52291075e8182f48ccb8d2f4585de62c5ad1` | `APPROVE` + R1–R6 → v2 at `2e55df6876c7414ff2be9a14c0f4735f5a89baf6` + reducer-v0 at `3daa613504d9a630a5fadbc690e5654307e696e1` |
 | v2 + reducer + N1–N5 amendment | `938702cf8ccec114f342dc91abb0a7c7cd5ba165` | N1–N5 `CLOSED`; M1–M3 surfaced → M1–M3 amendment |
 | M1–M3 amendment (focused re-review) | `16293eaba47fd107bb40d599b09c3a198b4858ad` (PR #14 comment `5684973946`) | `APPROVE` + K1/K2 + consolidation conditions → this v3 consolidation |
+| v3 consolidation (this document) | `9ed74f263126ac43a1a4c1f926633594b2abf5c6` (PR #14 comment `5685557913`) | `APPROVE` — K1/K2 CLOSED, no-regression vs frozen layers, no new findings |
 
 Prior findings F1–F8, R1–R6, N1–N5, M1–M3 are closed and are not restated here. Exact commits and review comments are the provenance anchors; old review prose is not copied into the current contract.
 
