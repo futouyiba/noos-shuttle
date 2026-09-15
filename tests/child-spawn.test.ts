@@ -182,6 +182,18 @@ describe("spawn child worker", () => {
     expect(adapter.calls).toBe(0);
   });
 
+  it("exempts provider inheritance from the transcript-export capability", async () => {
+    const children = makeChildren();
+    // FORKED + PROVIDER_INHERITED satisfies reconstruction fidelity without a
+    // transcript export: inheritance is a superset of reconstruction.
+    const adapter = countingAdapter(async () => ({ providerConversationRef: "conv-f", carrierRef: "tab-f" }), { supportsNativeFork: true, transcriptExportAvailable: false } as const);
+    const child = await spawnChildWorker({ children, adapter }, {
+      ...intent, contextSource: "PROVIDER_INHERITED" as const, contextFidelity: "TRANSCRIPT_RECONSTRUCTION_REQUIRED" as const
+    });
+    expect(child.state).toBe("ACTIVE");
+    expect(adapter.calls).toBe(1);
+  });
+
   it("allows a FRESH reviewer with independent fidelity and minimal bootstrap", async () => {
     const children = makeChildren();
     const adapter = countingAdapter(async () => ({ providerConversationRef: "conv-r", carrierRef: "tab-r" }), { supportsNativeFork: false, transcriptExportAvailable: false } as const);

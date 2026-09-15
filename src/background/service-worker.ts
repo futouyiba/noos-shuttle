@@ -19,6 +19,7 @@ import { runGoalReanchorProbe } from "./goal-reanchor-runtime";
 import { runChildDeliveryProbe } from "./delivery-runtime";
 import { ResultDeliveryLedger, createChromeResultDeliveryStore } from "../core/result-delivery";
 import { ProviderExecutionJournal, createChromeExecutionJournalStore } from "../core/execution-journal";
+import { DurableOperationalStateReducer, createChromeOperationalStateReducerStore } from "../core/durable-operational-state-reducer";
 import { SubmissionOperationLedger, createChromeSubmissionStore, type SubmissionOperationMutation } from "../core/submission-operation";
 import {
   ChildWorkerLedger,
@@ -80,6 +81,14 @@ function getExecutionJournal(): ProviderExecutionJournal | undefined {
   executionJournal ??= new ProviderExecutionJournal(createChromeExecutionJournalStore(storage));
   return executionJournal;
 }
+let controlStateReducer: Promise<DurableOperationalStateReducer> | undefined;
+
+function getControlStateReducer(): Promise<DurableOperationalStateReducer> | undefined {
+  const storage = chrome.storage?.local;
+  if (!storage) return undefined;
+  controlStateReducer ??= DurableOperationalStateReducer.restore(createChromeOperationalStateReducerStore(storage));
+  return controlStateReducer;
+}
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (isWorkItemMessage(message)) {
@@ -126,11 +135,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: false });
       return false;
     }
-    runChildDeliveryProbe(message, chrome.storage.local, { children, deliveries, submissions, journal: getExecutionJournal() }, async operation => {
+    const controlPromise = getControlStateReducer();
+    Promise.resolve(controlPromise).then(control => runChildDeliveryProbe(message, chrome.storage.local, {
+      children, deliveries, submissions,
+      journal: getExecutionJournal(),
+      control
+    }, async operation => {
       const result = await chrome.tabs.sendMessage(sender.tab!.id!, { type: "NOOS_DISPATCH_DELIVER_CHILD_RESULT", operation }, { frameId: 0 });
       if (!result?.ok || !isObservation(result.observation)) throw new Error("delivery_dispatch_uncertain");
       return result.observation;
-    }).then(result => sendResponse({ ok: true, result })).catch(error => sendResponse({ ok: false, error: String(error) }));
+    })).then(result => sendResponse({ ok: true, result })).catch(error => sendResponse({ ok: false, error: String(error) }));
     return true;
   }
 

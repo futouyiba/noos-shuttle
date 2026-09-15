@@ -6,7 +6,9 @@ import type {
 } from "../core/submission-operation";
 import type { ChildWorkerLedger, ChildWorkerRecord } from "../core/child-worker";
 import { resultDeliveryKey, type ResultDeliveryLedger } from "../core/result-delivery";
-import type { ProviderExecutionJournal } from "../core/execution-journal";
+import type { ProviderExecutionJournal, ExecutionJournalEntry } from "../core/execution-journal";
+import { DurableOperationalStateReducer } from "../core/durable-operational-state-reducer";
+import { settleFromEvidence } from "../core/settle-evidence";
 import {
   childDeliveryOperationId,
   mintInsertedOnAcceptance,
@@ -47,6 +49,125 @@ const RECOVERY_STATES = new Set(["RESULT_READY", "RETURNING", "COMPLETED"]);
 export interface DeliveryRuntimeDependencies extends DeliveryTransportDependencies {
   /** Optional evidence journal (adjudication §十): facts are recorded as they happen. */
   journal?: ProviderExecutionJournal;
+  /** Optional authoritative control-state reducer (W11b lockstep): the
+   * reducer mints the attempt identity at claim time and settles from the
+   * journal's evidence — the two-step flow of adjudication W11 Decision 1. */
+  control?: DurableOperationalStateReducer;
+}
+
+/**
+ * W11b lockstep (claim side): ensure the reducer holds the binding and lease
+ * for the probing carrier, seed the transport's operation, and claim the
+ * dispatch permit through an identified delta — the reducer mints the attempt
+ * identity (F17). Deterministic delta ids make replays return the original
+ * permit without re-minting.
+ */
+async function claimControlPermit(
+  deps: DeliveryRuntimeDependencies,
+  operationId: string,
+  context: SubmissionClaimContext,
+  ledgerClaim: SubmissionOperation
+): Promise<void> {
+  const control = deps.control;
+  if (!control) return;
+  let binding = control.getBinding(context.logicalThreadId);
+  if (!binding || binding.providerConversationRef !== context.providerConversationRef) {
+    await control.applyResult(reducer => reducer.commitCurrentConversationBinding({
+      logicalThreadId: context.logicalThreadId,
+      providerConversationRef: context.providerConversationRef,
+      expected: binding ?? null,
+      actor: "system",
+      now: context.sourceObservedAt
+    }));
+    binding = control.getBinding(context.logicalThreadId);
+  }
+  const snapshotBefore = control.snapshot();
+  let lease = snapshotBefore.leases[context.logicalThreadId];
+  if (!lease || lease.providerConversationRef !== context.providerConversationRef || lease.carrierRef !== context.targetCarrierRef) {
+    await control.applyResult(reducer => reducer.transferActuationLease({
+      logicalThreadId: context.logicalThreadId,
+      providerConversationRef: context.providerConversationRef,
+      expectedBindingGeneration: binding!.generation,
+      expectedLeaseGeneration: lease?.leaseGeneration ?? null,
+      carrierRef: context.targetCarrierRef,
+      actor: "system",
+      now: context.sourceObservedAt + 1
+    }));
+    lease = control.snapshot().leases[context.logicalThreadId];
+  }
+  if (!binding || !lease) return;
+  if (!snapshotBefore.operations[operationId]) {
+    await control.applyResult(reducer => {
+      reducer.seedOperation({
+        operationId,
+        logicalThreadId: context.logicalThreadId,
+        providerConversationRef: context.providerConversationRef,
+        carrierRef: context.targetCarrierRef,
+        bindingGeneration: binding!.generation,
+        leaseGeneration: lease!.leaseGeneration,
+        state: "PREPARED",
+        operationRevision: 0
+      });
+      return { ok: true as const, value: undefined, state: reducer.snapshot() };
+    });
+  }
+  await control.applyDelta({
+    deltaId: `claim:${operationId}:${ledgerClaim.dispatchClaimedAt}`,
+    deltaFingerprint: `claim:${operationId}:${binding.generation}:${lease.leaseGeneration}:${context.targetCarrierRef}`,
+    reason: "delivery dispatch claim (reducer-minted attempt)",
+    mutate: reducer => reducer.claimSubmissionDispatch({
+      operationId,
+      logicalThreadId: context.logicalThreadId,
+      providerConversationRef: context.providerConversationRef,
+      bindingGeneration: binding!.generation,
+      leaseGeneration: lease!.leaseGeneration,
+      carrierRef: context.targetCarrierRef,
+      actor: "worker",
+      now: Date.now()
+    })
+  });
+}
+
+/**
+ * W11b lockstep (settle side): settle the reducer operation from the durable
+ * journal evidence via settleFromEvidence — licensing table, fence-fingerprint
+ * binding, revision CAS, and attempt-id matching all apply. The deterministic
+ * delta id keeps a replay from re-settling.
+ */
+async function settleControlFromEvidence(
+  deps: DeliveryRuntimeDependencies,
+  operationId: string,
+  targetState: "OBSERVED_ACCEPTED" | "COMPLETED",
+  context: SubmissionClaimContext,
+  reason: string
+): Promise<void> {
+  const control = deps.control;
+  if (!control || !deps.journal) return;
+  const rop = control.snapshot().operations[operationId];
+  const ropFence = rop?.dispatchFence;
+  if (!rop || !ropFence) return;
+  const eventKind = targetState === "OBSERVED_ACCEPTED" ? "ACCEPTANCE_OBSERVED" : "TURN_COMPLETION_OBSERVED";
+  const entry = (await deps.journal.list(operationId)).find(candidate => candidate.eventKind === eventKind);
+  if (!entry) return;
+  const transport = await deps.submissions.get(operationId);
+  const transportFence = transport?.dispatchFence;
+  if (!transportFence) return;
+  await control.applyDelta({
+    deltaId: `settle:${operationId}:${eventKind}`,
+    deltaFingerprint: `settle:${operationId}:${eventKind}:${ropFence.dispatchFenceId}`,
+    reason,
+    mutate: reducer => settleFromEvidence(reducer, {
+      operationId,
+      evidence: entry,
+      fence: transportFence,
+      targetState,
+      expectedOperationRevision: rop.operationRevision,
+      expectedDispatchFenceId: ropFence.dispatchFenceId,
+      reason,
+      actor: "worker",
+      now: Date.now()
+    }) as ReturnType<Parameters<DurableOperationalStateReducer["applyDelta"]>[0]["mutate"]>
+  });
 }
 
 /** Append one evidence entry; journal failures must never break the flow. */
@@ -135,6 +256,10 @@ async function dispatchOnce(
     claimed = await deps.submissions.claim(existing.operationId, context, Date.now());
   }
   if (!claimed) return false;
+  // W11b: the reducer mints the authoritative attempt identity before the
+  // carrier dispatch; failures here are swallowed like journal failures — the
+  // transport ledger remains the delivery's operational record.
+  await claimControlPermit(deps, claimed.operationId, context, claimed).catch(() => undefined);
   await note(deps, {
     executionAttemptId: `${claimed.operationId}:attempt:${claimed.dispatchClaimedAt}`,
     operationId: claimed.operationId,
@@ -227,6 +352,9 @@ async function recoverOnce(
       eventKind: "ACCEPTANCE_OBSERVED",
       evidence: { observedAt: settled.lastObservedAt }
     });
+    // Two-step order (adjudication §十): the evidence is durable first, then
+    // the control state settles from it.
+    await settleControlFromEvidence(deps, operationId, "OBSERVED_ACCEPTED", context, "acceptance observed on the carrier").catch(() => undefined);
   }
   if (settled.state === "COMPLETED") {
     // Backfill for the crash window between record(COMPLETED) and the note:
@@ -264,6 +392,8 @@ async function recoverOnce(
       eventKind: "TURN_COMPLETION_OBSERVED",
       evidence: { observedAt: completed.lastObservedAt }
     });
+    // Evidence first, control settle second (adjudication §十).
+    await settleControlFromEvidence(deps, operationId, "COMPLETED", context, "result-bearing turn completed").catch(() => undefined);
   }
   await deps.deliveries.completeDelivery(resultDeliveryKey({
     parentThreadId: child.parentThreadId, childThreadId: child.childThreadId, resultRef: child.resultRef!

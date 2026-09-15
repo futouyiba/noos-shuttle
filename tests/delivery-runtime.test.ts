@@ -4,6 +4,7 @@ import { ResultDeliveryLedger, createChromeResultDeliveryStore, resultDeliveryKe
 import { SubmissionOperationLedger, createChromeSubmissionStore, fingerprintSubmissionPayload, type SubmissionClaimContext, type SubmissionObservation } from "../src/core/submission-operation";
 import { prepareChildDeliveryTransport } from "../src/core/deliver-child-result";
 import { ProviderExecutionJournal, createChromeExecutionJournalStore } from "../src/core/execution-journal";
+import { DurableOperationalStateReducer, createChromeOperationalStateReducerStore } from "../src/core/durable-operational-state-reducer";
 import { runChildDeliveryProbe } from "../src/background/delivery-runtime";
 
 function harness() {
@@ -21,11 +22,15 @@ function harness() {
     get: async (key: string) => ({ [key]: backing[key] }),
     set: async (value: Record<string, unknown>) => { Object.assign(backing, value); }
   }));
+  const controlStore = createChromeOperationalStateReducerStore({
+    get: async (key: string) => ({ [key]: backing[key] }),
+    set: async (value: Record<string, unknown>) => { Object.assign(backing, value); }
+  });
   const storage = {
     get: async (key: string) => ({ [key]: backing[key] }),
     set: async (value: Record<string, unknown>) => { Object.assign(backing, value); }
   } as unknown as Pick<chrome.storage.StorageArea, "get" | "set">;
-  return { deps: { ...deps, journal }, storage, backing, journal };
+  return { deps: { ...deps, journal }, storage, backing, journal, controlStore };
 }
 
 const WORK_ITEM = {
@@ -335,6 +340,37 @@ await prepareChildDeliveryTransport(deps, { childThreadId: "child-l2", destinati
     expect(second.dispatched).toBe(1);
     expect(dispatches).toBe(1);
     expect((await deps.submissions.list())).toHaveLength(1);
+  });
+
+  it("drives the control-state reducer in lockstep (minted attempt + evidence settles)", async () => {
+    const { deps, storage, backing, controlStore } = harness();
+    const withControl = { ...deps, control: await DurableOperationalStateReducer.restore(controlStore) };
+    backing.noosWorkItemInbox = WORK_ITEM;
+    await seedResultReadyChild(deps);
+    const first = await runChildDeliveryProbe({ context: context(), baseline }, storage, withControl, async () => observation());
+    expect(first.dispatched).toBe(1);
+    // The reducer minted an attempt identity at claim time (DISPATCHING).
+    const operationId = (await deps.submissions.list())[0].operationId;
+    const rop = withControl.control.snapshot().operations[operationId];
+    expect(rop?.state).toBe("DISPATCHING");
+    expect(rop?.dispatchFence?.dispatchFenceId).toMatch(/^fence-/);
+    expect(rop?.operationRevision).toBe(1);
+    const mintedId = rop!.dispatchFence!.dispatchFenceId;
+    // Recovery settles the reducer from the journal evidence.
+    const recovered = await runChildDeliveryProbe({
+      context: context(),
+      baseline: { ...baseline, observedAt: Date.now() + 6_000, userMessageCount: 3, lastUserMessageFingerprint: payloadFingerprint }
+    }, storage, withControl, async () => { throw new Error("must not redispatch"); });
+    expect(recovered.closed).toBe(1);
+    const settled = withControl.control.snapshot().operations[operationId];
+    expect(settled?.state).toBe("COMPLETED");
+    // Same attempt identity across both hops; revision advanced twice.
+    expect(settled?.dispatchFence?.dispatchFenceId).toBe(mintedId);
+    expect(settled?.operationRevision).toBe(3);
+    // The durable bundle carries the ApplyResults for both settle deltas.
+    const applied = withControl.control.appliedDeltas();
+    expect(applied.map(record => record.deltaId)).toContain(`settle:${operationId}:ACCEPTANCE_OBSERVED`);
+    expect(applied.map(record => record.deltaId)).toContain(`settle:${operationId}:TURN_COMPLETION_OBSERVED`);
   });
 
   it("returns NO_ACTIVE_PARENT when no work item binding matches the carrier", async () => {

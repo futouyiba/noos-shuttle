@@ -73,9 +73,10 @@ export function selectSpawnStrategy(
     child.contextSource !== "TRANSCRIPT_RECONSTRUCTION" && child.contextSource !== "PROVIDER_INHERITED") {
     return { conforming: false, reason: "spawn_needs_human:transcript_reconstruction_unavailable" };
   }
-  if (child.contextFidelity === "TRANSCRIPT_RECONSTRUCTION_REQUIRED" && !capabilities.transcriptExportAvailable) {
-    // Reconstruction needs an exportable transcript; without the capability
-    // the requirement cannot be met by this adapter.
+  if (child.contextFidelity === "TRANSCRIPT_RECONSTRUCTION_REQUIRED" &&
+    child.contextSource !== "PROVIDER_INHERITED" && !capabilities.transcriptExportAvailable) {
+    // Reconstruction needs an exportable transcript; provider inheritance
+    // carries the full context directly and needs no export.
     return { conforming: false, reason: "spawn_needs_human:transcript_export_unavailable" };
   }
   if (child.contextFidelity === "DURABLE_CONTEXT_SUFFICIENT" && child.contextSource === "MINIMAL_BOOTSTRAP") {
