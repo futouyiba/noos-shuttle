@@ -17,6 +17,7 @@ import type { NoosThread } from "../core/noos-thread";
 import { extractProviderConversationId } from "../shared/provider-identity";
 import { runGoalReanchorProbe } from "./goal-reanchor-runtime";
 import { runChildDeliveryProbe } from "./delivery-runtime";
+import { adoptBrowserChildSpawn, requestBrowserChildSpawn } from "./spawn-runtime";
 import { ResultDeliveryLedger, createChromeResultDeliveryStore } from "../core/result-delivery";
 import { ProviderExecutionJournal, createChromeExecutionJournalStore } from "../core/execution-journal";
 import { DurableOperationalStateReducer, createChromeOperationalStateReducerStore } from "../core/durable-operational-state-reducer";
@@ -57,6 +58,11 @@ function getSubmissionOperationCoordinator(): SubmissionOperationLedger | undefi
   submissionOperationCoordinator ??= new SubmissionOperationLedger(createChromeSubmissionStore(storage, { claimViaCoordinator: false }));
   return submissionOperationCoordinator;
 }
+function isCreateChildIntentWire(value: unknown): boolean {
+  // The wire form of a spawn request intent; the ledger re-validates fully.
+  return isCreateChildIntentInput(value);
+}
+
 let childWorkerLedger: ChildWorkerLedger | undefined;
 
 function getChildWorkerLedger(): ChildWorkerLedger | undefined {
@@ -153,6 +159,43 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (!result?.ok || !isObservation(result.observation)) throw new Error("delivery_dispatch_uncertain");
       return result.observation;
     })).then(result => sendResponse({ ok: true, result })).catch(error => sendResponse({ ok: false, error: String(error) }));
+    return true;
+  }
+
+  if (message?.type === "NOOS_CHILD_SPAWN_REQUEST" && sender.frameId === 0 &&
+    Number.isSafeInteger(sender.tab?.id) && isAllowedProviderSender(sender) &&
+    isCreateChildIntentWire(message.intent)) {
+    const ledger = getChildWorkerLedger();
+    if (!ledger) {
+      sendResponse({ ok: false, error: "child_ledger_unavailable" });
+      return false;
+    }
+    (async () => {
+      const tab = await chrome.tabs.create({ url: "https://chatgpt.com/", active: false });
+      if (!Number.isSafeInteger(tab.id)) throw new Error("spawn_tab_unavailable");
+      return requestBrowserChildSpawn(ledger, chrome.storage.local, async () => tab.id!, { intent: message.intent });
+    })()
+      .then(result => sendResponse({ ok: true, result: { childThreadId: result.child.childThreadId, state: result.child.state, tabId: result.tabId } }))
+      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : "child_spawn_failed" }));
+    return true;
+  }
+
+  if (message?.type === "NOOS_CHILD_SPAWN_ADOPT" && sender.frameId === 0 &&
+    Number.isSafeInteger(sender.tab?.id) && isAllowedProviderSender(sender) &&
+    (message.providerConversationRef === undefined || typeof message.providerConversationRef === "string")) {
+    const ledger = getChildWorkerLedger();
+    if (!ledger) {
+      sendResponse({ ok: false, error: "child_ledger_unavailable" });
+      return false;
+    }
+    adoptBrowserChildSpawn(ledger, chrome.storage.local, {
+      tabId: sender.tab!.id!,
+      providerConversationRef: message.providerConversationRef
+    })
+      .then(result => sendResponse({ ok: true, result: result.status === "ADOPTED"
+        ? { status: result.status, childThreadId: result.child.childThreadId, state: result.child.state }
+        : { status: result.status } }))
+      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : "child_adoption_failed" }));
     return true;
   }
 
