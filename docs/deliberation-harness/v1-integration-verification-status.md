@@ -42,6 +42,7 @@
 | W9 FAILED_SAFE re-arm symmetry | `3a9f4bc` | APPROVE |
 | W10 FAILED_SAFE rollover escape (fresh-attempt retarget) | `42161a2`, `602968d`, `a793905`, `13cd373` | APPROVE (lane separation enforced, states pinned) |
 | W11a three-identity dispatch model | `6119f2b`, `9102ffb` | APPROVE after fix |
+| W11b control-state lockstep in delivery runtime | `0f76801`, `33e59ba` | APPROVE after fix (crash-window settle backfill, mint replay, restore health) |
 | W12 context provenance × source × fidelity | `3e1f028`, `8422351`, `0f76801` | APPROVE after fix ×2 (identity coverage, matrix gaps, inheritance exemption — all mutation-locked) |
 
 ## 3. Verification evidence (current)
@@ -70,7 +71,7 @@
   implementation (the capability interface and conforming-strategy gating
   landed in W12; the fork-adapter adjudication is honored — no FRESH relabel
   path exists). The rollover re-arm escape is closed (W10); Path-A stamp test
-  covered; W11b lockstep landed (`0f76801` + `33e59ba`, in re-review).
+  covered; W11b lockstep closed (`0f76801` + `33e59ba`).
 - Control-lane follow-ups (from the W11b review): the re-arm fence semantics
   — W9's same-fence re-arm versus the adjudication's F18 wording — and the
   FAILED_SAFE/retarget propagation into the control lane (a rolled-over
