@@ -41,13 +41,13 @@
 | W8 execution journal in delivery runtime | `cc645c2`, `da7f30c` | APPROVE after notes |
 | W9 FAILED_SAFE re-arm symmetry | `3a9f4bc` | APPROVE |
 | W10 FAILED_SAFE rollover escape (fresh-attempt retarget) | `42161a2`, `602968d`, `a793905`, `13cd373` | APPROVE (lane separation enforced, states pinned) |
-| W11a three-identity dispatch model | `6119f2b` | in review |
-| W12 context provenance × source × fidelity | `3e1f028` | in review |
+| W11a three-identity dispatch model | `6119f2b`, `9102ffb` | APPROVE after fix |
+| W12 context provenance × source × fidelity | `3e1f028`, `8422351` | REQUEST_CHANGES → fix in re-review |
 
 ## 3. Verification evidence (current)
 
 - `npm run typecheck` — 0 errors.
-- `npm test` — **29 files / 326 tests pass**, including playwright browser smokes (now also the child-lifecycle lanes and the full child-result delivery loop)
+- `npm test` — **29 files / 330 tests pass**, including playwright browser smokes (now also the child-lifecycle lanes and the full child-result delivery loop)
   rebuilt from this tree (Human GO real-ledger dispatch; durable Goal Re-anchor
   end-to-end).
 - Commit-message test counts are taken from the last clean-tree run.
