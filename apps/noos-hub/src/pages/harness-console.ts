@@ -13,9 +13,11 @@ import { escapeHtml } from "../ui/html";
  *
  * The page separates canonical truth (reducer binding), runtime observation
  * (lease / authority / carrier observation), and the current submission's
- * lifecycle facts instead of collapsing them into one health state. Any
- * "attention" signal shown here is derived on the spot from underlying
- * facts (e.g. stale observation age), never a persisted domain enum.
+ * lifecycle facts instead of collapsing them into one health state.
+ * Warn/error tones map only to real contract facts (SUSPENDED,
+ * providerFailure, UNCERTAIN, ...); ages are displayed neutrally and are
+ * never thresholded into health semantics — the runtime defines no
+ * cadence/TTL contract, so the UI is not a health-policy authority.
  */
 
 export function formatAge(ms: number): string {
@@ -430,7 +432,7 @@ function renderGapsPanel(): string {
   const gaps: Array<[string, string]> = [
     ["投影未接 bridge", "HarnessConsoleSnapshot 应由扩展 background coordinator（持有 work-item / submission ledger / reducer bundle / journal / child ledger）构建，经现有 127.0.0.1:17642 HTTP bridge 推送到 Hub；Hub 仅渲染。尚无对应端点。"],
     ["无全局事件 seq", "ExecutionJournal / reducer audit / 各 ledger 之间没有共享序列；事件合并只能按时间排序，无法用于检测漏事件。"],
-    ["lease 无 TTL / heartbeat API", "ActuationLease 只有 claimedAt / claimedBy / generations；“观察过期”只能由投影按观察时间推导。"],
+    ["lease 无 TTL / heartbeat API", "ActuationLease 只有 claimedAt / claimedBy / generations；无过期事实源，投影只能中性展示观察年龄，不做阈值判断。"],
     ["carrier 观察无持久快照 API", "carrierState 全集在 GoalReanchorRuntime（含 SUSPENDED/RECOVERING）；providerFailure 在 SubmissionObservation 上；本页合并两者为投影形态，但没有稳定可读的运行时快照来源（lastTurnRef 无后端字段，最近似概念是 resultingTurnRef）。"],
     ["WorkItem 无 Run / RUNNABLE 概念", "只有 DRAFT | ACTIVE | PROMOTED | ARCHIVED + readiness + coldStart；Run 完全不存在。"],
     ["无全局 State version", "版本分散为 binding.generation / leaseGeneration / authorityGeneration / operationRevision / WorkItem.revision / anchorRevision，各层需分别显示。"],

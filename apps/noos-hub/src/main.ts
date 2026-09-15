@@ -394,6 +394,12 @@ function bindHarnessConsoleEvents(root: ParentNode): void {
       harnessScenario = next as HarnessScenarioId;
       harnessSnapshot = createHarnessSnapshot(harnessScenario);
       renderCurrentSection();
+      // Keep the ?scenario= deep link in sync so a copied URL or refresh
+      // reproduces exactly the fixture the reviewer is looking at.
+      // replaceState (not pushState): fixture toggles shouldn't spam history.
+      const url = new URL(window.location.href);
+      url.searchParams.set("scenario", next);
+      window.history.replaceState(null, "", `${url.search}${url.hash}`);
     });
   });
 

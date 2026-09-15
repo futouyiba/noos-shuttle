@@ -75,6 +75,12 @@ export function createHarnessSnapshot(scenario: HarnessScenarioId): HarnessConso
 /**
  * Scenario A — Stable / Idle: WorkItem active, binding quiet, no submission
  * in flight. Last GO completed with its turn observed.
+ *
+ * Timeline is causal end-to-end: lease transfer (100s) → prepared (95s) →
+ * claim (93s) → blind dispatch (92s) → ack (90s) → reconciliation (30s) →
+ * acceptance (25s) → COMPLETED settle (24s, = completedAt) → turn completion
+ * (3s) → carrier READY observation (2s). Every evidence row precedes the
+ * fact it justifies; field timestamps match their rows.
  */
 function createIdleSnapshot(): HarnessConsoleSnapshot {
   const now = Date.now();
@@ -107,11 +113,11 @@ function createIdleSnapshot(): HarnessConsoleSnapshot {
           carrierRef: "C-8821",
           leaseGeneration: 2,
           claimedBy: "worker",
-          claimedAt: now - 9 * 1000
+          claimedAt: now - 100 * 1000
         },
         authority: {
           authorityGeneration: 7,
-          authorityEstablishedAt: now - 9 * 1000,
+          authorityEstablishedAt: now - 99 * 1000,
           carrierState: "READY",
           logicalControl: "CONTINUE",
           explicitGo: true
@@ -129,7 +135,7 @@ function createIdleSnapshot(): HarnessConsoleSnapshot {
     lastCompletedOperation: {
       operationId: "sub-0173",
       operationKind: "GO",
-      completedAt: now - 95 * 1000,
+      completedAt: now - 24 * 1000,
       resultingTurnRef: "turn-221"
     },
 
@@ -155,16 +161,17 @@ function createIdleSnapshot(): HarnessConsoleSnapshot {
     ],
 
     events: events(now, [
+      { ageSec: 2, source: "carrier-observation", eventType: "carrier_state", subjectRef: "C-8821", correlationRef: "READY", detail: "last turn turn-221" },
       { ageSec: 3, source: "execution-journal", eventType: "TURN_COMPLETION_OBSERVED", subjectRef: "sub-0173", correlationRef: "turn-221" },
-      { ageSec: 8, source: "execution-journal", eventType: "ACCEPTANCE_OBSERVED", subjectRef: "sub-0173", correlationRef: "fp:a3f2" },
-      { ageSec: 11, source: "submission-ledger", eventType: "recorded", subjectRef: "sub-0173", correlationRef: "COMPLETED", detail: "resultingTurnRef turn-221" },
-      { ageSec: 15, source: "execution-journal", eventType: "RECONCILIATION_EVIDENCE", subjectRef: "sub-0173", correlationRef: "baseline-v12" },
-      { ageSec: 19, source: "execution-journal", eventType: "PROVIDER_ACK", subjectRef: "sub-0173", correlationRef: "turn-220" },
-      { ageSec: 20, source: "execution-journal", eventType: "BLIND_DISPATCH_ATTEMPT", subjectRef: "sub-0173", correlationRef: "fence:9c1e" },
-      { ageSec: 22, source: "reducer-audit", eventType: "delta.applied", subjectRef: "claim:sub-0173", correlationRef: "dispatch claim (reducer-minted attempt)" },
-      { ageSec: 26, source: "submission-ledger", eventType: "prepared", subjectRef: "sub-0173", correlationRef: "GO" },
-      { ageSec: 40, source: "reducer-audit", eventType: "delta.applied", subjectRef: "transferActuationLease", correlationRef: "T-014 · lease gen 2" },
-      { ageSec: 65, source: "reducer-audit", eventType: "delta.applied", subjectRef: "commitCurrentConversationBinding", correlationRef: "conv-8821 · gen 4" }
+      { ageSec: 24, source: "submission-ledger", eventType: "recorded", subjectRef: "sub-0173", correlationRef: "COMPLETED", detail: "resultingTurnRef turn-221" },
+      { ageSec: 25, source: "execution-journal", eventType: "ACCEPTANCE_OBSERVED", subjectRef: "sub-0173", correlationRef: "fp:a3f2" },
+      { ageSec: 30, source: "execution-journal", eventType: "RECONCILIATION_EVIDENCE", subjectRef: "sub-0173", correlationRef: "baseline-v12" },
+      { ageSec: 90, source: "execution-journal", eventType: "PROVIDER_ACK", subjectRef: "sub-0173", correlationRef: "turn-220" },
+      { ageSec: 92, source: "execution-journal", eventType: "BLIND_DISPATCH_ATTEMPT", subjectRef: "sub-0173", correlationRef: "fence:9c1e" },
+      { ageSec: 93, source: "reducer-audit", eventType: "delta.applied", subjectRef: "claim:sub-0173", correlationRef: "dispatch claim (reducer-minted attempt)" },
+      { ageSec: 95, source: "submission-ledger", eventType: "prepared", subjectRef: "sub-0173", correlationRef: "GO" },
+      { ageSec: 100, source: "reducer-audit", eventType: "delta.applied", subjectRef: "transferActuationLease", correlationRef: "T-014 · lease gen 2" },
+      { ageSec: 2 * 3600, source: "reducer-audit", eventType: "delta.applied", subjectRef: "commitCurrentConversationBinding", correlationRef: "conv-8821 · gen 4" }
     ])
   };
 }
@@ -189,7 +196,7 @@ function createActiveSubmissionSnapshot(): HarnessConsoleSnapshot {
       status: "ACTIVE",
       revision: 62,
       coldStart: "READY",
-      updatedAt: now - 12 * 1000
+      updatedAt: now - 24 * 1000
     },
 
     primaryThread: {
@@ -206,11 +213,11 @@ function createActiveSubmissionSnapshot(): HarnessConsoleSnapshot {
           carrierRef: "C-8821",
           leaseGeneration: 3,
           claimedBy: "system",
-          claimedAt: now - 24 * 1000
+          claimedAt: now - 26 * 1000
         },
         authority: {
           authorityGeneration: 8,
-          authorityEstablishedAt: now - 24 * 1000,
+          authorityEstablishedAt: now - 27 * 1000,
           carrierState: "READY",
           logicalControl: "CONTINUE",
           explicitGo: true
@@ -232,7 +239,7 @@ function createActiveSubmissionSnapshot(): HarnessConsoleSnapshot {
       targetCarrierRef: "C-8821",
       providerConversationRef: "conv-8821",
       payloadFingerprint: "fp:7d41",
-      createdAt: now - 26 * 1000,
+      createdAt: now - 24 * 1000,
       lastObservedAt: now - 4 * 1000,
 
       preSubmitBaseline: {
@@ -243,13 +250,13 @@ function createActiveSubmissionSnapshot(): HarnessConsoleSnapshot {
       },
 
       dispatchClaim: {
-        claimedAt: now - 24 * 1000,
+        claimedAt: now - 21 * 1000,
         leaseGeneration: 3,
         leaseOwnerRef: "worker-shuttle"
       },
 
       dispatchReceipt: {
-        attemptedAt: now - 23 * 1000,
+        attemptedAt: now - 19 * 1000,
         outcome: "dispatched"
       },
 
@@ -287,12 +294,12 @@ function createActiveSubmissionSnapshot(): HarnessConsoleSnapshot {
 
     events: events(now, [
       { ageSec: 4, source: "carrier-observation", eventType: "carrier_state", subjectRef: "C-8821", correlationRef: "GENERATING", detail: "sourceEpoch stable" },
-      { ageSec: 6, source: "execution-journal", eventType: "PROVIDER_ACK", subjectRef: "sub-0181", correlationRef: "fence:44aa · ack epoch 12" },
-      { ageSec: 7, source: "execution-journal", eventType: "BLIND_DISPATCH_ATTEMPT", subjectRef: "sub-0181", correlationRef: "fence:44aa" },
-      { ageSec: 9, source: "submission-ledger", eventType: "recorded", subjectRef: "sub-0181", correlationRef: "DISPATCHING" },
-      { ageSec: 11, source: "reducer-audit", eventType: "delta.applied", subjectRef: "claim:sub-0181", correlationRef: "dispatch claim (reducer-minted attempt)" },
-      { ageSec: 17, source: "submission-ledger", eventType: "prepared", subjectRef: "sub-0181", correlationRef: "GO" },
-      { ageSec: 24, source: "reducer-audit", eventType: "delta.applied", subjectRef: "transferActuationLease", correlationRef: "T-014 · lease gen 3" }
+      { ageSec: 18, source: "execution-journal", eventType: "PROVIDER_ACK", subjectRef: "sub-0181", correlationRef: "fence:44aa · ack epoch 12" },
+      { ageSec: 19, source: "execution-journal", eventType: "BLIND_DISPATCH_ATTEMPT", subjectRef: "sub-0181", correlationRef: "fence:44aa" },
+      { ageSec: 20, source: "submission-ledger", eventType: "recorded", subjectRef: "sub-0181", correlationRef: "DISPATCHING" },
+      { ageSec: 21, source: "reducer-audit", eventType: "delta.applied", subjectRef: "claim:sub-0181", correlationRef: "dispatch claim (reducer-minted attempt)" },
+      { ageSec: 24, source: "submission-ledger", eventType: "prepared", subjectRef: "sub-0181", correlationRef: "GO" },
+      { ageSec: 26, source: "reducer-audit", eventType: "delta.applied", subjectRef: "transferActuationLease", correlationRef: "T-014 · lease gen 3" }
     ])  };
 }
 
@@ -335,11 +342,11 @@ function createAttentionRecoverySnapshot(): HarnessConsoleSnapshot {
           carrierRef: "C-8821",
           leaseGeneration: 3,
           claimedBy: "system",
-          claimedAt: now - 47 * 1000
+          claimedAt: now - 48 * 1000
         },
         authority: {
           authorityGeneration: 8,
-          authorityEstablishedAt: now - 47 * 1000,
+          authorityEstablishedAt: now - 49 * 1000,
           carrierState: "READY",
           logicalControl: "CONTINUE",
           explicitGo: true
@@ -362,24 +369,24 @@ function createAttentionRecoverySnapshot(): HarnessConsoleSnapshot {
       targetCarrierRef: "C-8821",
       providerConversationRef: "conv-8821",
       payloadFingerprint: "fp:ee07",
-      createdAt: now - 45 * 1000,
+      createdAt: now - 46 * 1000,
       lastObservedAt: now - 31 * 1000,
 
       preSubmitBaseline: {
         assistantMessageCount: 222,
         userMessageCount: 221,
         headFingerprint: "fp:head-91b7",
-        observedAt: now - 44 * 1000
+        observedAt: now - 47 * 1000
       },
 
       dispatchClaim: {
-        claimedAt: now - 43 * 1000,
+        claimedAt: now - 44 * 1000,
         leaseGeneration: 3,
         leaseOwnerRef: "worker-shuttle"
       },
 
       dispatchReceipt: {
-        attemptedAt: now - 42 * 1000,
+        attemptedAt: now - 43 * 1000,
         outcome: "uncertain"
       },
 
@@ -422,12 +429,13 @@ function createAttentionRecoverySnapshot(): HarnessConsoleSnapshot {
 
     events: events(now, [
       { ageSec: 31, source: "execution-journal", eventType: "RECONCILIATION_EVIDENCE", subjectRef: "sub-0186", correlationRef: "STILL_AMBIGUOUS", severity: "warning", detail: "baseline head 未推进，无法证明 acceptance" },
-      { ageSec: 33, source: "submission-ledger", eventType: "recorded", subjectRef: "sub-0186", correlationRef: "UNCERTAIN", severity: "warning" },
+      { ageSec: 34, source: "submission-ledger", eventType: "recorded", subjectRef: "sub-0186", correlationRef: "UNCERTAIN", severity: "warning" },
       { ageSec: 38, source: "carrier-observation", eventType: "carrier_state", subjectRef: "C-8821", correlationRef: "SUSPENDED", severity: "warning", detail: "providerFailure=true" },
-      { ageSec: 40, source: "execution-journal", eventType: "PROVIDER_ACK", subjectRef: "sub-0186", correlationRef: "ack epoch 19" },
-      { ageSec: 41, source: "execution-journal", eventType: "BLIND_DISPATCH_ATTEMPT", subjectRef: "sub-0186", correlationRef: "fence:7e02" },
-      { ageSec: 43, source: "reducer-audit", eventType: "delta.applied", subjectRef: "claim:sub-0186", correlationRef: "dispatch claim (reducer-minted attempt)" },
-      { ageSec: 45, source: "submission-ledger", eventType: "prepared", subjectRef: "sub-0186", correlationRef: "GO" }
+      { ageSec: 42, source: "execution-journal", eventType: "PROVIDER_ACK", subjectRef: "sub-0186", correlationRef: "ack epoch 19" },
+      { ageSec: 43, source: "execution-journal", eventType: "BLIND_DISPATCH_ATTEMPT", subjectRef: "sub-0186", correlationRef: "fence:7e02" },
+      { ageSec: 44, source: "reducer-audit", eventType: "delta.applied", subjectRef: "claim:sub-0186", correlationRef: "dispatch claim (reducer-minted attempt)" },
+      { ageSec: 46, source: "submission-ledger", eventType: "prepared", subjectRef: "sub-0186", correlationRef: "GO" },
+      { ageSec: 48, source: "reducer-audit", eventType: "delta.applied", subjectRef: "transferActuationLease", correlationRef: "T-014 · lease gen 3" }
     ])
   };
 }
