@@ -563,6 +563,114 @@ describe("content script smoke flow", () => {
     await page.close();
   }, 15_000);
 
+  it("spawns and adopts a FRESH child tab through the real service-worker lanes", async () => {
+    const page = await newMockChatPage({ startWithHandoffs: false, injectContentScript: false });
+    await page.evaluate(() => {
+      const listeners: Array<(message: unknown, sender: unknown, sendResponse: (response: unknown) => void) => unknown> = [];
+      const backing: Record<string, unknown> = {};
+      const sendMessage = async (message: unknown) => new Promise<unknown>(resolve => {
+        if ((message as { type?: string }).type === "NOOS_OBSERVATION_CARRIER") {
+          resolve({ carrierRef: "browser-tab:11" });
+          return;
+        }
+        let settled = false;
+        const complete = (response: unknown) => {
+          if (!settled) {
+            settled = true;
+            resolve(response);
+          }
+        };
+        const listener = listeners[0];
+        if (!listener) {
+          complete(undefined);
+          return;
+        }
+        const returned = listener(message, {
+          id: "extension-id",
+          frameId: 0,
+          tab: { id: 11 },
+          url: window.location.href
+        }, complete);
+        if (returned !== true) complete(undefined);
+      });
+      (globalThis as unknown as { spawnBacking: Record<string, unknown> }).spawnBacking = backing;
+      (globalThis as unknown as { spawnSend: (message: unknown) => Promise<unknown> }).spawnSend = sendMessage;
+      (globalThis as unknown as { spawnSendFromTab: (tabId: number, message: unknown) => Promise<unknown> }).spawnSendFromTab = async (tabId: number, message: unknown) =>
+        new Promise(unknown => {
+          let settled = false;
+          const complete = (response: unknown) => { if (!settled) { settled = true; (unknown as (value: unknown) => void)(response); } };
+          const returned = listeners[0](message, { id: "extension-id", frameId: 0, tab: { id: tabId }, url: "https://chatgpt.com/c/fresh-child" }, complete);
+          if (returned !== true) complete(undefined);
+        });
+      (globalThis as unknown as { chrome: any }).chrome = {
+        runtime: {
+          id: "extension-id",
+          getURL: (path: string) => `chrome-extension://mock/${path}`,
+          sendMessage,
+          lastError: undefined,
+          onInstalled: { addListener: () => undefined },
+          onMessage: { addListener: (listener: typeof listeners[number]) => listeners.push(listener) }
+        },
+        storage: {
+          local: {
+            get: async (key: string) => ({ [key]: backing[key] }),
+            set: async (value: Record<string, unknown>) => Object.assign(backing, value),
+            remove: async () => undefined
+          }
+        },
+        tabs: {
+          sendMessage: async () => ({ ok: false }),
+          create: async () => { (globalThis as any).tabCreateCount += 1; return { id: 77 }; }
+        },
+        downloads: { download: async () => 1 }
+      };
+      (globalThis as any).tabCreateCount = 0;
+    });
+    await page.addScriptTag({ content: `(function () {\n${serviceWorkerScript}\n})();` });
+    const intent = {
+      childThreadId: "child-r1",
+      parentThreadId: "pdlt-l1",
+      workItemId: "wi-1",
+      role: "Independent Reviewer",
+      creationMode: "FRESH",
+      contextSource: "MINIMAL_BOOTSTRAP",
+      contextFidelity: "INDEPENDENT",
+      operationGoal: "review the frozen target",
+      operationScope: "findings only; do not redesign",
+      returnRoute: "thread:pdlt-l1",
+      now: 100
+    };
+    const request = await page.evaluate(async (intent) => {
+      const send = (globalThis as any).spawnSend;
+      return await send({ type: "NOOS_CHILD_SPAWN_REQUEST", intent });
+    }, intent);
+    // A tab was opened (mock id 77) and the child is SPAWNING with a pending entry.
+    expect(request).toMatchObject({ ok: true, result: { childThreadId: "child-r1", state: "SPAWNING", tabId: 77 } });
+    expect(await page.evaluate(() => (globalThis as any).tabCreateCount)).toBe(1);
+    const pending = await page.evaluate(() => (globalThis as any).spawnBacking.noosPendingSpawns);
+    expect(pending).toMatchObject({ "77": { childThreadId: "child-r1" } });
+    // The new tab reports a provisional state first: activation safety holds.
+    const provisional = await page.evaluate(async (m) => await (globalThis as any).spawnSendFromTab(77, m), { type: "NOOS_CHILD_SPAWN_ADOPT" });
+    expect(provisional).toMatchObject({ ok: true, result: { status: "NEEDS_STABLE_IDENTITY" } });
+    // Once the tab has a stable conversation identity it is adopted and activated.
+    const adopted = await page.evaluate(async (m) => await (globalThis as any).spawnSendFromTab(77, m), { type: "NOOS_CHILD_SPAWN_ADOPT", providerConversationRef: "fresh-child" });
+    expect(adopted).toMatchObject({ ok: true, result: { status: "ADOPTED", childThreadId: "child-r1", state: "ACTIVE" } });
+    const record = await page.evaluate(() => (globalThis as any).spawnBacking.noosChildWorkers[0]);
+    expect(record).toMatchObject({ state: "ACTIVE", providerConversationRef: "fresh-child", carrierRef: "browser-tab:77" });
+    expect(await page.evaluate(() => (globalThis as any).spawnBacking.noosPendingSpawns)).toEqual({});
+    // A FORKED request is refused with the durable intent left PLANNED.
+    const forked = await page.evaluate(async (intent) => {
+      const send = (globalThis as any).spawnSend;
+      return await send({ type: "NOOS_CHILD_SPAWN_REQUEST", intent });
+    }, { ...intent, childThreadId: "child-r2", creationMode: "FORKED", contextSource: "PROVIDER_INHERITED", contextFidelity: "PROVIDER_INHERITANCE_REQUIRED" });
+    expect(forked).toMatchObject({ ok: false, error: "spawn_needs_human:native_fork_unavailable" });
+    // The refusal must not leak an orphan tab: the count stays at one.
+    expect(await page.evaluate(() => (globalThis as any).tabCreateCount)).toBe(1);
+    const forkedRecord = await page.evaluate(() => (globalThis as any).spawnBacking.noosChildWorkers[1]);
+    expect(forkedRecord).toMatchObject({ childThreadId: "child-r2", state: "PLANNED" });
+    await page.close();
+  }, 15_000);
+
   it("drives the child worker lifecycle through the real service-worker lanes", async () => {
     const page = await newMockChatPage({ startWithHandoffs: false, injectContentScript: false });
     await page.evaluate(() => {

@@ -289,9 +289,107 @@ await prepareChildDeliveryTransport(deps, { childThreadId: "child-l2", destinati
     expect((await deps.submissions.list())).toHaveLength(1);
     // Intentional contract: a same-fence re-dispatch folds into the journal's
     // first entry (the idempotency key does not count attempts) — the fact
-    // "an attempt happened under this fence" stays true and single.
+    // "an attempt happened under this fence" stays true and single — plus the
+    // adjudicated PROVEN_NOT_ACCEPTED reconciliation fact from the re-arm.
     const kinds = (await journal.list()).map(entry => entry.eventKind).sort();
-    expect(kinds).toEqual(["BLIND_DISPATCH_ATTEMPT", "PROVIDER_ACK"]);
+    expect(kinds).toEqual(["BLIND_DISPATCH_ATTEMPT", "PROVIDER_ACK", "RECONCILIATION_EVIDENCE"]);
+    const notAccepted = (await journal.list()).find(entry => entry.eventKind === "RECONCILIATION_EVIDENCE");
+    expect(notAccepted?.evidence).toMatchObject({ outcome: "PROVEN_NOT_ACCEPTED" });
+  });
+
+  it("re-arms the control lane to a fresh fence id after a proven-not-accepted attempt", async () => {
+    const { deps, storage, backing, controlStore } = harness();
+    const control = await DurableOperationalStateReducer.restore(controlStore);
+    const withControl = { ...deps, control };
+    backing.noosWorkItemInbox = WORK_ITEM;
+    await seedResultReadyChild(deps);
+    // Attempt 1: dispatched, then proven not accepted.
+    await runChildDeliveryProbe({ context: context(), baseline }, storage, withControl, async () => observation());
+    const operationId = (await deps.submissions.list())[0].operationId;
+    const f17 = control.snapshot().operations[operationId]?.dispatchFence?.dispatchFenceId;
+    expect(f17).toMatch(/^fence-/);
+    const fence = (await deps.submissions.get(operationId))!.dispatchFence!;
+    await deps.submissions.reconcile(operationId, {
+      ...baseline, conversationRef: "conv-l1",
+      observedAt: Date.now() + 5_500, sourceEpoch: 3, generationActive: false,
+      providerFailure: true, dispatchFence: fence
+    });
+    expect((await deps.submissions.get(operationId))?.state).toBe("FAILED_SAFE");
+    // The re-arm probe settles control to FAILED_SAFE and re-arms to PREPARED
+    // with no active fence (adjudication A-prime).
+    const rearmed = await runChildDeliveryProbe({
+      context: context(),
+      baseline: { ...baseline, observedAt: Date.now() + 6_500 }
+    }, storage, withControl, async () => { throw new Error("not yet"); });
+    expect(rearmed.dispatched).toBe(0);
+    const afterRearm = control.snapshot().operations[operationId];
+    expect(afterRearm?.state).toBe("PREPARED");
+    expect(afterRearm?.dispatchFence).toBeUndefined();
+    expect(afterRearm?.operationRevision).toBeGreaterThan(2);
+    // The next claim mints F18 — a different attempt identity on the same
+    // logical operation (adjudication Q1).
+    const second = await runChildDeliveryProbe({
+      context: context(),
+      baseline: { ...baseline, observedAt: Date.now() + 7_500 }
+    }, storage, withControl, async () => observation());
+    expect(second.dispatched).toBe(1);
+    const f18 = control.snapshot().operations[operationId]?.dispatchFence?.dispatchFenceId;
+    expect(f18).toMatch(/^fence-/);
+    expect(f18).not.toBe(f17);
+    expect(control.snapshot().operations[operationId]?.state).toBe("DISPATCHING");
+  });
+
+  it("keeps the control lane in lockstep through a rollover re-arm", async () => {
+    const { deps, storage, backing, controlStore } = harness();
+    const control = await DurableOperationalStateReducer.restore(controlStore);
+    const withControl = { ...deps, control };
+    backing.noosWorkItemInbox = WORK_ITEM;
+    await seedResultReadyChild(deps);
+    // Observation times lag wall-clock, as they do in the real runtime — the
+    // M1 regression this pins (rollover rejected on a backwards clock).
+    const lagging = context({ sourceObservedAt: Date.now() - 2_000 });
+    await runChildDeliveryProbe({ context: lagging, baseline }, storage, withControl, async () => observation());
+    const operationId = (await deps.submissions.list())[0].operationId;
+    const f17 = control.snapshot().operations[operationId]?.dispatchFence?.dispatchFenceId;
+    const fence = (await deps.submissions.get(operationId))!.dispatchFence!;
+    await deps.submissions.reconcile(operationId, {
+      ...baseline, conversationRef: "conv-l1",
+      observedAt: Date.now() + 5_500, sourceEpoch: 3, generationActive: false,
+      providerFailure: true, dispatchFence: fence
+    });
+    expect((await deps.submissions.get(operationId))?.state).toBe("FAILED_SAFE");
+    // The destination rolls over; the work item binding moves with it.
+    const rolledOver = context({ providerConversationRef: "conv-l9", bindingEpoch: 4, leaseGeneration: 5, leaseOwnerRef: "obs-9", targetCarrierRef: "browser-tab:9", sourceEpoch: 4, sourceObservedAt: Date.now() - 1_000 });
+    backing.noosWorkItemInbox = {
+      activeWorkItemId: "work-1",
+      workItems: [{ ...WORK_ITEM.workItems[0], binding: { conversationId: "conv-l9", carrierRef: "browser-tab:9" } }]
+    };
+    const escaped = await runChildDeliveryProbe({
+      context: rolledOver,
+      baseline: { ...baseline, routeRef: "/c/conv-l9", observedAt: Date.now() + 6_500 }
+    }, storage, withControl, async () => { throw new Error("not yet"); });
+    expect(escaped.dispatched).toBe(0);
+    // The control binding rolled and the operation re-armed onto it.
+    const rolledBinding = control.getBinding("pdlt-l1");
+    expect(rolledBinding?.providerConversationRef).toBe("conv-l9");
+    const afterRearm = control.snapshot().operations[operationId];
+    expect(afterRearm?.state).toBe("PREPARED");
+    expect(afterRearm?.providerConversationRef).toBe("conv-l9");
+    // The next claim mints F18 under the rolled-over authority.
+    const second = await runChildDeliveryProbe({
+      context: rolledOver,
+      baseline: { ...baseline, routeRef: "/c/conv-l9", observedAt: Date.now() + 7_500 }
+    }, storage, withControl, async () => observation({
+      conversationRef: "conv-l9", routeRef: "/c/conv-l9",
+      dispatchFence: { providerConversationRef: "conv-l9", bindingEpoch: 4, leaseGeneration: 5, leaseOwnerRef: "obs-9", targetCarrierRef: "browser-tab:9" }
+    }));
+    expect(second.dispatched).toBe(1);
+    const claimed = control.snapshot().operations[operationId];
+    const f18 = claimed?.dispatchFence?.dispatchFenceId;
+    expect(f18).toMatch(/^fence-/);
+    expect(f18).not.toBe(f17);
+    expect(claimed?.state).toBe("DISPATCHING");
+    expect(claimed?.providerConversationRef).toBe("conv-l9");
   });
 
   it("escapes a FAILED_SAFE delivery whose destination rolled over before re-arm", async () => {

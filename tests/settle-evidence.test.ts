@@ -178,6 +178,46 @@ describe("settle from evidence", () => {
     if (!illegal.ok) expect(illegal.error.code).toBe("SETTLE_TRANSITION_INVALID");
   });
 
+  it("settles FAILED_SAFE only from reconciliation evidence deriving PROVEN_NOT_ACCEPTED", () => {
+    const reducer = claimedReducer();
+    const attempt = attemptContext();
+    const ok = settleFromEvidence(reducer, {
+      operationId: "op-1",
+      evidence: entry({ eventKind: "RECONCILIATION_EVIDENCE", executionAttemptId: "attempt-na", evidence: { outcome: "PROVEN_NOT_ACCEPTED" } }),
+      fence,
+      targetState: "FAILED_SAFE",
+      expectedOperationRevision: attempt.revision,
+      expectedDispatchFenceId: attempt.fenceId,
+      reason: "proven not accepted", actor: "worker", now: 40
+    });
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.value.state).toBe("FAILED_SAFE");
+    // A reconciliation entry whose outcome is not PROVEN_NOT_ACCEPTED refuses.
+    const fresh = claimedReducer();
+    const freshAttempt = attemptContext();
+    expect(() => settleFromEvidence(fresh, {
+      operationId: "op-1",
+      evidence: entry({ eventKind: "RECONCILIATION_EVIDENCE", evidence: { outcome: "STILL_AMBIGUOUS" } }),
+      fence,
+      targetState: "FAILED_SAFE",
+      expectedOperationRevision: freshAttempt.revision,
+      expectedDispatchFenceId: freshAttempt.fenceId,
+      reason: "ambiguous", actor: "worker", now: 40
+    })).toThrow("evidence_not_proven_not_accepted");
+    // An acceptance observation can never prove not-accepted.
+    const fresh2 = claimedReducer();
+    const freshAttempt2 = attemptContext();
+    expect(() => settleFromEvidence(fresh2, {
+      operationId: "op-1",
+      evidence: entry({ eventKind: "ACCEPTANCE_OBSERVED" }),
+      fence,
+      targetState: "FAILED_SAFE",
+      expectedOperationRevision: freshAttempt2.revision,
+      expectedDispatchFenceId: freshAttempt2.fenceId,
+      reason: "acceptance cannot prove not-accepted", actor: "worker", now: 40
+    })).toThrow("evidence_kind_cannot_settle_target:ACCEPTANCE_OBSERVED->FAILED_SAFE");
+  });
+
   it("rejects a settle whose revision expectation is stale", () => {
     const reducer = claimedReducer();
     settle(reducer);

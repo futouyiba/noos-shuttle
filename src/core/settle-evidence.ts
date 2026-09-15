@@ -54,7 +54,10 @@ export type SettleTarget = SettleSubmissionDispatchInput["targetState"];
 const TARGET_BY_EVENT: Record<ExecutionEventKind, SettleTarget[]> = {
   BLIND_DISPATCH_ATTEMPT: ["UNCERTAIN"],
   PROVIDER_ACK: ["UNCERTAIN"],
-  ACCEPTANCE_OBSERVED: ["OBSERVED_ACCEPTED", "COMPLETED", "UNCERTAIN", "FAILED_SAFE", "CANCELLED"],
+  // Adjudication control-lane Q4: FAILED_SAFE is reachable only from
+  // reconciliation evidence whose durable payload carries the derived
+  // outcome PROVEN_NOT_ACCEPTED — an observed fact, never a transport ack.
+  ACCEPTANCE_OBSERVED: ["OBSERVED_ACCEPTED", "COMPLETED", "UNCERTAIN", "CANCELLED"],
   TURN_COMPLETION_OBSERVED: ["COMPLETED"],
   RECONCILIATION_EVIDENCE: ["OBSERVED_ACCEPTED", "COMPLETED", "UNCERTAIN", "FAILED_SAFE", "CANCELLED"]
 };
@@ -94,6 +97,14 @@ export function settleFromEvidence(
   }
   if (!TARGET_BY_EVENT[input.evidence.eventKind].includes(input.targetState)) {
     throw new Error(`evidence_kind_cannot_settle_target:${input.evidence.eventKind}->${input.targetState}`);
+  }
+  if (input.targetState === "FAILED_SAFE") {
+    // Q4 tightened predicate: the evidence kind must be reconciliation AND its
+    // durable payload must derive PROVEN_NOT_ACCEPTED for this exact attempt.
+    const outcome = (input.evidence.evidence as Record<string, unknown> | undefined)?.outcome;
+    if (input.evidence.eventKind !== "RECONCILIATION_EVIDENCE" || outcome !== "PROVEN_NOT_ACCEPTED") {
+      throw new Error("evidence_not_proven_not_accepted");
+    }
   }
   return reducer.settleSubmissionDispatch({
     operationId: input.operationId,

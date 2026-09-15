@@ -77,7 +77,7 @@ async function claimControlPermit(
       providerConversationRef: context.providerConversationRef,
       expected: binding ?? null,
       actor: "system",
-      now: context.sourceObservedAt
+      now: Date.now()
     }));
     binding = control.getBinding(context.logicalThreadId);
   }
@@ -91,7 +91,7 @@ async function claimControlPermit(
       expectedLeaseGeneration: lease?.leaseGeneration ?? null,
       carrierRef: context.targetCarrierRef,
       actor: "system",
-      now: context.sourceObservedAt + 1
+      now: Date.now()
     }));
     lease = control.snapshot().leases[context.logicalThreadId];
   }
@@ -137,7 +137,7 @@ async function claimControlPermit(
 async function settleControlFromEvidence(
   deps: DeliveryRuntimeDependencies,
   operationId: string,
-  targetState: "OBSERVED_ACCEPTED" | "COMPLETED",
+  targetState: "OBSERVED_ACCEPTED" | "COMPLETED" | "FAILED_SAFE",
   context: SubmissionClaimContext,
   reason: string
 ): Promise<void> {
@@ -146,8 +146,15 @@ async function settleControlFromEvidence(
   const rop = control.snapshot().operations[operationId];
   const ropFence = rop?.dispatchFence;
   if (!rop || !ropFence) return;
-  const eventKind = targetState === "OBSERVED_ACCEPTED" ? "ACCEPTANCE_OBSERVED" : "TURN_COMPLETION_OBSERVED";
-  const entry = (await deps.journal.list(operationId)).find(candidate => candidate.eventKind === eventKind);
+  const eventKind = targetState === "OBSERVED_ACCEPTED"
+    ? "ACCEPTANCE_OBSERVED"
+    : targetState === "FAILED_SAFE"
+      ? "RECONCILIATION_EVIDENCE"
+      : "TURN_COMPLETION_OBSERVED";
+  const entries = (await deps.journal.list(operationId)).filter(candidate => candidate.eventKind === eventKind);
+  const entry = targetState === "FAILED_SAFE"
+    ? entries.find(candidate => (candidate.evidence as Record<string, unknown> | undefined)?.outcome === "PROVEN_NOT_ACCEPTED")
+    : entries[0];
   if (!entry) return;
   const transport = await deps.submissions.get(operationId);
   const transportFence = transport?.dispatchFence;
@@ -167,6 +174,55 @@ async function settleControlFromEvidence(
       actor: "worker",
       now: Date.now()
     }) as ReturnType<Parameters<DurableOperationalStateReducer["applyDelta"]>[0]["mutate"]>
+  });
+}
+
+/**
+ * Adjudicated control-lane A-prime: re-arm the retired control operation to
+ * PREPARED under the canonical current binding and lease. No fence is minted
+ * here — the next claim does. Deterministic delta id keeps a replay from
+ * re-re-arming.
+ */
+async function rearmControlAttempt(
+  deps: DeliveryRuntimeDependencies,
+  operationId: string,
+  context: SubmissionClaimContext
+): Promise<void> {
+  const control = deps.control;
+  if (!control) return;
+  const rop = control.snapshot().operations[operationId];
+  const ropFence = rop?.dispatchFence;
+  if (!rop || rop.state !== "FAILED_SAFE" || !ropFence) return;
+  const binding = control.getBinding(context.logicalThreadId);
+  const lease = control.snapshot().leases[context.logicalThreadId];
+  if (!binding || !lease) return;
+  // Bind the re-arm to the actual durable evidence entry, so an audit can walk
+  // from the ApplyResult to the journal fact it relied on.
+  const evidenceRef = deps.journal
+    ? ((await deps.journal.list(operationId)).find(candidate =>
+        candidate.eventKind === "RECONCILIATION_EVIDENCE" &&
+        (candidate.evidence as Record<string, unknown> | undefined)?.outcome === "PROVEN_NOT_ACCEPTED"
+      )?.executionAttemptId ?? `${operationId}:notaccepted`)
+    : `${operationId}:notaccepted`;
+  await control.applyDelta({
+    deltaId: `rearm:${operationId}:${ropFence.dispatchFenceId}`,
+    deltaFingerprint: `rearm:${operationId}:${ropFence.dispatchFenceId}:${binding.generation}:${lease.leaseGeneration}`,
+    reason: "re-arm after proven-not-accepted attempt",
+    mutate: reducer => reducer.rearmSubmissionDispatch({
+      operationId,
+      expectedOperationRevision: rop.operationRevision,
+      expectedFailedDispatchFenceId: ropFence.dispatchFenceId,
+      provenNotAcceptedEvidenceRef: evidenceRef,
+      nextAuthority: {
+        providerConversationRef: binding.providerConversationRef,
+        bindingGeneration: binding.generation,
+        carrierRef: lease.carrierRef,
+        leaseGeneration: lease.leaseGeneration
+      },
+      reason: "re-arm after proven-not-accepted attempt",
+      actor: "worker",
+      now: Date.now()
+    })
   });
 }
 
@@ -320,6 +376,18 @@ async function recoverOnce(
       fence.bindingEpoch === context.bindingEpoch &&
       fence.leaseGeneration === context.leaseGeneration &&
       fence.leaseOwnerRef === context.leaseOwnerRef;
+    // Adjudicated control-lane order: evidence first (the derived
+    // PROVEN_NOT_ACCEPTED outcome), then the control settle that retires the
+    // attempt, then transport readiness, and the authoritative control re-arm
+    // last — the next probe's claim mints the fresh fence id (F18).
+    await note(deps, {
+      executionAttemptId: `${operationId}:notaccepted:${operation.lastObservedAt}`,
+      operationId,
+      dispatchFence: fence,
+      eventKind: "RECONCILIATION_EVIDENCE",
+      evidence: { outcome: "PROVEN_NOT_ACCEPTED", observedAt: operation.lastObservedAt }
+    });
+    await settleControlFromEvidence(deps, operationId, "FAILED_SAFE", context, "attempt proven not accepted").catch(() => undefined);
     if (fenceIsCurrent) {
       // Proven-not-accepted on the same destination: re-arm under the current
       // fence with the fresh baseline, mirroring the reanchor runtime.
@@ -328,14 +396,45 @@ async function recoverOnce(
         conversationRef: context.providerConversationRef
       }, fence, baseline.observedAt).catch(() => undefined);
     } else {
-      // The destination rolled over before the re-arm probe: re-fence the
-      // failed attempt to the new authority as a fresh attempt. Timestamped
-      // from the probe's fresh observation so the ledger's monotonic fence
-      // (advanced by the failed attempt's reconciliation) holds.
+      // The destination rolled over before the re-arm probe: roll the control
+      // binding/lease to the new canonical authority first (now unblocked —
+      // the retired attempt no longer owns execution), then re-fence the
+      // transport. Timestamped from the probe's fresh observation so the
+      // ledger's monotonic fence (advanced by the failed attempt's
+      // reconciliation) holds.
+      if (deps.control) {
+        const control = deps.control;
+        const binding = control.getBinding(context.logicalThreadId);
+        if (!binding || binding.providerConversationRef !== context.providerConversationRef) {
+          await control.applyResult(reducer => reducer.commitCurrentConversationBinding({
+            logicalThreadId: context.logicalThreadId,
+            providerConversationRef: context.providerConversationRef,
+            expected: binding ?? null,
+            actor: "system",
+            now: Date.now()
+          })).catch(() => undefined);
+        }
+        const leaseSnapshot = control.snapshot().leases[context.logicalThreadId];
+        const rolledBinding = control.getBinding(context.logicalThreadId);
+        if (rolledBinding && (!leaseSnapshot ||
+          leaseSnapshot.providerConversationRef !== context.providerConversationRef ||
+          leaseSnapshot.carrierRef !== context.targetCarrierRef)) {
+          await control.applyResult(reducer => reducer.transferActuationLease({
+            logicalThreadId: context.logicalThreadId,
+            providerConversationRef: context.providerConversationRef,
+            expectedBindingGeneration: rolledBinding.generation,
+            expectedLeaseGeneration: leaseSnapshot?.leaseGeneration ?? null,
+            carrierRef: context.targetCarrierRef,
+            actor: "system",
+            now: Date.now()
+          })).catch(() => undefined);
+        }
+      }
       await retargetChildDeliveryTransport(deps, {
         childThreadId: child.childThreadId, destination: context, baseline, now: Math.max(baseline.observedAt, context.sourceObservedAt)
       }).catch(() => undefined);
     }
+    await rearmControlAttempt(deps, operationId, context).catch(() => undefined);
     return false;
   }
   if (operation.state === "DISPATCHING" || operation.state === "UNCERTAIN") {

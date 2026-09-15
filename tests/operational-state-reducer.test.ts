@@ -866,6 +866,59 @@ describe("OperationalStateReducer", () => {
     );
   });
 
+  it("restores a re-armed snapshot (FAILED_SAFE -> PREPARED, fence cleared)", () => {
+    const reducer = readyReducer();
+    reducer.seedOperation(prepared("op-1"));
+    const claim = reducer.claimSubmissionDispatch({
+      operationId: "op-1", logicalThreadId: "thread-1", providerConversationRef: "conversation-1",
+      bindingGeneration: 1, leaseGeneration: 1, carrierRef: "tab-1", actor: "human", now: 30,
+    });
+    const f17 = claim.ok ? claim.value.dispatchFence!.dispatchFenceId : "";
+    reducer.settleSubmissionDispatch({
+      operationId: "op-1", expectedOperationRevision: 1, expectedDispatchFenceId: f17,
+      targetState: "FAILED_SAFE", executionEvidenceRef: "journal-na-1",
+      reason: "proven not accepted", actor: "worker", now: 40,
+    });
+    const rearm = reducer.rearmSubmissionDispatch({
+      operationId: "op-1", expectedOperationRevision: 2, expectedFailedDispatchFenceId: f17,
+      provenNotAcceptedEvidenceRef: "journal-na-1",
+      nextAuthority: { providerConversationRef: "conversation-1", bindingGeneration: 1, carrierRef: "tab-1", leaseGeneration: 1 },
+      reason: "re-arm", actor: "worker", now: 50,
+    });
+    expect(rearm.ok).toBe(true);
+    // The re-armed operation snapshot from the source reducer.
+    const reArmedOperation = reducer.snapshot().operations["op-1"];
+    // A durable restore of the re-armed snapshot (fence gone, claim gone,
+    // revision advanced) must be accepted — the crash-recovery path for the
+    // adjudicated re-arm edge. The previous state must hold the FAILED_SAFE
+    // operation, so the restore actually walks the re-arm edge.
+    const restored = new OperationalStateReducer();
+    restored.commitCurrentConversationBinding({
+      logicalThreadId: "thread-1", providerConversationRef: "conversation-1",
+      expected: null, actor: "system", now: 1,
+    });
+    restored.transferActuationLease({
+      logicalThreadId: "thread-1", providerConversationRef: "conversation-1",
+      expectedBindingGeneration: 1, expectedLeaseGeneration: null,
+      carrierRef: "tab-1", actor: "system", now: 10,
+    });
+    restored.seedOperation(prepared("op-1"));
+    const restoredClaim = restored.claimSubmissionDispatch({
+      operationId: "op-1", logicalThreadId: "thread-1", providerConversationRef: "conversation-1",
+      bindingGeneration: 1, leaseGeneration: 1, carrierRef: "tab-1", actor: "human", now: 30,
+    });
+    const restoredF17 = restoredClaim.ok ? restoredClaim.value.dispatchFence!.dispatchFenceId : "";
+    restored.settleSubmissionDispatch({
+      operationId: "op-1", expectedOperationRevision: 1, expectedDispatchFenceId: restoredF17,
+      targetState: "FAILED_SAFE", executionEvidenceRef: "journal-na-1",
+      reason: "proven not accepted", actor: "worker", now: 40,
+    });
+    const candidate = restored.snapshot();
+    candidate.operations["op-1"] = reArmedOperation;
+    expect(() => restored.replace(candidate)).not.toThrow();
+    expect(restored.snapshot().operations["op-1"]?.state).toBe("PREPARED");
+  });
+
   it("allows one strictly fenced PREPARED to DISPATCHING restore", () => {
     const reducer = readyReducer();
     reducer.seedOperation(prepared("op-1"));
@@ -955,6 +1008,96 @@ describe("OperationalStateReducer", () => {
       expect(replay.ok).toBe(true);
       if (replay.ok) expect(replay.value.state).toBe(state);
     }
+  });
+
+  it("re-arms a FAILED_SAFE operation to PREPARED and the next claim mints a new fence", () => {
+    const reducer = readyReducer();
+    reducer.seedOperation(prepared("op-1"));
+    const claim = reducer.claimSubmissionDispatch({
+      operationId: "op-1", logicalThreadId: "thread-1", providerConversationRef: "conversation-1",
+      bindingGeneration: 1, leaseGeneration: 1, carrierRef: "tab-1", actor: "human", now: 30,
+    });
+    expect(claim.ok).toBe(true);
+    const f17 = claim.ok ? claim.value.dispatchFence!.dispatchFenceId : "";
+    const settle = reducer.settleSubmissionDispatch({
+      operationId: "op-1", expectedOperationRevision: 1, expectedDispatchFenceId: f17,
+      targetState: "FAILED_SAFE", executionEvidenceRef: "journal-na-1",
+      reason: "proven not accepted", actor: "worker", now: 40,
+    });
+    expect(settle.ok).toBe(true);
+    const failedRevision = settle.ok ? settle.value.operationRevision : 0;
+    const rearm = reducer.rearmSubmissionDispatch({
+      operationId: "op-1",
+      expectedOperationRevision: failedRevision,
+      expectedFailedDispatchFenceId: f17,
+      provenNotAcceptedEvidenceRef: "journal-na-1",
+      nextAuthority: { providerConversationRef: "conversation-1", bindingGeneration: 1, carrierRef: "tab-1", leaseGeneration: 1 },
+      reason: "re-arm the failed attempt",
+      actor: "worker",
+      now: 50,
+    });
+    expect(rearm.ok).toBe(true);
+    if (rearm.ok) {
+      expect(rearm.value.state).toBe("PREPARED");
+      expect(rearm.value.dispatchFence).toBeUndefined();
+      expect(rearm.value.dispatchClaimedAt).toBeUndefined();
+      expect(rearm.value.operationRevision).toBe(failedRevision + 1);
+    }
+    // The next claim mints F18 on the same logical operation (adjudication Q1).
+    const claim2 = reducer.claimSubmissionDispatch({
+      operationId: "op-1", logicalThreadId: "thread-1", providerConversationRef: "conversation-1",
+      bindingGeneration: 1, leaseGeneration: 1, carrierRef: "tab-1", actor: "human", now: 60,
+    });
+    expect(claim2.ok).toBe(true);
+    const f18 = claim2.ok ? claim2.value.dispatchFence!.dispatchFenceId : "";
+    expect(f18).not.toBe(f17);
+  });
+
+  it("re-arm fails closed on state, revision, fence, authority, and conflict mismatches", () => {
+    const reducer = readyReducer();
+    reducer.seedOperation(prepared("op-1"));
+    const claim = reducer.claimSubmissionDispatch({
+      operationId: "op-1", logicalThreadId: "thread-1", providerConversationRef: "conversation-1",
+      bindingGeneration: 1, leaseGeneration: 1, carrierRef: "tab-1", actor: "human", now: 30,
+    });
+    const f17 = claim.ok ? claim.value.dispatchFence!.dispatchFenceId : "";
+    const authority = { providerConversationRef: "conversation-1", bindingGeneration: 1, carrierRef: "tab-1", leaseGeneration: 1 };
+    const base = {
+      operationId: "op-1", expectedFailedDispatchFenceId: f17,
+      provenNotAcceptedEvidenceRef: "journal-na-1", nextAuthority: authority,
+      reason: "audit", actor: "worker" as const, now: 50
+    };
+    // Not FAILED_SAFE yet.
+    const notFailed = reducer.rearmSubmissionDispatch({ ...base, expectedOperationRevision: 1 });
+    expect(notFailed.ok).toBe(false);
+    if (!notFailed.ok) expect(notFailed.error.code).toBe("REARM_STATE_MISMATCH");
+    reducer.settleSubmissionDispatch({
+      operationId: "op-1", expectedOperationRevision: 1, expectedDispatchFenceId: f17,
+      targetState: "FAILED_SAFE", executionEvidenceRef: "journal-na-1",
+      reason: "proven not accepted", actor: "worker", now: 40,
+    });
+    const wrongRevision = reducer.rearmSubmissionDispatch({ ...base, expectedOperationRevision: 99 });
+    expect(wrongRevision.ok).toBe(false);
+    if (!wrongRevision.ok) expect(wrongRevision.error.code).toBe("REARM_REVISION_MISMATCH");
+    const wrongFence = reducer.rearmSubmissionDispatch({ ...base, expectedOperationRevision: 2, expectedFailedDispatchFenceId: "fence-other" });
+    expect(wrongFence.ok).toBe(false);
+    if (!wrongFence.ok) expect(wrongFence.error.code).toBe("REARM_FENCE_MISMATCH");
+    // Authority must match the canonical binding AND lease.
+    const wrongAuthority = reducer.rearmSubmissionDispatch({
+      ...base, expectedOperationRevision: 2,
+      nextAuthority: { ...authority, carrierRef: "tab-9" }
+    });
+    expect(wrongAuthority.ok).toBe(false);
+    if (!wrongAuthority.ok) expect(wrongAuthority.error.code).toBe("REARM_AUTHORITY_MISMATCH");
+    // A conflicting execution owner on the same authority refuses.
+    reducer.seedOperation(prepared("op-2", { providerConversationRef: "conversation-1", carrierRef: "tab-1" }));
+    reducer.claimSubmissionDispatch({
+      operationId: "op-2", logicalThreadId: "thread-1", providerConversationRef: "conversation-1",
+      bindingGeneration: 1, leaseGeneration: 1, carrierRef: "tab-1", actor: "human", now: 45,
+    });
+    const conflict = reducer.rearmSubmissionDispatch({ ...base, expectedOperationRevision: 2 });
+    expect(conflict.ok).toBe(false);
+    if (!conflict.ok) expect(conflict.error.code).toBe("REARM_EXECUTION_CONFLICT");
   });
 
   it("settles a claimed dispatch from evidence through the lifecycle", () => {
