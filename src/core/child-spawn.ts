@@ -34,7 +34,7 @@ export interface SpawnAdapterCapabilities {
 }
 
 export interface SpawnAdapter {
-  /** Reports provider capability facts (adjudication D2 §7). */
+  /** Reports provider capability facts (adjudication D2, adapters-report-capabilities rule). */
   capabilities: () => SpawnAdapterCapabilities;
   /** Performs the fork/new-conversation browser action (§5). */
   spawn: (child: ChildWorkerRecord) => Promise<SpawnBinding>;
@@ -55,7 +55,7 @@ function isSpawnUncertain(error: unknown): boolean {
 }
 
 /**
- * Conforming-strategy selection (adjudication D2 §6): the child's required
+ * Conforming-strategy selection (adjudication D2, harness-selects-strategy rule): the child's required
  * fidelity × the adapter's reported capabilities. No conforming strategy is a
  * NEEDS_HUMAN/DEFER refusal — never a silent degradation.
  */
@@ -72,6 +72,15 @@ export function selectSpawnStrategy(
   if (child.contextFidelity === "TRANSCRIPT_RECONSTRUCTION_REQUIRED" &&
     child.contextSource !== "TRANSCRIPT_RECONSTRUCTION" && child.contextSource !== "PROVIDER_INHERITED") {
     return { conforming: false, reason: "spawn_needs_human:transcript_reconstruction_unavailable" };
+  }
+  if (child.contextFidelity === "TRANSCRIPT_RECONSTRUCTION_REQUIRED" && !capabilities.transcriptExportAvailable) {
+    // Reconstruction needs an exportable transcript; without the capability
+    // the requirement cannot be met by this adapter.
+    return { conforming: false, reason: "spawn_needs_human:transcript_export_unavailable" };
+  }
+  if (child.contextFidelity === "DURABLE_CONTEXT_SUFFICIENT" && child.contextSource === "MINIMAL_BOOTSTRAP") {
+    // The requirement is a lower bound: a minimal bootstrap cannot satisfy it.
+    return { conforming: false, reason: "spawn_needs_human:durable_context_unsatisfied" };
   }
   return { conforming: true };
 }

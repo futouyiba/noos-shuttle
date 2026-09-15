@@ -155,10 +155,30 @@ describe("spawn child worker", () => {
   it("refuses a Sedimentation child whose fidelity is not satisfied by the context source", async () => {
     const children = makeChildren();
     const adapter = countingAdapter(async () => ({ providerConversationRef: "conv-x", carrierRef: "tab-x" }));
-    // FRESH + durable pack can never relabel as inherited (adjudication D2 §2).
+    // FRESH + durable pack can never relabel as inherited (adjudication D2, provenance is never relabeled).
     await expect(spawnChildWorker({ children, adapter }, {
       ...intent, creationMode: "FRESH" as const, contextSource: "DURABLE_CONTEXT_PACK" as const
     })).rejects.toThrow("spawn_needs_human:provider_inheritance_unsatisfied");
+    expect(adapter.calls).toBe(0);
+  });
+
+  it("refuses transcript-reconstruction fidelity without export capability", async () => {
+    const children = makeChildren();
+    const adapter = countingAdapter(async () => ({ providerConversationRef: "conv-t", carrierRef: "tab-t" }), { supportsNativeFork: false, transcriptExportAvailable: false } as const);
+    await expect(spawnChildWorker({ children, adapter }, {
+      ...intent, creationMode: "FRESH" as const,
+      contextSource: "TRANSCRIPT_RECONSTRUCTION" as const, contextFidelity: "TRANSCRIPT_RECONSTRUCTION_REQUIRED" as const
+    })).rejects.toThrow("spawn_needs_human:transcript_export_unavailable");
+    expect(adapter.calls).toBe(0);
+  });
+
+  it("refuses durable-context sufficiency met only by a minimal bootstrap", async () => {
+    const children = makeChildren();
+    const adapter = countingAdapter(async () => ({ providerConversationRef: "conv-m", carrierRef: "tab-m" }));
+    await expect(spawnChildWorker({ children, adapter }, {
+      ...intent, creationMode: "FRESH" as const,
+      contextSource: "MINIMAL_BOOTSTRAP" as const, contextFidelity: "DURABLE_CONTEXT_SUFFICIENT" as const
+    })).rejects.toThrow("spawn_needs_human:durable_context_unsatisfied");
     expect(adapter.calls).toBe(0);
   });
 

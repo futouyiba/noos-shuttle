@@ -70,6 +70,13 @@ describe("child worker intent", () => {
     await expect(ledger.createIntent({ ...intent, operationScope: "different scope" })).rejects.toThrow("child_thread_reuse_conflict");
     await expect(ledger.createIntent({ ...intent, returnRoute: "thread:other" })).rejects.toThrow("child_thread_reuse_conflict");
   });
+
+  it("rejects a re-plan that changes the context source or fidelity requirement", async () => {
+    const ledger = new ChildWorkerLedger(memoryStore());
+    await ledger.createIntent(intent);
+    await expect(ledger.createIntent({ ...intent, contextSource: "TRANSCRIPT_RECONSTRUCTION" as never })).rejects.toThrow("child_thread_reuse_conflict");
+    await expect(ledger.createIntent({ ...intent, contextFidelity: "DURABLE_CONTEXT_SUFFICIENT" as never })).rejects.toThrow("child_thread_reuse_conflict");
+  });
 });
 
 describe("child worker lifecycle", () => {
