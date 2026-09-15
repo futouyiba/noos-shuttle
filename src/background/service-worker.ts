@@ -86,7 +86,15 @@ let controlStateReducer: Promise<DurableOperationalStateReducer> | undefined;
 function getControlStateReducer(): Promise<DurableOperationalStateReducer> | undefined {
   const storage = chrome.storage?.local;
   if (!storage) return undefined;
-  controlStateReducer ??= DurableOperationalStateReducer.restore(createChromeOperationalStateReducerStore(storage));
+  if (!controlStateReducer) {
+    const restore = DurableOperationalStateReducer.restore(createChromeOperationalStateReducerStore(storage));
+    // A transient restore failure must not poison the delivery lane: drop the
+    // cached promise so the next probe retries instead of failing forever.
+    controlStateReducer = restore.catch(error => {
+      controlStateReducer = undefined;
+      throw error;
+    });
+  }
   return controlStateReducer;
 }
 

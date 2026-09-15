@@ -373,6 +373,70 @@ await prepareChildDeliveryTransport(deps, { childThreadId: "child-l2", destinati
     expect(applied.map(record => record.deltaId)).toContain(`settle:${operationId}:TURN_COMPLETION_OBSERVED`);
   });
 
+  it("backfills the control settle when the transport was already COMPLETED", async () => {
+    const { deps, storage, backing, controlStore } = harness();
+    const withControl = { ...deps, control: await DurableOperationalStateReducer.restore(controlStore) };
+    backing.noosWorkItemInbox = WORK_ITEM;
+    await seedResultReadyChild(deps);
+    await runChildDeliveryProbe({ context: context(), baseline }, storage, withControl, async () => observation());
+    const operationId = (await deps.submissions.list())[0].operationId;
+    const rop = withControl.control.snapshot().operations[operationId];
+    expect(rop?.state).toBe("DISPATCHING");
+    // Crash window: the ledger completes and the journal notes the fact, but
+    // both control settles are lost (simulate by settling nothing).
+    await deps.submissions.reconcile(operationId, {
+      ...baseline, conversationRef: "conv-l1",
+      userMessageCount: 3, lastUserMessageFingerprint: payloadFingerprint,
+      observedAt: Date.now() + 6_000, stableSince: Date.now() + 3_500, sourceEpoch: 3,
+      generationActive: false, dispatchFence: (await deps.submissions.get(operationId))!.dispatchFence
+    });
+    await deps.submissions.record(operationId, "COMPLETED", { now: Date.now() + 6_100 });
+    const transportFence = (await deps.submissions.get(operationId))!.dispatchFence!;
+    await deps.journal.append({
+      executionAttemptId: `${operationId}:accepted:${Date.now() + 6_000}`,
+      operationId, eventKind: "ACCEPTANCE_OBSERVED",
+      dispatchFence: transportFence,
+      evidence: { observedAt: Date.now() + 6_000 }, now: Date.now() + 6_000
+    });
+    await deps.journal.append({
+      executionAttemptId: `${operationId}:completed:${Date.now() + 6_100}`,
+      operationId, eventKind: "TURN_COMPLETION_OBSERVED",
+      dispatchFence: transportFence,
+      evidence: { observedAt: Date.now() + 6_100 }, now: Date.now() + 6_100
+    });
+    // A healthy probe on a fresh runtime instance settles control from the
+    // durable evidence — the stranded DISPATCHING op advances to COMPLETED.
+    const recoveredControl = await DurableOperationalStateReducer.restore(controlStore);
+    const second = await runChildDeliveryProbe({
+      context: context(),
+      baseline: { ...baseline, observedAt: Date.now() + 7_000, userMessageCount: 3, lastUserMessageFingerprint: payloadFingerprint }
+    }, storage, { ...withControl, control: recoveredControl }, async () => { throw new Error("must not redispatch"); });
+    expect(second.closed).toBe(1);
+    const settled = recoveredControl.snapshot().operations[operationId];
+    expect(settled?.state).toBe("COMPLETED");
+    expect(settled?.operationRevision).toBe(3);
+  });
+
+  it("replays the control mint when the claim-side delta was lost", async () => {
+    const { deps, storage, backing, controlStore } = harness();
+    backing.noosWorkItemInbox = WORK_ITEM;
+    await seedResultReadyChild(deps);
+    // Dispatch WITHOUT the control lane (simulating a lost mint).
+    await runChildDeliveryProbe({ context: context(), baseline }, storage, deps, async () => observation());
+    const operationId = (await deps.submissions.list())[0].operationId;
+    expect(deps.submissions.list()).resolves.toBeDefined();
+    // A later probe with the control lane restored replays the mint.
+    const control = await DurableOperationalStateReducer.restore(controlStore);
+    const second = await runChildDeliveryProbe({
+      context: context(),
+      baseline: { ...baseline, observedAt: Date.now() + 6_000, userMessageCount: 3, lastUserMessageFingerprint: payloadFingerprint }
+    }, storage, { ...deps, control }, async () => { throw new Error("must not redispatch"); });
+    expect(second.closed).toBe(1);
+    const rop = control.snapshot().operations[operationId];
+    expect(rop?.state).toBe("COMPLETED");
+    expect(rop?.dispatchFence?.dispatchFenceId).toMatch(/^fence-/);
+  });
+
   it("returns NO_ACTIVE_PARENT when no work item binding matches the carrier", async () => {
     const { deps, storage, backing } = harness();
     backing.noosWorkItemInbox = WORK_ITEM;

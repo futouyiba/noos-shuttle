@@ -304,6 +304,15 @@ async function recoverOnce(
   });
   const operation = await deps.submissions.get(operationId);
   if (!operation) return false;
+  if (deps.control &&
+    (operation.state === "DISPATCHING" || operation.state === "UNCERTAIN" || operation.state === "OBSERVED_ACCEPTED") &&
+    !deps.control.snapshot().operations[operationId] &&
+    operation.dispatchFence && operation.dispatchClaimedAt !== undefined) {
+    // The claim-side mint was lost to a crash or a swallowed failure: replay
+    // it from the transport's durable claim (deterministic delta id — a
+    // surviving mint turns this into a replay).
+    await claimControlPermit(deps, operationId, context, operation).catch(() => undefined);
+  }
   if (operation.state === "FAILED_SAFE" && operation.dispatchFence) {
     const fence = operation.dispatchFence;
     const fenceIsCurrent = fence.providerConversationRef === context.providerConversationRef &&
@@ -366,6 +375,13 @@ async function recoverOnce(
       eventKind: "TURN_COMPLETION_OBSERVED",
       evidence: { observedAt: settled.lastObservedAt }
     });
+    // The same crash window strands the control settle(s): a transport
+    // already COMPLETED must still advance the authoritative control state,
+    // chaining through OBSERVED_ACCEPTED when that hop was lost too. The
+    // deterministic delta ids make each backfill a replay-safe no-op when the
+    // original settle landed.
+    await settleControlFromEvidence(deps, operationId, "OBSERVED_ACCEPTED", context, "acceptance observed on the carrier").catch(() => undefined);
+    await settleControlFromEvidence(deps, operationId, "COMPLETED", context, "result-bearing turn completed").catch(() => undefined);
   }
   // Non-GO transports do not fingerprint-check acceptance inside the ledger;
   // this runtime tightens it: only the payload's own user message may prove

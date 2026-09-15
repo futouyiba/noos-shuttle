@@ -67,3 +67,15 @@ the adjudicated architecture.
 
 This note is the design proposal; per the operating rule, the choice (A/B/C or
 an alternative) should go to ChatGPT before W11 is implemented.
+
+## Implementation note (W11b, post-review)
+
+Option A landed with one deliberate narrowing: the transport ledger keeps
+minting its own fence from the probe context (the reanchor precedent), while
+the control reducer mints its **own** attempt identity from its own binding
+and lease generations. The two numbering families are never reconciled at
+runtime; the binding between an evidence entry and the control attempt rests
+on the operation id, the reducer-minted dispatch-fence id, and the revision
+CAS — not on generation equality. Under the single-writer probe this is
+sound; if a multi-writer control lane ever lands, the generation projection
+(review MINOR on `0f76801`) becomes a required follow-up.
