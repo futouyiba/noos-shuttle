@@ -2,7 +2,7 @@
 
 > **SUPERSEDED — do not use as current design input.**
 >
-> Current candidate: `cross-agent-handoff-escalation-contract-v2.md`
+> Current candidate: `cross-agent-handoff-escalation-contract-v3.md` (consolidated current contract)
 >
 > Full historical v1 re-review target is frozen at exact commit:
 > `6f7c52291075e8182f48ccb8d2f4585de62c5ad1`

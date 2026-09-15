@@ -2,7 +2,7 @@
 
 > **SUPERSEDED — do not use as current design input.**
 >
-> Current candidate: `cross-agent-handoff-escalation-contract-v2.md`
+> Current candidate: `cross-agent-handoff-escalation-contract-v3.md` (consolidated current contract)
 >
 > This file is retained as a live-tree provenance pointer only.
 >
