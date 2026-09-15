@@ -25,7 +25,6 @@ export type ReducerErrorCode =
   | "DISPATCH_CARRIER_MISMATCH"
   | "DISPATCH_OPERATION_METADATA_MISMATCH"
   | "DISPATCH_ALREADY_OWNED"
-  | "SETTLE_STATE_MISMATCH"
   | "SETTLE_FENCE_MISMATCH"
   | "SETTLE_TRANSITION_INVALID"
   | "SETTLE_REVISION_MISMATCH";
@@ -481,9 +480,12 @@ export class OperationalStateReducer {
 
   /**
    * Settle a claimed dispatch from execution evidence: advance or release the
-   * execution authority that claimSubmissionDispatch granted. Expectation-fenced
-   * (current state + fence), transition-table governed (terminal states are
-   * irreversible), and idempotent for an equal-state replay.
+   * execution authority that claimSubmissionDispatch granted. CAS-fenced on the
+   * operation revision and the minted attempt identity — the fence id never
+   * changes across settle hops, only the revision advances — and
+   * transition-table governed (terminal states are irreversible). Replay
+   * safety belongs to the delta layer: a settle with a stale revision fails
+   * closed.
    */
   settleSubmissionDispatch(
     input: SettleSubmissionDispatchInput,
@@ -777,6 +779,7 @@ function assertValidState(state: OperationalStateReducerState): void {
           `INVALID_STATE_SNAPSHOT: malformed dispatch fence for ${operationId}`,
         );
       }
+      assertIdentity(fence.dispatchFenceId, "dispatch fence attempt id");
       assertIdentity(fence.providerConversationRef, "dispatch fence provider conversation");
       assertIdentity(fence.carrierRef, "dispatch fence carrier");
       assertPositiveGeneration(

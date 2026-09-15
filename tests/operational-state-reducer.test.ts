@@ -397,6 +397,26 @@ describe("OperationalStateReducer", () => {
     );
   });
 
+  it("rejects a snapshot whose dispatch fence carries an empty attempt id", () => {
+    const reducer = readyReducer();
+    const bad = reducer.snapshot();
+    bad.lastMutationAt = 20;
+    bad.operations["op-1"] = {
+      ...prepared("op-1"),
+      state: "DISPATCHING",
+      dispatchClaimedAt: 20,
+      operationRevision: 1,
+      dispatchFence: {
+        dispatchFenceId: "",
+        providerConversationRef: "conversation-1",
+        carrierRef: "tab-1",
+        bindingGeneration: 1,
+        leaseGeneration: 1,
+      },
+    };
+    expect(() => reducer.replace(bad)).toThrow("INVALID_STATE_SNAPSHOT");
+  });
+
   it("applies the same snapshot invariants to seedOperation", () => {
     const reducer = readyReducer();
     expect(() =>
