@@ -2,94 +2,49 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
-import noosLogoUrl from "./assets/noos-logo.png";
 import { createHarnessSnapshot, harnessScenarioIds } from "./harness/fixtures";
 import type { HarnessConsoleSnapshot, HarnessScenarioId } from "./harness/types";
 import { mockHealth, mockSleepRecoveryStatus } from "./mock";
-import { renderAdapters } from "./pages/adapters";
-import { renderConfig, type ConfigData } from "./pages/config";
-import { renderDashboard } from "./pages/dashboard";
+import type { ConfigData } from "./pages/config";
 import { renderHarnessConsole, formatAge, projectionBuiltText } from "./pages/harness-console";
 import { renderHelp } from "./pages/help";
 import { renderVault } from "./pages/vault";
+import { renderSystem } from "./pages/system";
+import { renderWorkDetail, renderWorkOverview } from "./pages/work";
 import { createVaultBrowserState, renderVaultBrowser, type VaultBrowserState } from "./pages/vault-browser";
+import { parseSectionId, navSectionFor, type SectionId } from "./routes";
 import { sleepRecoveryDisplay } from "./status";
 import "./styles.css";
 import type { HubHealth, SleepRecoveryStatus, UpdateCheckMode, UpdateStatus } from "./types";
 import { renderUpdateBannerHtml, renderUpdateDialogHtml } from "./update/render";
+import { bindContentActions } from "./ui/content-actions";
+import { copy as c } from "./ui/copy";
 import { escapeHtml } from "./ui/html";
 import { setVaultFileActionDataRuns } from "./vault-file-actions";
-
-type SectionId = "home" | "vault" | "harness" | "adapters" | "config" | "help";
 
 const silentUpdateCheckDelayMs = 2500;
 interface SectionMeta {
   id: SectionId;
   label: string;
-  eyebrow: string;
   title: string;
   summary: string;
 }
 
 const sectionMeta: Record<SectionId, SectionMeta> = {
-  home: {
-    id: "home",
-    label: "首页",
-    eyebrow: "NOOS Hub",
-    title: "本机上下文中枢",
-    summary: "连接器状态、建议操作和最近文件一览。"
-  },
-  vault: {
-    id: "vault",
-    label: "Vault",
-    eyebrow: "NOOS Vault",
-    title: "本机产物与交接",
-    summary: "管理 Handoff、Crystal、Browser Mirror 和 Agent Projection。"
-  },
-  harness: {
-    id: "harness",
-    label: "Harness",
-    eyebrow: "Deliberation Harness",
-    title: "Dogfood Console",
-    summary: "观察 Primary Thread 的 canonical 绑定、runtime 租约、当前 operation 和最近事件。v0 为 fixture 数据。"
-  },
-  adapters: {
-    id: "adapters",
-    label: "连接器",
-    eyebrow: "Adapters",
-    title: "连接器安装状态",
-    summary: "检查浏览器、Git、工作区和下游 agent 的可用性。"
-  },
-  config: {
-    id: "config",
-    label: "设置",
-    eyebrow: "Settings",
-    title: "本机配置与更新",
-    summary: "查看路径、更新入口和内置 Shuttle 扩展。"
-  },
-  help: {
-    id: "help",
-    label: "帮助",
-    eyebrow: "Help",
-    title: "NOOS Hub 帮助",
-    summary: "快速理解 Handoff、Crystal、Vault、连接器和本机同步边界。"
-  }
+  work: { id: "work", label: "Work", title: c.sections.work.title, summary: c.sections.work.summary },
+  "work-detail": { id: "work-detail", label: "Work detail", title: c.sections.workDetail.title, summary: c.sections.workDetail.summary },
+  vault: { id: "vault", label: "Vault", title: c.sections.vault.title, summary: c.sections.vault.summary },
+  harness: { id: "harness", label: "Harness", title: c.sections.harness.title, summary: c.sections.harness.summary },
+  system: { id: "system", label: "System", title: c.sections.system.title, summary: c.sections.system.summary },
+  help: { id: "help", label: c.sections.help.label, title: c.sections.help.title, summary: c.sections.help.summary }
 };
 
-const navItems: SectionMeta[] = [
-  sectionMeta.home,
-  sectionMeta.vault,
-  sectionMeta.adapters,
-  sectionMeta.harness,
-  sectionMeta.config
-];
-
-const sectionItems = Object.values(sectionMeta);
+const navItems: SectionMeta[] = [sectionMeta.work, sectionMeta.vault, sectionMeta.system];
 
 let currentHealth: HubHealth | null = null;
 let currentRecoveryStatus: SleepRecoveryStatus | null = null;
 let currentLog = "";
-let activeSection: SectionId = parseSectionId(window.location.hash.slice(1), "home");
+let activeSection: SectionId = parseSectionId(window.location.hash.slice(1), "work");
 let healthLoadInFlight = false;
 let actionInFlight = false;
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -129,37 +84,28 @@ startHarnessFreshnessTicker();
 scheduleSilentUpdateCheck();
 
 function renderShell(): void {
-  const shellItem = sectionMeta[activeSection] ?? sectionMeta.home;
+  const shellItem = sectionMeta[activeSection] ?? sectionMeta.work;
 
   appElement.innerHTML = `
     <aside class="sidebar">
       <div class="brand">
-        <img class="mark" src="${noosLogoUrl}" alt="" aria-hidden="true" />
-        <div>
-          <strong>NOOS Hub</strong>
-          <span>Context Control Plane · FuTou 2026</span>
-        </div>
+        <strong>NOOS</strong>
+        <span>${escapeHtml(c.shell.brandSubtitle)}</span>
       </div>
-      <nav>
+      <nav aria-label="Primary">
         ${navItems.map((item) => navButton(item.id, item.label)).join("")}
       </nav>
-      <div class="sidebar-note">
-        <span></span>
-        本机中枢只写入 NOOS 配置和已确认的连接器文件。FuTou 2026。
-      </div>
+      <div class="sidebar-version">${escapeHtml(c.shell.versionNote)}</div>
     </aside>
     <main class="workspace">
       <header class="topbar">
-        <div>
-          <p class="eyebrow" id="section-eyebrow">${shellItem.eyebrow}</p>
-          <h1 id="section-title">${shellItem.title}</h1>
-          <p class="topbar-summary" id="section-summary">${shellItem.summary}</p>
+        <div class="topbar-context">
+          <p class="section-breadcrumb" id="section-breadcrumb" hidden></p>
+          <h1 id="section-title">${escapeHtml(shellItem.title)}</h1>
+          <p class="topbar-summary" id="section-summary">${escapeHtml(shellItem.summary)}</p>
         </div>
         <div class="topbar-actions">
-          <span class="recovery-pill" data-recovery-state="running">睡眠恢复：检查中</span>
-          ${navButton("help", "帮助", "topbar-help")}
-          <button type="button" data-action="refresh">刷新</button>
-          <button type="button" data-action="doctor">运行 Doctor</button>
+          <button type="button" data-section="help" class="topbar-link">${escapeHtml(c.sections.help.label)}</button>
         </div>
       </header>
       <section class="update-banner" id="update-banner" hidden></section>
@@ -179,12 +125,6 @@ function renderShell(): void {
   `;
 
   bindSectionButtons(appElement);
-  appElement.querySelector('[data-action="refresh"]')?.addEventListener("click", () => {
-    void loadHealth({ force: true });
-  });
-  appElement.querySelector('[data-action="doctor"]')?.addEventListener("click", (event) => {
-    void runAction("doctor", event.currentTarget as HTMLButtonElement);
-  });
   appElement.querySelector('[data-action="clear-log"]')?.addEventListener("click", () => setLog(""));
 }
 
@@ -196,10 +136,10 @@ function applyRequestedHarnessScenario(): void {
   }
 }
 
-function navButton(section: SectionId, label: string, className = ""): string {
-  const active = activeSection === section;
-  const classes = [className, active ? "active" : ""].filter(Boolean).join(" ");
-  return `<button type="button" data-section="${section}" class="${classes}" ${active ? 'aria-current="page"' : ""}>${label}</button>`;
+function navButton(section: SectionId, label: string): string {
+  const active = navSectionFor(activeSection) === section;
+  const classes = active ? "active" : "";
+  return `<button type="button" data-section="${section}" class="${classes}" ${active ? 'aria-current="page"' : ""}><span class="nav-dot" aria-hidden="true"></span>${label}</button>`;
 }
 
 function bindSectionButtons(root: ParentNode): void {
@@ -208,10 +148,6 @@ function bindSectionButtons(root: ParentNode): void {
       setActiveSection(parseSectionId(button.dataset.section, activeSection));
     });
   });
-}
-
-function parseSectionId(value: string | undefined, fallback: SectionId = "home"): SectionId {
-  return sectionItems.some((item) => item.id === value) ? (value as SectionId) : fallback;
 }
 
 function setActiveSection(section: SectionId, options: { updateHistory?: boolean } = {}): void {
@@ -227,7 +163,7 @@ function setActiveSection(section: SectionId, options: { updateHistory?: boolean
 }
 
 function restoreSectionFromLocation(): void {
-  const nextSection = parseSectionId(window.location.hash.slice(1), "home");
+  const nextSection = parseSectionId(window.location.hash.slice(1), "work");
   if (nextSection !== activeSection) {
     setActiveSection(nextSection, { updateHistory: false });
   }
@@ -601,9 +537,10 @@ function renderCurrentSection(): void {
   if (!content || !currentHealth) return;
 
   renderShellContext();
+  const activeNav = navSectionFor(activeSection);
   appElement.querySelectorAll<HTMLButtonElement>("[data-section]").forEach((button) => {
-    button.classList.toggle("active", button.dataset.section === activeSection);
-    if (button.dataset.section === activeSection) {
+    button.classList.toggle("active", button.dataset.section === activeNav);
+    if (button.dataset.section === activeNav) {
       button.setAttribute("aria-current", "page");
     } else {
       button.removeAttribute("aria-current");
@@ -611,6 +548,9 @@ function renderCurrentSection(): void {
   });
 
   switch (activeSection) {
+    case "work-detail":
+      content.innerHTML = renderWorkDetail();
+      break;
     case "vault":
       content.innerHTML = renderVault(currentHealth);
       void loadVaultBrowse();
@@ -619,19 +559,16 @@ function renderCurrentSection(): void {
       content.innerHTML = renderHarnessSection();
       bindHarnessConsoleEvents(content);
       break;
-    case "adapters":
-      content.innerHTML = renderAdapters(currentHealth);
-      break;
-    case "config":
-      content.innerHTML = renderConfig(currentHealth, currentConfig);
+    case "system":
+      content.innerHTML = renderSystem(currentHealth, currentConfig);
       void loadConfig();
       break;
     case "help":
       content.innerHTML = renderHelp(currentHealth);
       break;
-    case "home":
+    case "work":
     default:
-      content.innerHTML = renderDashboard(currentHealth);
+      content.innerHTML = renderWorkOverview(currentHealth);
       break;
   }
 
@@ -640,27 +577,33 @@ function renderCurrentSection(): void {
     { id: "crystals", files: currentHealth.recent_files.crystals }
   ]);
   bindSectionButtons(content);
-
-  content.querySelectorAll<HTMLButtonElement>("[data-run]").forEach((button) => {
-    button.addEventListener("click", (event) => {
-      void runAction(button.dataset.run ?? "", event.currentTarget as HTMLButtonElement);
-    });
+  bindContentActions(content, {
+    run: (action, sourceButton) => {
+      void runAction(action, sourceButton);
+    },
+    refresh: () => {
+      void loadHealth({ force: true });
+    },
+    checkUpdate: () => {
+      void checkForHubUpdate({ mode: "manual" });
+    }
   });
-  bindContentActionButtons(content);
 
-  if (activeSection === "config") {
+  if (activeSection === "system") {
     bindConfigEditEvents(content);
+    renderSleepRecoveryStatus();
   }
 }
 
 function renderShellContext(): void {
-  const item = sectionMeta[activeSection] ?? sectionMeta.home;
-  const eyebrow = appElement.querySelector<HTMLElement>("#section-eyebrow");
+  const item = sectionMeta[activeSection] ?? sectionMeta.work;
+  const breadcrumb = appElement.querySelector<HTMLElement>("#section-breadcrumb");
   const title = appElement.querySelector<HTMLElement>("#section-title");
   const summary = appElement.querySelector<HTMLElement>("#section-summary");
 
-  if (eyebrow) {
-    eyebrow.textContent = item.eyebrow;
+  if (breadcrumb) {
+    breadcrumb.textContent = "Work › FCF · DSL R3";
+    breadcrumb.hidden = activeSection !== "work-detail";
   }
   if (title) {
     title.textContent = item.title;
@@ -918,11 +861,21 @@ async function loadConfig(): Promise<void> {
 
   const content = appElement.querySelector<HTMLDivElement>("#content");
   if (!content || !currentHealth) return;
-  if (activeSection === "config") {
-    content.innerHTML = renderConfig(currentHealth, currentConfig);
+  if (activeSection === "system") {
+    content.innerHTML = renderSystem(currentHealth, currentConfig);
     bindConfigEditEvents(content);
-    bindRunButtons(content);
-    bindContentActionButtons(content);
+    bindContentActions(content, {
+      run: (action, sourceButton) => {
+        void runAction(action, sourceButton);
+      },
+      refresh: () => {
+        void loadHealth({ force: true });
+      },
+      checkUpdate: () => {
+        void checkForHubUpdate({ mode: "manual" });
+      }
+    });
+    renderSleepRecoveryStatus();
   }
 }
 
@@ -993,22 +946,6 @@ async function saveConfigValue(key: string, value: string, row: HTMLElement): Pr
   } catch (error) {
     showToast(`保存失败：${String(error)}`, "error");
   }
-}
-
-function bindRunButtons(root: ParentNode): void {
-  root.querySelectorAll<HTMLButtonElement>("[data-run]").forEach((button) => {
-    button.addEventListener("click", (event) => {
-      void runAction(button.dataset.run ?? "", event.currentTarget as HTMLButtonElement);
-    });
-  });
-}
-
-function bindContentActionButtons(root: ParentNode): void {
-  root.querySelectorAll<HTMLButtonElement>('[data-action="check-update"]').forEach((button) => {
-    button.addEventListener("click", () => {
-      void checkForHubUpdate({ mode: "manual" });
-    });
-  });
 }
 
 function isTauriRuntime(): boolean {
