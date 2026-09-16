@@ -92,3 +92,23 @@ Hub release/bundle 必须内置已 build 的浏览器扩展；用户安装 Hub �
 关于 Tauri updater 签名密钥托管、GitHub secret 名称、本地密钥路径和发布验证步骤，读取 `docs/noos-hub-updater-signing.md`。
 
 绝不要提交、打印或总结 updater 私钥或签名密码的内容。可以安全引用文档中记录的密钥路径和 GitHub secret 名称。
+
+## NOOS Hub 本地部署通道（dogfood）
+
+本地开发/测试期间，NOOS Hub 的运行实例由部署循环统一管理，规范如下：
+
+- **唯一部署入口是 `npm run hub:launch`**（即 `scripts/noos-hub-launch.sh start`）：快照
+  runtime 状态 → 按端口所有权停止现有 Hub → 按需重建 bundle → 安装到
+  `/Applications/NOOS Hub.app` → 启动 → 校验 `/health` 的 `build_commit` 等于本次
+  checkout 的 HEAD 且 `started_at` 新鲜 → 重新装 watchdog。Spotlight/Dock 打开的
+  永远是最新 dogfood 构建；不要手工下载 release 包覆盖它。
+- **"哪个 Hub 在跑"的唯一事实来源是本地写端口（默认 17642）的占用者**，
+  `hub:stop` 按 `lsof` 端口 owner 终止进程并等待端口释放，不依赖路径或 pid 文件。
+- **数据不隔离**：dogfood 通道共享 `~/.noos`（vault、shuttle-token），配对与数据
+  延续性是测试目标的一部分。每次部署前 `~/.noos/runtime/*.json` 会被快照轮换
+  （保留最近 20 份）用于回滚。
+- **worktree / 实验实例必须隔离**：启动前设置 `NOOS_HOME=<实例私有目录>` 与
+  `NOOS_HUB_PORT=<非 17642 端口>`（Hub 与 launcher 均读取该变量），不得占用
+  17642；vite dev 端口 1430 冲突时需与其它 dev 实例串行。
+- **更新横幅注意**：dogfood 构建与 GitHub release 是两条通道。dogfood 部署期间
+  Hub 出现 release 更新提示时不要点击安装；确认要切换通道时再操作。

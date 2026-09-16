@@ -96,7 +96,10 @@ let toastTimer: ReturnType<typeof setTimeout> | null = null;
 let vaultBrowserState: VaultBrowserState = createVaultBrowserState();
 let harnessScenario: HarnessScenarioId = "idle";
 let harnessSnapshot: HarnessConsoleSnapshot | null = null;
-let harnessFreshnessTimer: ReturnType<typeof setInterval> | null = null;
+// `window.setInterval` returns a DOM timer id (number); do not use
+// `ReturnType<typeof setInterval>`, which resolves to NodeJS.Timeout when
+// @types/node is loaded.
+let harnessFreshnessTimer: number | null = null;
 let currentConfig: ConfigData | null = null;
 let updateStatus: UpdateStatus = "idle";
 let updateDialogVisible = false;
