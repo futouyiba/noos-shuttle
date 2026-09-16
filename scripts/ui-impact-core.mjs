@@ -7,9 +7,10 @@ const REVIEW_EVIDENCE_PREFIXES = [".review-assets/"];
 const HUB_ASSET_PREFIX = "apps/noos-hub/src/assets/";
 const HUB_PAGE_PREFIX = "apps/noos-hub/src/pages/";
 const HUB_UI_PREFIX = "apps/noos-hub/src/ui/";
-const HUB_TEST_PREFIXES = ["tests/noos-hub", "apps/noos-hub/src/"];
+const HUB_UPDATE_PREFIX = "apps/noos-hub/src/update/";
 
 const HUB_UI_EXACT = new Set([
+  "apps/noos-hub/index.html",
   "apps/noos-hub/src/main.ts",
   "apps/noos-hub/src/routes.ts",
   "apps/noos-hub/src/styles.css",
@@ -40,6 +41,7 @@ function isHubUiSource(file) {
     HUB_UI_EXACT.has(file) ||
     file.startsWith(HUB_PAGE_PREFIX) ||
     file.startsWith(HUB_UI_PREFIX) ||
+    file.startsWith(HUB_UPDATE_PREFIX) ||
     file.startsWith(HUB_ASSET_PREFIX)
   );
 }
@@ -53,6 +55,7 @@ function isHubUiTest(file) {
 }
 
 function surfaceFor(file) {
+  if (file === "apps/noos-hub/index.html") return "Document shell";
   if (file === "apps/noos-hub/src/main.ts") return "Shell";
   if (file === "apps/noos-hub/src/routes.ts") return "Routing";
   if (file === "apps/noos-hub/src/styles.css") return "Shared styles";
@@ -61,6 +64,9 @@ function surfaceFor(file) {
   }
   if (file.startsWith(HUB_UI_PREFIX)) {
     return `UI:${file.slice(HUB_UI_PREFIX.length).replace(/\.[^.]+$/, "")}`;
+  }
+  if (file.startsWith(HUB_UPDATE_PREFIX)) {
+    return `Update:${file.slice(HUB_UPDATE_PREFIX.length).replace(/\.[^.]+$/, "")}`;
   }
   if (file.startsWith(HUB_ASSET_PREFIX)) return "Assets";
   if (isReviewEvidence(file)) return "Review evidence";
