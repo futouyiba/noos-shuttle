@@ -10,6 +10,21 @@ NOOS Shuttle 是用于在 Chatbox、Agent、Coding Agent 和创作工具之间�
 
 始终使用中文回复。
 
+## 跨对话工作流规范
+
+多对话 / 跨平台协作的权威规范存于文档仓库默认分支（与本仓库分支无关；
+如有出入，以规范本体为准）：
+
+https://raw.githubusercontent.com/futouyiba/noos_docs/main/docs/agent-workflow.md
+
+门禁摘要（完整条款见规范 §1）：任何 PR 未获独立 reviewer APPROVE（引用
+被审 exact head）不得合并；reviewed head 之后的 commit 需增量复审。
+epic designer 的裁定以 proposal 文档 + issue/PR 评论传递，决定性表述
+原文引用（规范 §2）。orchestrator 只编排委派、任务用独立
+branch/worktree；主 checkout 归 integrator（规范 §3–4）。
+
+命令速查见 `CLAUDE.md`（纯文件，任何平台可直接读取）。
+
 ## 工作原则
 
 1. 先确认任务属于浏览器扩展、NOOS Hub、Agent skills、安装脚本、协议文档、测试或发布流程中的哪一类，再决定阅读范围。
