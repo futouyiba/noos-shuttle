@@ -7,6 +7,16 @@ import type { NoosThread } from "../core/noos-thread";
 import type { NoosCrystal } from "../core/noos-crystal";
 import { HumanGoRuntime, type HumanGoCarrierSnapshot, type HumanGoLedger } from "../core/human-go-runtime";
 import type { SubmissionOperation, SubmissionOperationMutation, SubmissionReconcileResult } from "../core/submission-operation";
+// Types only: the content entry must not share a runtime module with the
+// service-worker entry, or Rollup emits a chunk that MV3 content scripts
+// (classic scripts) cannot import. Run logic stays background-side.
+import type {
+  CandidateContinuationFixture,
+  ContinuationRun,
+  ContinuationRunEvent,
+  ContinuationRunMutation,
+  ContinuationStopReason
+} from "../core/continuation-run";
 import { EXTENSION_CONTEXT_INVALID, sendExtensionMessage } from "../shared/extension-runtime";
 import { COPY, type ShuttleLocale, getStoredLocale, storeLocale } from "../shared/i18n";
 import { ClipboardAdapter } from "../storage/ClipboardAdapter";
@@ -205,6 +215,16 @@ let observationOutputChangedAt: number | null = null;
 let activeSubmission: { operationId: string; fence: SubmissionDispatchFence; claimedAt: number } | null = null;
 let submissionRecoveryRequestedAt = -Infinity;
 let submissionReconcileInFlight = false;
+// Bounded Continuation Run (assisted V0): the background coordinator owns the
+// durable run; this module projects it and drives round transitions.
+let bcrRun: ContinuationRun | null = null;
+let bcrLastEndedRun: ContinuationRun | null = null;
+let bcrWatcherId: number | null = null;
+let bcrExpectedUserCount = -1;
+let bcrMutationInFlight = false;
+let bcrBusy = false;
+let bcrBudgetCap = 5;
+let shuttleApp: HTMLElement | null = null;
 
 interface SubmissionDispatchFence {
   providerConversationRef: string;
@@ -294,9 +314,11 @@ function bootstrap(): void {
   shadow.append(app);
   document.documentElement.append(host);
   applyShuttlePosition(app, shuttlePosition);
+  shuttleApp = app;
 
   render(app);
   installConversationWatcher(app);
+  void refreshActiveRun();
   installProjectImportBridge(app);
   void refreshVaultStatus(app);
   window.addEventListener("resize", () => {
@@ -480,6 +502,7 @@ function renderChatGptSurface(selectedThread: NoosThread | undefined, copy: (typ
       </label>
     </div>
   </div>
+  ${renderBcrSection(copy)}
   <div class="actions supporting-actions">
     <button type="button" data-action="generate">${copy.draftHandoff}</button>
     <button type="button" data-action="capture">${copy.collectHandoff}</button>
@@ -487,6 +510,55 @@ function renderChatGptSurface(selectedThread: NoosThread | undefined, copy: (typ
     <button type="button" data-action="download-images">${copy.downloadImages}</button>
   </div>
   ${renderThreads(selectedThread)}`;
+}
+
+function renderBcrSection(copy: (typeof COPY)[ShuttleLocale]): string {
+  const active = bcrRun;
+  if (active) {
+    const awaitingDecision = active.phase === "AWAITING_HUMAN_DECISION";
+    const readyToGo = active.phase === "READY_TO_GO" && active.pendingSubmissionOperationId === undefined;
+    const phase = escapeHtml(bcrPhaseLabel(active, copy));
+    return `<div class="bcr-panel" data-bcr-state="active">
+      <div class="bcr-title">${escapeHtml(copy.bcrSectionTitle)} <span class="bcr-note">${escapeHtml(copy.bcrAssistedNote)}</span></div>
+      <div class="bcr-status"><strong>${escapeHtml(copy.bcrRunningLabel)} ${active.consumedContinuations} / ${active.maxContinuations}</strong><span class="bcr-phase"> · ${phase}</span></div>
+      ${
+        awaitingDecision
+          ? `<div class="bcr-decision"><span>${escapeHtml(copy.bcrContinuePrompt)}</span>
+              <button class="primary-action" type="button" data-action="bcr-continue">${escapeHtml(copy.bcrContinue)}</button>
+              <button class="cancel-action" type="button" data-action="bcr-stop">${escapeHtml(copy.bcrStop)}</button>
+            </div>`
+          : readyToGo
+            ? `<div class="bcr-decision"><button class="primary-action" type="button" data-action="bcr-go">${escapeHtml(copy.bcrSendGo)}</button>
+                <button class="cancel-action" type="button" data-action="bcr-stop">${escapeHtml(copy.bcrStop)}</button>
+              </div>`
+            : `<div class="bcr-decision"><button class="cancel-action" type="button" data-action="bcr-stop">${escapeHtml(copy.bcrStop)}</button></div>`
+      }
+      <div class="bcr-debug">${escapeHtml(copy.bcrDebugRun)} ${escapeHtml(active.runId)}${
+        active.lastConsumedTurnRef ? ` · ${escapeHtml(copy.bcrDebugTurn)} ${escapeHtml(active.lastConsumedTurnRef.slice(0, 24))}` : ""
+      }</div>
+    </div>`;
+  }
+  const ended = bcrLastEndedRun;
+  const budgets = [1, 5, 10, 20];
+  const startButtons = budgets.map(budget => {
+    const locked = budget > bcrBudgetCap;
+    return `<button type="button" data-action="bcr-start-${budget}" ${locked ? "disabled" : ""}
+      ${locked ? `title="${escapeAttribute(copy.bcrLockedReason)}"` : ""}>Go${budget > 1 ? ` ×${budget}` : ""}</button>`;
+  }).join("");
+  return `<div class="bcr-panel" data-bcr-state="${ended ? "ended" : "idle"}">
+    <div class="bcr-title">${escapeHtml(copy.bcrSectionTitle)} <span class="bcr-note">${escapeHtml(copy.bcrAssistedNote)}</span></div>
+    ${
+      ended
+        ? `<div class="bcr-ended">
+            <strong>${escapeHtml(copy.bcrEndedLabel)} ${ended.consumedContinuations} / ${ended.maxContinuations}</strong>
+            <span class="bcr-reason">${escapeHtml(copy.bcrReason)}: ${escapeHtml(ended.stopReason ?? "—")}</span>
+            ${ended.stopReason === "BUDGET_EXHAUSTED" ? `<span class="bcr-note">${escapeHtml(copy.bcrGoalMayContinue)}</span>` : ""}
+          </div>`
+        : ""
+    }
+    <div class="bcr-budgets">${startButtons}</div>
+    <div class="bcr-hint">${escapeHtml(copy.bcrLockedReason)}</div>
+  </div>`;
 }
 
 function renderFeishuSurface(copy: (typeof COPY)[ShuttleLocale]): string {
@@ -1218,6 +1290,27 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
     return;
   }
 
+  if (action.startsWith("bcr-start-")) {
+    const budget = Number(action.replace("bcr-start-", ""));
+    if (Number.isInteger(budget)) await runExclusiveBcrAction(() => startBoundedRun(app, budget));
+    return;
+  }
+
+  if (action === "bcr-continue") {
+    await runExclusiveBcrAction(() => continueBoundedRun(app));
+    return;
+  }
+
+  if (action === "bcr-stop") {
+    await runExclusiveBcrAction(() => stopBoundedRun(app));
+    return;
+  }
+
+  if (action === "bcr-go") {
+    if (bcrRun?.phase === "READY_TO_GO") await runExclusiveBcrAction(() => issueRunGo(app));
+    return;
+  }
+
   if (action === "generate-capture") {
     await generateAndCollect(app);
     return;
@@ -1327,7 +1420,15 @@ async function generateAndCollectCrystal(app: HTMLElement): Promise<void> {
   waitForGeneratedCrystal(app, baselineBegin);
 }
 
-async function dispatchHumanGo(payload: string, context: PageContext, workItemId: string): Promise<boolean> {
+async function dispatchHumanGo(payload: string, context: PageContext, workItemId: string,
+  options: { operationId?: string; runLinked?: boolean; onResult?: (status: "DISPATCHED" | "UNCERTAIN" | "BLOCKED") => void } = {}
+): Promise<boolean> {
+  // An active Bounded Continuation Run owns the carrier: manual GO actions
+  // must not race a governed round or orphan its pending operation.
+  if (!options.runLinked && bcrRun?.status === "ACTIVE") {
+    viewState.message = COPY[viewState.locale].bcrRunActive;
+    return false;
+  }
   let observation = runtimeObservationLedger.value;
   const deadline = Date.now() + 6_000;
   while ((!observation || observation.state !== "READY" || observation.carrierIdentityState !== "browser-tab") && Date.now() < deadline) {
@@ -1345,7 +1446,7 @@ async function dispatchHumanGo(payload: string, context: PageContext, workItemId
     ...readSubmissionMessageEvidence(),
     observedAt: now
   };
-  const operationId = `go-${now.toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  const operationId = options.operationId ?? `go-${now.toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   const runtime = globalThis.chrome?.runtime;
   if (!runtime?.sendMessage) return false;
   const humanGo = new HumanGoRuntime(
@@ -1385,7 +1486,11 @@ async function dispatchHumanGo(payload: string, context: PageContext, workItemId
     sourceObservedAt: observation.observedAt,
     now
   });
-  if (result.status === "BLOCKED") return false;
+  if (result.status === "BLOCKED") {
+    options.onResult?.("BLOCKED");
+    return false;
+  }
+  options.onResult?.(result.status);
   activeSubmission = {
     operationId: result.operation.operationId,
     fence: result.operation.dispatchFence ?? {
@@ -1398,6 +1503,273 @@ async function dispatchHumanGo(payload: string, context: PageContext, workItemId
     claimedAt: result.operation.dispatchClaimedAt ?? now
   };
   return result.status === "DISPATCHED";
+}
+
+async function mutateContinuationRun(mutation: ContinuationRunMutation): Promise<{ ok: boolean; run?: ContinuationRun; error?: string }> {
+  bcrMutationInFlight = true;
+  try {
+    const response = await sendExtensionMessage<
+      { type: "NOOS_CONTINUATION_RUN_MUTATION"; mutation: ContinuationRunMutation },
+      { ok: boolean; run?: ContinuationRun; budgetCap?: number; error?: string }
+    >({ type: "NOOS_CONTINUATION_RUN_MUTATION", mutation });
+    if (typeof response?.budgetCap === "number") bcrBudgetCap = response.budgetCap;
+    if (!response?.ok) return { ok: false, error: response?.error ?? "continuation_run_unavailable" };
+    if (response.run !== undefined) adoptRunState(response.run);
+    else if (mutation.type === "get_active") adoptRunState(null);
+    return { ok: true, run: response.run };
+  } catch {
+    return { ok: false, error: "continuation_run_unavailable" };
+  } finally {
+    bcrMutationInFlight = false;
+  }
+}
+
+function adoptRunState(run: ContinuationRun | null): void {
+  if (!run) {
+    bcrRun = null;
+    stopBcrWatcher();
+    return;
+  }
+  if (run.status === "ACTIVE") {
+    const isNewRun = bcrRun?.runId !== run.runId;
+    bcrRun = run;
+    if (isNewRun) {
+      // Re-adopted after a reload: baseline from the live observation so the
+      // run's own past submissions are never misread as Human intervention.
+      bcrExpectedUserCount = runtimeObservationLedger.value?.userMessageCount ?? -1;
+    }
+    ensureBcrWatcher();
+    return;
+  }
+  bcrLastEndedRun = run;
+  bcrRun = null;
+  stopBcrWatcher();
+}
+
+async function applyContinuationRunEvent(event: ContinuationRunEvent): Promise<void> {
+  if (!bcrRun) return;
+  const result = await mutateContinuationRun({ type: "apply", runId: bcrRun.runId, event, now: Date.now() });
+  // A refused event means the durable run already moved; converge against it.
+  if (!result.ok) await refreshActiveRun();
+  renderApp();
+}
+
+async function refreshActiveRun(): Promise<void> {
+  const conversationRef = runtimeObservationLedger.value?.providerConversationRef || currentPageContext.conversationId;
+  if (!conversationRef) return;
+  await mutateContinuationRun({ type: "get_active", providerConversationRef: conversationRef });
+}
+
+async function startBoundedRun(app: HTMLElement, budget: number): Promise<void> {
+  const copy = COPY[viewState.locale];
+  if (bcrRun) return;
+  const observation = await waitForReadyObservation();
+  if (!observation?.providerConversationRef || observation.state !== "READY") {
+    viewState.message = copy.bcrCarrierNotReady;
+    render(app);
+    return;
+  }
+  const now = Date.now();
+  const result = await mutateContinuationRun({
+    type: "start",
+    input: {
+      runId: `bcr-${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      workItemId: "shuttle-bcr-run",
+      logicalThreadId: `thread:${observation.providerConversationRef}`,
+      providerConversationRef: observation.providerConversationRef,
+      bindingEpoch: observation.sourceEpoch,
+      maxContinuations: budget,
+      now
+    }
+  });
+  if (!result.ok || !result.run) {
+    viewState.message = `${copy.bcrStartFailed}${result.error ? `: ${result.error}` : ""}`;
+    render(app);
+    return;
+  }
+  bcrExpectedUserCount = observation.userMessageCount ?? 0;
+  render(app);
+  await issueRunGo(app);
+}
+
+async function issueRunGo(app: HTMLElement): Promise<void> {
+  const copy = COPY[viewState.locale];
+  if (!bcrRun) return;
+  const observation = await waitForReadyObservation();
+  if (!observation?.providerConversationRef) {
+    viewState.message = copy.bcrCarrierNotReady;
+    render(app);
+    return;
+  }
+  if (observation.providerConversationRef !== bcrRun.providerConversationRef) {
+    await applyContinuationRunEvent({ type: "CONVERSATION_REBASE_REQUIRED" });
+    render(app);
+    return;
+  }
+  // A reload rotates the execution authority; resync the pinned binding
+  // generation while the same provider conversation stays current.
+  if (observation.sourceEpoch !== bcrRun.bindingEpoch) {
+    const rebind = await mutateContinuationRun({ type: "apply", runId: bcrRun.runId, event: { type: "REBIND", bindingEpoch: observation.sourceEpoch }, now: Date.now() });
+    if (!rebind.ok || !bcrRun) {
+      render(app);
+      return;
+    }
+  }
+  const bindingEpochAtDispatch = bcrRun.bindingEpoch;
+  const gate = await mutateContinuationRun({ type: "check_dispatch", runId: bcrRun.runId, providerConversationRef: observation.providerConversationRef, bindingEpoch: bindingEpochAtDispatch });
+  if (!gate.ok || !bcrRun) {
+    viewState.message = `${copy.bcrStartFailed}${gate.error ? `: ${gate.error}` : ""}`;
+    render(app);
+    return;
+  }
+  const round = gate.run ? gate.run.consumedContinuations + 1 : bcrRun.consumedContinuations + 1;
+  const operationId = `${bcrRun.runId}:go:${round}`;
+  bcrExpectedUserCount = (observation.userMessageCount ?? 0) + 1;
+  const outcome: { status: "DISPATCHED" | "UNCERTAIN" | "BLOCKED" } = { status: "BLOCKED" };
+  await dispatchHumanGo("go", getPageContext(), "shuttle-bcr-run", {
+    operationId,
+    runLinked: true,
+    onResult: reported => { outcome.status = reported; }
+  });
+  if (outcome.status === "DISPATCHED") {
+    await applyContinuationRunEvent({ type: "DISPATCH_ISSUED", operationId, providerConversationRef: observation.providerConversationRef, bindingEpoch: bindingEpochAtDispatch });
+  } else if (outcome.status === "UNCERTAIN") {
+    await applyContinuationRunEvent({ type: "DISPATCH_ISSUED", operationId, providerConversationRef: observation.providerConversationRef, bindingEpoch: bindingEpochAtDispatch });
+    await applyContinuationRunEvent({ type: "OPERATION_UNCERTAIN", operationId });
+  } else {
+    // Nothing was sent; re-sync the intervention baseline so a later foreign
+    // message cannot hide behind the pre-dispatch bump.
+    bcrExpectedUserCount = runtimeObservationLedger.value?.userMessageCount ?? bcrExpectedUserCount;
+  }
+  render(app);
+}
+
+async function runExclusiveBcrAction(work: () => Promise<void>): Promise<void> {
+  if (bcrBusy) return;
+  bcrBusy = true;
+  try {
+    await work();
+  } finally {
+    bcrBusy = false;
+  }
+}
+
+async function stopBoundedRun(app: HTMLElement): Promise<void> {
+  if (!bcrRun) return;
+  const deciding = bcrRun.phase === "AWAITING_HUMAN_DECISION";
+  await captureBcrCandidate(deciding ? "HUMAN_STOP" : "RUN_ABORTED", "stopped", deciding ? undefined : "USER_CANCELLED");
+  await applyContinuationRunEvent({ type: "HUMAN_STOP" });
+  render(app);
+}
+
+async function continueBoundedRun(app: HTMLElement): Promise<void> {
+  if (!bcrRun || bcrRun.phase !== "AWAITING_HUMAN_DECISION") return;
+  await captureBcrCandidate("HUMAN_CONTINUE", "continued");
+  await applyContinuationRunEvent({ type: "HUMAN_CONTINUE" });
+  render(app);
+  await issueRunGo(app);
+}
+
+function ensureBcrWatcher(): void {
+  if (bcrWatcherId !== null) return;
+  bcrWatcherId = window.setInterval(() => { void bcrWatcherTick(); }, 1_200);
+}
+
+function stopBcrWatcher(): void {
+  if (bcrWatcherId !== null) {
+    window.clearInterval(bcrWatcherId);
+    bcrWatcherId = null;
+  }
+}
+
+async function bcrWatcherTick(): Promise<void> {
+  if (!bcrRun || bcrMutationInFlight) return;
+  const observation = runtimeObservationLedger.value;
+  if (!observation?.providerConversationRef) return;
+  const observedUserCount = observation.userMessageCount ?? 0;
+  // -1 means "not yet baselined" (no observation yet at adoption): the first
+  // tick with a live observation baselines instead of comparing.
+  if (bcrExpectedUserCount < 0) {
+    bcrExpectedUserCount = observedUserCount;
+    return;
+  }
+  if (observation.providerConversationRef !== bcrRun.providerConversationRef) {
+    await applyContinuationRunEvent({ type: "CONVERSATION_REBASE_REQUIRED" });
+    return;
+  }
+  // Any user message this run did not author is a Human intervention: the
+  // remaining budget never resumes (task contract §16).
+  if (observedUserCount > bcrExpectedUserCount) {
+    await captureBcrCandidate("RUN_ABORTED", "intervened", "USER_INTERVENTION");
+    await applyContinuationRunEvent({ type: "USER_INTERVENTION" });
+    return;
+  }
+  if (bcrRun.pendingSubmissionOperationId !== undefined) {
+    if (observation.state === "BROKEN") {
+      await applyContinuationRunEvent({ type: "CARRIER_FAILURE" });
+      return;
+    }
+    if (observation.state === "GENERATING" && bcrRun.phase !== "ASSISTANT_GENERATING") {
+      await applyContinuationRunEvent({ type: "CARRIER_PHASE", carrierState: "GENERATING" });
+    } else if (observation.state === "STABILIZING" && bcrRun.phase !== "STABILIZING") {
+      await applyContinuationRunEvent({ type: "CARRIER_PHASE", carrierState: "STABILIZING" });
+    }
+  }
+}
+
+async function captureBcrCandidate(
+  decision: CandidateContinuationFixture["decision"],
+  humanAction: CandidateContinuationFixture["humanAction"],
+  stopReason?: ContinuationStopReason
+): Promise<void> {
+  if (!bcrRun) return;
+  const run = bcrRun;
+  const evidence = readSubmissionMessageEvidence();
+  const turnRef = run.lastConsumedTurnRef ??
+    (evidence.lastAssistantMessageFingerprint ? `turn:${evidence.lastAssistantMessageFingerprint}` : undefined);
+  await mutateContinuationRun({
+    type: "record_round_evidence",
+    runId: run.runId,
+    continuationIndex: Math.max(run.consumedContinuations, 1),
+    turnRef,
+    assistantTurnExcerpt: lastAssistantExcerpt(),
+    decision,
+    humanAction,
+    stopReason,
+    capturedAt: Date.now()
+  });
+}
+
+function lastAssistantExcerpt(): string | undefined {
+  const messages = Array.from(document.querySelectorAll<HTMLElement>("[data-message-author-role='assistant']"));
+  const last = messages[messages.length - 1];
+  const text = last?.textContent ?? "";
+  return text ? text.slice(0, 2_000) : undefined;
+}
+
+async function waitForReadyObservation(timeoutMs = 6_000): Promise<CarrierObservation | null> {
+  const deadline = Date.now() + timeoutMs;
+  let observation = runtimeObservationLedger.value;
+  while ((!observation || observation.state !== "READY" || observation.carrierIdentityState !== "browser-tab") && Date.now() < deadline) {
+    await new Promise(resolve => window.setTimeout(resolve, 100));
+    observation = runtimeObservationLedger.value;
+  }
+  return observation && observation.state === "READY" && observation.carrierIdentityState === "browser-tab" ? observation : null;
+}
+
+function renderApp(): void {
+  if (shuttleApp) render(shuttleApp);
+}
+
+function bcrPhaseLabel(run: ContinuationRun, copy: (typeof COPY)[ShuttleLocale]): string {
+  switch (run.phase) {
+    case "READY_TO_GO": return copy.bcrPhaseReady;
+    case "DISPATCHING": return copy.bcrPhaseDispatching;
+    case "ASSISTANT_GENERATING": return copy.bcrPhaseGenerating;
+    case "STABILIZING": return copy.bcrPhaseStabilizing;
+    case "AWAITING_HUMAN_DECISION": return copy.bcrPhaseAwaiting;
+    case "ENDED": return copy.bcrPhaseEnded;
+  }
 }
 
 function createContentSubmissionLedger(): HumanGoLedger {
@@ -2850,6 +3222,10 @@ async function reconcileActiveSubmission(observation: CarrierObservation): Promi
       return;
     }
     if (result.outcome !== "PROVEN_ACCEPTED") return;
+    const runTurnRef = turnRefFromEvidence();
+    if (bcrRun?.pendingSubmissionOperationId === active.operationId) {
+      await applyContinuationRunEvent({ type: "OPERATION_ACCEPTED", operationId: active.operationId, turnRef: runTurnRef });
+    }
     if (!isStableSubmissionObservation(observation, active.claimedAt)) return;
     const completed = await sendExtensionMessage<
       { type: "NOOS_SUBMISSION_MUTATION"; mutation: Record<string, unknown> },
@@ -2867,11 +3243,20 @@ async function reconcileActiveSubmission(observation: CarrierObservation): Promi
       activeSubmission?.operationId === active.operationId) {
       activeSubmission = null;
     }
+    if (completed?.ok && completed.result?.state === "COMPLETED" &&
+      bcrRun?.pendingSubmissionOperationId === active.operationId) {
+      await applyContinuationRunEvent({ type: "OPERATION_COMPLETED", operationId: active.operationId, turnRef: turnRefFromEvidence() });
+    }
   } catch {
     // Keep the operation active and durable until a later observation can retry.
   } finally {
     submissionReconcileInFlight = false;
   }
+}
+
+function turnRefFromEvidence(): string | undefined {
+  const fingerprint = readSubmissionMessageEvidence().lastAssistantMessageFingerprint;
+  return fingerprint ? `turn:${fingerprint}` : undefined;
 }
 
 function isSubmissionFence(value: unknown): value is SubmissionDispatchFence {
@@ -2933,6 +3318,15 @@ function resetForConversationChange(app: HTMLElement): void {
   activeSubmission = null;
   submissionRecoveryRequestedAt = -Infinity;
   closePanels();
+  // The run pins its provider conversation: a page-side conversation change
+  // ends it as rebase-required and clears the local projection.
+  if (bcrRun) {
+    const staleRunId = bcrRun.runId;
+    void mutateContinuationRun({ type: "apply", runId: staleRunId, event: { type: "CONVERSATION_REBASE_REQUIRED" }, now: Date.now() });
+  }
+  bcrRun = null;
+  bcrLastEndedRun = null;
+  stopBcrWatcher();
   viewState.settingsOpen = false;
   viewState.state = "idle";
   viewState.message = COPY[viewState.locale].conversationChanged;

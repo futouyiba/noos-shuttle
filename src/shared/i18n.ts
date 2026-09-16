@@ -17,6 +17,28 @@ export interface ShuttleCopy {
   scanCrystal: string;
   downloadImages: string;
   cancel: string;
+  bcrSectionTitle: string;
+  bcrAssistedNote: string;
+  bcrLockedReason: string;
+  bcrRunningLabel: string;
+  bcrPhaseReady: string;
+  bcrPhaseDispatching: string;
+  bcrPhaseGenerating: string;
+  bcrPhaseStabilizing: string;
+  bcrPhaseAwaiting: string;
+  bcrPhaseEnded: string;
+  bcrContinuePrompt: string;
+  bcrContinue: string;
+  bcrStop: string;
+  bcrSendGo: string;
+  bcrEndedLabel: string;
+  bcrReason: string;
+  bcrGoalMayContinue: string;
+  bcrCarrierNotReady: string;
+  bcrStartFailed: string;
+  bcrRunActive: string;
+  bcrDebugRun: string;
+  bcrDebugTurn: string;
   autoAfterCollect: string;
   autoCopy: string;
   autoDownload: string;
@@ -187,6 +209,28 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     scanCrystal: "Scan Crystal",
     downloadImages: "Download Reply Images",
     cancel: "Cancel",
+    bcrSectionTitle: "Bounded run",
+    bcrAssistedNote: "assisted: each continuation asks you",
+    bcrLockedReason: "Locked: experimental BCR is currently capped at ×5 until real evidence passes the gate",
+    bcrRunningLabel: "Running",
+    bcrPhaseReady: "Ready",
+    bcrPhaseDispatching: "Dispatching go",
+    bcrPhaseGenerating: "Assistant generating",
+    bcrPhaseStabilizing: "Stabilizing",
+    bcrPhaseAwaiting: "Waiting for your decision",
+    bcrPhaseEnded: "Stopped",
+    bcrContinuePrompt: "Continue this run?",
+    bcrContinue: "Continue",
+    bcrStop: "Stop",
+    bcrSendGo: "Send go",
+    bcrEndedLabel: "Run ended",
+    bcrReason: "Reason",
+    bcrGoalMayContinue: "Goal may still be in progress.",
+    bcrCarrierNotReady: "Carrier not READY; cannot start the run.",
+    bcrStartFailed: "Run request rejected",
+    bcrRunActive: "A bounded run is active; stop it before manual GO.",
+    bcrDebugRun: "run",
+    bcrDebugTurn: "last turn",
     autoAfterCollect: "Auto after collect",
     autoCopy: "Auto Copy",
     autoDownload: "Auto Download",
@@ -349,6 +393,28 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     scanCrystal: "扫描结晶",
     downloadImages: "下载本条回复图",
     cancel: "取消",
+    bcrSectionTitle: "有界连续运行",
+    bcrAssistedNote: "assisted 模式：每轮继续都需要你确认",
+    bcrLockedReason: "已锁定：实验性 BCR 当前上限 ×5，需真实证据通过 gate 后才开放",
+    bcrRunningLabel: "运行中",
+    bcrPhaseReady: "就绪",
+    bcrPhaseDispatching: "发送 go",
+    bcrPhaseGenerating: "Assistant 生成中",
+    bcrPhaseStabilizing: "稳定中",
+    bcrPhaseAwaiting: "等待你的决定",
+    bcrPhaseEnded: "已停止",
+    bcrContinuePrompt: "继续本轮 Run？",
+    bcrContinue: "继续",
+    bcrStop: "停止",
+    bcrSendGo: "发送 go",
+    bcrEndedLabel: "Run 已结束",
+    bcrReason: "原因",
+    bcrGoalMayContinue: "Goal 可能仍在进行中。",
+    bcrCarrierNotReady: "Carrier 未就绪，无法开始 Run。",
+    bcrStartFailed: "Run 请求被拒绝",
+    bcrRunActive: "有界 Run 进行中，请先停止再做手动 GO。",
+    bcrDebugRun: "run",
+    bcrDebugTurn: "最近轮次",
     autoAfterCollect: "拉取后自动",
     autoCopy: "自动复制",
     autoDownload: "自动下载",
