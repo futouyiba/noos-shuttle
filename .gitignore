@@ -5,8 +5,8 @@ release/
 coverage/
 .tmp/
 output/
-# Local skill installs stay untracked; the six agent-workflow trigger
-# skills are versioned (spec appendix B wrappers)
+# Local skill installs stay untracked; the agent-workflow trigger skills
+# (incl. the watcher) are versioned
 .claude/skills/*
 !.claude/skills/noos-dispatch/
 !.claude/skills/noos-implement/
@@ -14,6 +14,7 @@ output/
 !.claude/skills/noos-design/
 !.claude/skills/noos-merge/
 !.claude/skills/noos-fix/
+!.claude/skills/noos-watch/
 __pycache__/
 *.pyc
 target/

@@ -23,5 +23,6 @@ noos_docs `docs/agent-workflow.md` 附录 B（v0.3.0+）；冲突时以附录 B
    验证（typecheck / 相关测试 / 发布脚本）→ 构建与部署（涉及
    浏览器扩展时按项目记忆的 dist 更新循环处理）。
 6. PR 回帖，首行 `INTEGRATED: <验证摘要 + 构建时间戳> @ <merge-sha>`、
-   次行 provenance；关闭对应任务 issue（如有）；通知实现任务与
-   orchestrator（本机直连 send_message 优先）。
+   次行 provenance；复查任务 issue 验收标准，全部满足才关闭（一个
+   issue 可对应多个 PR）；通知实现任务与 orchestrator（本机直连
+   send_message 优先）。

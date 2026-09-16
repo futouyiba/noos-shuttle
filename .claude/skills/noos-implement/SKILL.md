@@ -23,12 +23,16 @@ noos_docs `docs/agent-workflow.md` 附录 B（v0.3.0+）；冲突时以附录 B
 5. 建 draft PR（`gh pr create --draft`，body 可暂空）。
 6. 委派独立 review：先在任务 issue 或 PR 线程留委派记录（`rev:
    review PR#M`），再触发 `review PR#M`（本机直连或人转达）。行为
-   标准 §1.2；本仓惯例 reviewer subagent 用 fable 模型——以会话内
-   subagent 形式执行时，REVIEW 标记由本会话转述发布，provenance
-   如实写 `（rev: relayed by impl, 委派: impl）`，会话内 reviewer
-   的行为独立性在评论正文说明。
+   标准与执行上下文条件见 §1.2(a)；本仓惯例 reviewer subagent 用
+   fable 模型，且必须以只读工具集 spawn（不含 Edit/Write 类工具，
+   Bash 不改写被审工作区）。REVIEW 标记由本会话转述发布时
+   provenance 写 `（rev: in-session subagent, 委派: impl）`。
    REQUEST_CHANGES 修复后重审直至 APPROVE。
 7. APPROVE 后补 PR body：review 证据链接（指向该 REVIEW 标记评论）
    + 被审 exact head SHA（§1.3）。
 8. 任务 issue 回帖，首行标记 `IMPLEMENTED: PR#M`、次行 provenance
    （如 `（impl: 直评）`）。
+9. 自动通知（无需向人请示——通知类动作不是敏感动作）：send_message
+   给 integrator 会话投递合并交接（PR 链接、分支、被审 exact
+   head、review 证据链接、变更范围），并通知 orchestrator；
+   `ccd_session_mgmt list_sessions` 按标题/分支定位 integrator。
