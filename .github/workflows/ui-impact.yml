@@ -31,6 +31,7 @@ jobs:
         id: verify
         run: |
           node --check scripts/ui-impact.mjs
+          node --check scripts/ui-impact-core.mjs
           npm run typecheck
           npx vitest run tests/ui-impact.test.ts
 
