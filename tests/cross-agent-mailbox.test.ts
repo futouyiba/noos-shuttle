@@ -980,3 +980,59 @@ describe("C5: fingerprint conflicts are create-or-get", () => {
     expect((await mailbox.snapshot()).resultFingerprintConflicts).toHaveLength(2);
   });
 });
+
+describe("P3/P4 follow-up: observed-by-content and fail-closed lifecycle fields", () => {
+  it("P3b: reports a content-identical live result with a forged declared fingerprint as observed", async () => {
+    const { mailbox, original } = await c1MailboxWithOriginalResult();
+    const wire = JSON.parse(JSON.stringify(original.envelope));
+    wire.result.result_fingerprint = "sha256:" + "e".repeat(64);
+    const report = await mailbox.discover([
+      { commentRef: "futouyiba/noos-shuttle#10/comment/333", author: "design-agent", updatedAt: "2026-09-16T00:00:00Z", body: wireToBody(wire) }
+    ]);
+    expect(report.escalations[0].liveResultMarkers).toHaveLength(1);
+    expect(report.escalations[0].liveResultMarkers[0].observed).toBe(true);
+  });
+
+  it("P3b: a tampered-content live result stays unobserved and reports the recomputed identity", async () => {
+    const { mailbox, original } = await c1MailboxWithOriginalResult();
+    const wire = JSON.parse(JSON.stringify(original.envelope));
+    wire.result.summary = "TAMPERED content with the old claim retained.";
+    const report = await mailbox.discover([
+      { commentRef: "futouyiba/noos-shuttle#10/comment/334", author: "design-agent", updatedAt: "2026-09-16T00:00:00Z", body: wireToBody(wire) }
+    ]);
+    const marker = report.escalations[0].liveResultMarkers[0];
+    expect(marker.observed).toBe(false);
+    // The reported identity is the recomputed content fingerprint; the retained
+    // old claim is carried separately for audit.
+    expect(marker.resultFingerprint).not.toBe(marker.declaredResultFingerprint);
+    expect(marker.declaredResultFingerprint).toBe(report.escalations[0].observedResults[0].resultFingerprint);
+    expect(marker.resultFingerprint).not.toBe(report.escalations[0].observedResults[0].resultFingerprint);
+  });
+
+  it("P4: rejects wire tampering of resolution_mode/status at parse and surfaces the marker as malformed", async () => {
+    const { mailbox, rendered } = await preparedMailboxWithPostedPacket();
+    const modeWire = JSON.parse(JSON.stringify(rendered.envelope));
+    modeWire.escalation.resolution_mode = "AUTOMATIC_TEMPLATE_BOUND";
+    const statusWire = JSON.parse(JSON.stringify(rendered.envelope));
+    statusWire.escalation.status = "RESOLVED";
+    expect(await parseEnvelopeJson(JSON.stringify(modeWire))).toMatchObject({ ok: false, reason: "invalid_shape" });
+    expect(await parseEnvelopeJson(JSON.stringify(statusWire))).toMatchObject({ ok: false, reason: "invalid_shape" });
+    const report = await mailbox.discover([
+      { commentRef: "futouyiba/noos-shuttle#10/comment/700", author: "impl-agent", updatedAt: "2026-09-16T00:00:00Z", body: wireToBody(modeWire) }
+    ]);
+    expect(report.malformedMarkers).toHaveLength(1);
+    expect(report.malformedMarkers[0].detail).toContain("resolution_mode");
+    // The tampered copy cannot make the escalation look clean or trusted.
+    expect(report.escalations[0].packetFingerprintMatchesLive).toBeUndefined();
+    expect(report.escalations[0].escalationFingerprintMatchesLedger).toBeUndefined();
+  });
+
+  it("P4: an honest marker with canonical resolution_mode/status still round-trips", async () => {
+    const { mailbox, rendered } = await preparedMailboxWithPostedPacket();
+    const report = await mailbox.discover([
+      { commentRef: "futouyiba/noos-shuttle#10/comment/100", author: "impl-agent", updatedAt: "2026-09-16T00:00:00Z", body: rendered.body }
+    ]);
+    expect(report.escalations[0].escalationFingerprintMatchesLedger).toBe(true);
+    expect(report.malformedMarkers).toHaveLength(0);
+  });
+});

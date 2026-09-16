@@ -169,6 +169,23 @@ Boundary unchanged: still no `result_kind`, no destination-authored sufficiency,
 resolution/withdrawal/templates/ResolutionPolicy, no WAIT plane, no automatic resume; every escalation
 remains `HUMAN_MEDIATED` + `OPEN`; GitHub remains transport only.
 
+## P3/P4 follow-up (post-merge hygiene PR)
+
+The two non-blocking findings recorded by the focused review of `de2fb5a` are closed in a small
+follow-up on top of merge `f6b7b39`:
+
+- **P3** — `observe` prints a `HOLD —` line (route to Human triage) instead of resume boilerplate when
+  the escalation of a frozen result carries any `PENDING_TRIAGE` anomaly or fingerprint conflict; the
+  gate also covers conflict/anomaly-only outcomes (no new observation). `discover`'s observed flag and
+  the reported live-result identity now use the recomputed content fingerprint
+  (`DiscoveredResultMarker.resultFingerprint` recomputed, `declaredResultFingerprint` audit-only), so a
+  content-identical copy with a forged claim reports as observed and a tampered-content copy stays
+  unobserved with its recomputed identity surfaced.
+- **P4** — `parseEnvelopeJson` rejects (fail closed, `invalid_shape`) any ESCALATION_PACKET marker whose
+  raw wire `resolution_mode`/`status` differ from the canonical `HUMAN_MEDIATED`/`OPEN`; such tampering
+  surfaces in discovery as a malformed marker instead of being silently neutralized. Honest markers with
+  canonical values round-trip unchanged.
+
 ## Known limits
 
 - Single-writer ledger: the CLI store is revision-checked read-then-atomic-rename for one process; the
