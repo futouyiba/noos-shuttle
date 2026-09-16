@@ -23,6 +23,31 @@ reviewed head 之后的 commit 需增量复审；epic designer 的裁定以 prop
 （机械例外除外）；任务在独立 branch/worktree 上工作，主 checkout 归
 integrator。完整条款见规范本体。
 
+## NOOS Hub UI Governance（repo-local v0）
+
+涉及 NOOS Hub 用户界面的实现或审核时，读取 `docs/noos-hub-ui-governance-v0.md`。
+该文档是本仓库的领域治理层，不替代上面的跨对话工作流，也不新增 Harness
+canonical role/state。
+
+- 对一个 exact candidate 运行：
+  `npm run ui:impact -- --base <base-ref> --head <head-ref>`。
+- `UiImpactReport` 只负责确定性路由，是 evidence，不是设计裁定、review APPROVE
+  或 merge authority。
+- `U0` 不要求 UI governance；`U1` 默认走轻量异步检查；`U2` 必须有当前 head 的
+  UI governance result；`U3` 还必须有 Design Gate evidence。
+- 需要 UI governance 时优先使用 `noos-ui-governor` skill。Governor 可以直接修复
+  presentation-only 问题，但不得发明功能语义、用户动作语义、canonical state 或
+  authority；超出授权边界时必须升级为既有 `NEEDS_DESIGN` / `NEEDS_HUMAN` bounded-work
+  escalation。
+- 普通 UI impact 不得滥用 Cross-Agent Mailbox；Escalation 只用于真正阻塞当前 bounded
+  work 的设计/权威问题。
+- Governor 产生 PATCH 后 head 已变化，旧的 UI/engineering review 证据立即 stale，
+  必须按 canonical workflow 对新 exact head 增量复审。
+- 不要求每个 U1/U2 变更更新 Figma；结构性 U3 / 新全局 pattern 才要求 Design Gate。
+
+目标是让 Agent 直接消费 durable refs / exact SHA / 自动 impact evidence，而不是让用户在
+多个对话之间手工复制 prompt、PR、SHA、截图和 review 结果。
+
 ## 工作原则
 
 1. 先确认任务属于浏览器扩展、NOOS Hub、Agent skills、安装脚本、协议文档、测试或发布流程中的哪一类，再决定阅读范围。
@@ -76,6 +101,7 @@ integrator。完整条款见规范本体。
 - 飞书导出、发布、资源包或文件夹相关改动：运行 `npm run typecheck`、相关 `vitest`、`npm run build`、`cargo test --manifest-path apps/noos-hub/src-tauri/Cargo.toml feishu`；涉及 Rust 后端时加跑 `cargo fmt --manifest-path apps/noos-hub/src-tauri/Cargo.toml -- --check`。
 - LLM Wiki 图片或多模态 ingest 改动：运行 `npm run wiki:typecheck` 和 `npm run wiki:test`。
 - review-intake 工具改动：运行 `node --check scripts/review-intake.mjs`、一次 `npm run review:intake` 自检，以及 `npm run typecheck` / `npm test`。
+- UI impact 工具改动：运行 `node --check scripts/ui-impact.mjs`、`node --check scripts/ui-impact-core.mjs`、`npx vitest run tests/ui-impact.test.mjs`，并至少对一个真实 base/head 跑一次 `npm run ui:impact`。
 
 如果无法运行验证，说明原因和剩余风险。
 
