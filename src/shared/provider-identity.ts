@@ -1,4 +1,4 @@
-const SUPPORTED_PROVIDER_HOSTS = [
+export const SUPPORTED_PROVIDER_HOSTS = [
   "chatgpt.com",
   "chat.openai.com",
   "claude.ai",

@@ -11,6 +11,11 @@ import { escapeHtml as e } from "../ui/html";
  * derived from Harness events, leases or submission journals. No control on
  * these pages triggers a backend mutation; "Start adjudication" is UX intent
  * only.
+ *
+ * Exception (issue #44): the 对话待办 section on the Work overview is live
+ * data — active Vault handoffs — and its 查看对话 button enqueues a carrier
+ * focus request (observation-only, no lease). It is the sole live block on
+ * these pages.
  */
 
 const unavailable = `disabled title="${e(c.work.detail.fixtureTooltip)}"`;
@@ -27,6 +32,46 @@ function worstAdapterStatus(health: HubHealth): string {
   );
 }
 
+/**
+ * Renders the live conversation to-do rows from the Vault's active
+ * handoffs. Unlike the fixture sections below, this block reads real
+ * health data: objects with a provider source_url get a 查看对话 action
+ * (enqueues a carrier focus request the browser extension polls); objects
+ * without one (CC/Codex and other non-browser sources) only surface the
+ * source session and a wake hint — V1 deliberately has no deep link for
+ * them.
+ */
+function conversationTodoRows(health: HubHealth): string {
+  const handoffs = health.recent_files.handoffs;
+  if (handoffs.length === 0) {
+    return `<p class="attention-sub">${e(c.work.conversations.empty)}</p>`;
+  }
+
+  return handoffs
+    .map((item) => {
+      const label = item.title || item.name;
+      const tag = item.key || "handoff";
+      if (item.source_url) {
+        return `
+      <article class="work-attention">
+        <div class="work-attention-body">
+          <header><strong>${e(label)}</strong><span class="work-tag">${e(tag)}</span></header>
+          <p class="attention-sub">${e(item.source_app || "browser-shuttle")}</p>
+        </div>
+        <button type="button" class="text-link" data-focus-source="${e(item.source_url)}" data-focus-key="${e(item.key || item.name)}">${e(c.work.conversations.focusAction)}</button>
+      </article>`;
+      }
+      return `
+      <article class="work-attention">
+        <div class="work-attention-body">
+          <header><strong>${e(label)}</strong><span class="work-tag">${e(tag)}</span></header>
+          <p class="attention-sub">${e(c.work.conversations.wakeHint.replace("{app}", item.source_app || "unknown"))}</p>
+        </div>
+      </article>`;
+    })
+    .join("");
+}
+
 export function renderWorkOverview(health: HubHealth): string {
   const vaultCount = health.vault_stats.handoffs_active + health.vault_stats.crystals_active;
   const worst = worstAdapterStatus(health);
@@ -39,6 +84,11 @@ export function renderWorkOverview(health: HubHealth): string {
 
   return `
   <div class="work-page"><p class="presentation-note">${e(c.work.fixtureNote)}</p>
+    <section class="work-section" aria-label="${e(c.work.conversations.title)}">
+      <header><h2>${e(c.work.conversations.title)}</h2><small>${e(c.work.conversations.liveNote)}</small></header>
+      ${conversationTodoRows(health)}
+    </section>
+
     <section class="work-section" aria-label="${e(c.work.needsAttention)}">
       <header><h2>${e(c.work.needsAttention)}</h2><span class="work-count">2</span></header>
       ${c.work.attention
