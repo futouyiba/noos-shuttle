@@ -19,6 +19,15 @@ import { runGoalReanchorProbe } from "./goal-reanchor-runtime";
 import { runChildDeliveryProbe } from "./delivery-runtime";
 import { adoptBrowserChildSpawn, requestBrowserChildSpawn } from "./spawn-runtime";
 import { ResultDeliveryLedger, createChromeResultDeliveryStore } from "../core/result-delivery";
+import { carrierTabQueryPatterns, type CarrierTabCandidate } from "../core/carrier-focus";
+import {
+  CARRIER_FOCUS_ALARM,
+  CARRIER_FOCUS_ALARM_PERIOD_MINUTES,
+  HUB_FOCUS_ACK_URL,
+  HUB_FOCUS_REQUESTS_URL,
+  type CarrierFocusRuntimeDeps,
+  startCarrierFocusPolling
+} from "./focus-runtime";
 import { ProviderExecutionJournal, createChromeExecutionJournalStore } from "../core/execution-journal";
 import { DurableOperationalStateReducer, createChromeOperationalStateReducerStore } from "../core/durable-operational-state-reducer";
 import { SubmissionOperationLedger, createChromeSubmissionStore, type SubmissionOperationMutation } from "../core/submission-operation";
@@ -41,6 +50,59 @@ import {
 chrome.runtime.onInstalled.addListener(() => {
   console.info("NOOS Shuttle installed.");
 });
+
+// Hub「查看对话」focus lane: poll the paired Hub for focus requests and
+// activate/open the carrier tab. Focus is observation-only (no lease).
+const carrierFocusDeps: CarrierFocusRuntimeDeps = {
+  fetchRequests: () => fetchHubJsonWithRepair(HUB_FOCUS_REQUESTS_URL),
+  postAck: (requestId) =>
+    postHubJsonWithRepair(HUB_FOCUS_ACK_URL, { request_id: requestId }),
+  queryTabs: async (): Promise<CarrierTabCandidate[]> => {
+    const tabs = await chrome.tabs.query({ url: carrierTabQueryPatterns() });
+    const candidates = tabs.filter(
+      (tab) => Number.isSafeInteger(tab.id) && Number.isSafeInteger(tab.windowId)
+    );
+    const windowFocused = new Map<number, boolean>();
+    await Promise.all(
+      [...new Set(candidates.map((tab) => tab.windowId))].map(async (windowId) => {
+        try {
+          windowFocused.set(windowId, (await chrome.windows.get(windowId)).focused);
+        } catch {
+          windowFocused.set(windowId, false);
+        }
+      })
+    );
+    return candidates.map((tab) => ({
+      tabId: tab.id as number,
+      windowId: tab.windowId as number,
+      url: tab.url ?? "",
+      active: tab.active,
+      lastAccessed: tab.lastAccessed ?? 0,
+      windowFocused: windowFocused.get(tab.windowId as number) ?? false
+    }));
+  },
+  activateTab: async (tabId) => {
+    await chrome.tabs.update(tabId, { active: true });
+  },
+  focusWindow: async (windowId) => {
+    await chrome.windows.update(windowId, { focused: true });
+  },
+  openObserverTab: async (url) => {
+    await chrome.tabs.create({ url, active: true });
+  }
+};
+// Guarded on chrome.alarms (granted by the manifest in the real MV3 host):
+// partial test doubles stub only the APIs they exercise, and an unguarded
+// start would leave a dangling interval plus in-flight fetches per reload.
+if (chrome.alarms) {
+  const carrierFocusTick = startCarrierFocusPolling(carrierFocusDeps);
+  chrome.alarms.create(CARRIER_FOCUS_ALARM, { periodInMinutes: CARRIER_FOCUS_ALARM_PERIOD_MINUTES });
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === CARRIER_FOCUS_ALARM) {
+      carrierFocusTick();
+    }
+  });
+}
 
 const HUB_LOCAL_WRITE_URL = "http://127.0.0.1:17642/v1/ingest";
 const HUB_HEALTH_URL = "http://127.0.0.1:17642/health";
@@ -1440,6 +1502,30 @@ async function postAuthorizedHubJson(url: string, body: unknown): Promise<unknow
   return payload;
 }
 
+/** Authorized Hub GET with one re-pair attempt after an unauthorized reply (mirrors saveMarkdownToHub). */
+async function fetchHubJsonWithRepair(url: string): Promise<unknown> {
+  const first = await getAuthorizedHubJson(url);
+  if ((first as { errorCode?: string })?.errorCode === "unauthorized") {
+    await clearHubToken();
+    if (await pairWithHub()) {
+      return getAuthorizedHubJson(url);
+    }
+  }
+  return first;
+}
+
+/** Authorized Hub POST with one re-pair attempt after an unauthorized reply (mirrors saveMarkdownToHub). */
+async function postHubJsonWithRepair(url: string, body: unknown): Promise<unknown> {
+  const first = await postAuthorizedHubJson(url, body);
+  if ((first as { errorCode?: string })?.errorCode === "unauthorized") {
+    await clearHubToken();
+    if (await pairWithHub()) {
+      return postAuthorizedHubJson(url, body);
+    }
+  }
+  return first;
+}
+
 function normalizeHubPayload(payload: unknown): unknown {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return payload;
@@ -1576,6 +1662,7 @@ async function postMarkdownToHub(
         source: {
           app: "browser-shuttle",
           url: sourceUrl,
+          conversation_id: extractProviderConversationId(sourceUrl),
           captured_at: new Date().toISOString()
         },
         suggested: {
