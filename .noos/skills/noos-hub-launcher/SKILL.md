@@ -28,7 +28,9 @@ npm run hub:stop
 
 Notes:
 
-- `hub:launch` builds the Hub `.app` bundle when missing, then opens it through macOS `open`.
-- The launcher writes its pid to `~/.noos/run/noos-hub.pid`.
-- Runtime logs go to `~/.noos/logs/noos-hub.log`.
+- `hub:launch` is a full deploy: it stops the Hub owning local port 17642 (any install location), rebuilds the `.app` bundle when this checkout is ahead, installs it to `/Applications/NOOS Hub.app`, opens it, verifies the served build commit matches this checkout, then re-arms the watchdog.
+- `hub:stop` stops by port ownership (port release is the completion signal), so it can stop instances it never launched (Spotlight/Dock opens).
+- The launcher writes its pid to `$NOOS_HOME/run/noos-hub.pid` (default `~/.noos/run/`).
+- Runtime logs go to `$NOOS_HOME/logs/noos-hub.log`.
+- Isolated dev/test instances must set `NOOS_HOME`, `NOOS_HUB_PORT`, and `NOOS_HUB_INSTALL_APP` together (see repo AGENTS.md) — never share port 17642 or `/Applications` with the dogfood channel.
 - If the user asks for a Codex App button, explain that Codex currently exposes skills/plugins but not a public persistent topbar-button registration API; this skill is the reusable command surface for the eventual button.

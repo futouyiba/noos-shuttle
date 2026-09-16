@@ -16,7 +16,33 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
 
-const LOCAL_WRITE_PORT: u16 = 17642;
+const DEFAULT_LOCAL_WRITE_PORT: u16 = 17642;
+
+/// The local write port is configurable so worktree/dev instances can run
+/// beside the dogfood channel instead of fighting over the default port.
+/// An explicit but invalid port is a configuration error: exiting beats
+/// silently falling back to 17642, which would fight the dogfood channel.
+fn local_write_port() -> u16 {
+    static PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+    *PORT.get_or_init(|| match std::env::var("NOOS_HUB_PORT") {
+        Ok(raw) => match raw.trim().parse::<u16>() {
+            Ok(port) if port != 0 => port,
+            _ => {
+                eprintln!(
+                    "NOOS_HUB_PORT must be a port number in 1..=65535, got '{raw}'; refusing to start."
+                );
+                std::process::exit(1);
+            }
+        },
+        Err(_) => DEFAULT_LOCAL_WRITE_PORT,
+    })
+}
+
+/// Captured once at process start so /health can prove the instance age.
+fn started_at_epoch() -> u64 {
+    static STARTED_AT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *STARTED_AT.get_or_init(now_epoch)
+}
 const HUB_PROTOCOL_VERSION: u8 = 1;
 const HUB_HEALTH_CACHE_TTL_SECS: u64 = 5;
 const LOCAL_WRITE_IO_TIMEOUT_SECS: u64 = 5;
@@ -276,6 +302,13 @@ struct LocalWriteHealth {
     app: String,
     protocol_version: u8,
     port: u16,
+    /// Build self-attestation: app version, source commit, instance age.
+    /// Lets the deploy loop prove which build is actually serving the port
+    /// (a healthy old instance must not pass as a fresh deploy).
+    version: String,
+    build_commit: String,
+    started_at: u64,
+    pid: u32,
     vault_path: String,
     paired: bool,
 }
@@ -571,6 +604,7 @@ fn read_config_for_write(config_path: &Path) -> Result<Value, String> {
 }
 
 fn main() {
+    let _ = started_at_epoch();
     start_local_write_server();
     start_sleep_resume_guard();
     tauri::Builder::default()
@@ -810,7 +844,7 @@ fn recover_local_write_after_sleep_with_probes(
 }
 
 fn local_write_health_probe() -> bool {
-    let Ok(address) = format!("127.0.0.1:{LOCAL_WRITE_PORT}").parse::<SocketAddr>() else {
+    let Ok(address) = format!("127.0.0.1:{}", local_write_port()).parse::<SocketAddr>() else {
         return false;
     };
     let timeout = Duration::from_millis(LOCAL_WRITE_RECOVERY_PROBE_TIMEOUT_MS);
@@ -878,7 +912,7 @@ fn relaunch_hub_process() {
 
 fn start_local_write_server() {
     thread::spawn(|| {
-        let address = format!("127.0.0.1:{LOCAL_WRITE_PORT}");
+        let address = format!("127.0.0.1:{}", local_write_port());
         let listener = match TcpListener::bind(&address) {
             Ok(listener) => listener,
             Err(error) => {
@@ -976,7 +1010,11 @@ fn handle_local_write_request(mut stream: TcpStream) -> Result<(), String> {
                 ok: true,
                 app: "NOOS Hub".to_string(),
                 protocol_version: HUB_PROTOCOL_VERSION,
-                port: LOCAL_WRITE_PORT,
+                port: local_write_port(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                build_commit: env!("NOOS_HUB_BUILD_COMMIT").to_string(),
+                started_at: started_at_epoch(),
+                pid: std::process::id(),
                 vault_path: noos_home().join("vault").display().to_string(),
                 paired: read_shuttle_token().is_some(),
             },
@@ -5951,7 +5989,7 @@ fn vault_adapter(noos_home: &Path) -> AdapterHealth {
         check(
             "Hub local write channel",
             "ready",
-            Some(format!("http://127.0.0.1:{LOCAL_WRITE_PORT}")),
+            Some(format!("http://127.0.0.1:{}", local_write_port())),
         ),
         file_check("Browser Shuttle token", shuttle_token_path()),
     ];
@@ -6151,7 +6189,7 @@ fn command_in_dir_status(directory: &Path, command: &str, args: &[&str]) -> bool
 
 fn local_write_summary() -> LocalWriteSummary {
     LocalWriteSummary {
-        endpoint: format!("http://127.0.0.1:{LOCAL_WRITE_PORT}"),
+        endpoint: format!("http://127.0.0.1:{}", local_write_port()),
         paired: read_shuttle_token().is_some(),
     }
 }
@@ -6958,6 +6996,14 @@ fn home_dir() -> PathBuf {
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    fn local_write_port_defaults_without_env_override() {
+        if std::env::var("NOOS_HUB_PORT").is_ok() {
+            return;
+        }
+        assert_eq!(local_write_port(), DEFAULT_LOCAL_WRITE_PORT);
+    }
 
     #[test]
     #[cfg(target_os = "windows")]
