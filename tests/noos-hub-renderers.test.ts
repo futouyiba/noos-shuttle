@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { parseSectionId } from "../apps/noos-hub/src/routes";
+import { parseSectionId, navSectionFor } from "../apps/noos-hub/src/routes";
 import { renderConfig } from "../apps/noos-hub/src/pages/config";
 import { renderHelp } from "../apps/noos-hub/src/pages/help";
 import { renderLogs } from "../apps/noos-hub/src/pages/logs";
 import { renderSystem } from "../apps/noos-hub/src/pages/system";
 import { renderVault } from "../apps/noos-hub/src/pages/vault";
 import { renderWorkDetail, renderWorkOverview } from "../apps/noos-hub/src/pages/work";
+import { copyLocales } from "../apps/noos-hub/src/ui/copy";
 import type { AdapterHealth, HubHealth } from "../apps/noos-hub/src/types";
 
 describe("NOOS Hub hash routing", () => {
@@ -22,19 +23,27 @@ describe("NOOS Hub hash routing", () => {
     expect(parseSectionId("nonsense")).toBe("work");
     expect(parseSectionId(undefined)).toBe("work");
   });
+
+  it("keeps Work as the active primary section on Work Detail, none on Harness", () => {
+    expect(navSectionFor("work-detail")).toBe("work");
+    expect(navSectionFor("work")).toBe("work");
+    expect(navSectionFor("harness")).toBe("harness");
+    expect(navSectionFor("system")).toBe("system");
+  });
 });
 
-describe("NOOS Hub Work pages (presentation fixtures)", () => {
+describe("NOOS Hub Work pages (presentation fixtures, zh-CN default)", () => {
   it("renders Work Overview with the approved hierarchy and no mutation hooks", () => {
     const html = renderWorkOverview(healthFixture());
 
-    expect(html).toContain("Needs your attention");
-    expect(html).toContain("In progress");
-    expect(html).toContain("Recently changed");
+    expect(html).toContain("需要你注意");
+    expect(html).toContain("进行中");
+    expect(html).toContain("最近变化");
     expect(html).toContain("UI fixture");
     expect(html).toContain('href="#work-detail"');
     expect(html).toContain('href="#vault"');
     expect(html).toContain('href="#system"');
+    expect(html).toContain('href="#harness"');
     expect(html).not.toContain("data-run");
     expect(html).not.toContain("data-hc-");
   });
@@ -42,17 +51,32 @@ describe("NOOS Hub Work pages (presentation fixtures)", () => {
   it("renders Work Detail human-first with read-only adjudication intent", () => {
     const html = renderWorkDetail();
 
-    expect(html).toContain("Needs your decision");
-    expect(html).toContain("Current state");
-    expect(html).toContain("Review findings");
-    expect(html).toContain("Recent progress");
-    expect(html).toContain("Artifacts");
-    expect(html).toContain("Who is involved");
-    expect(html).toContain("What happens next");
-    expect(html).toContain("Start adjudication");
-    expect(html).toContain("no backend mutation");
+    expect(html).toContain("需要你决定");
+    expect(html).toContain("当前状态");
+    expect(html).toContain("评审发现");
+    expect(html).toContain("最近进展");
+    expect(html).toContain("产物");
+    expect(html).toContain("参与者");
+    expect(html).toContain("接下来会发生什么");
+    expect(html).toContain("开始裁定");
+    expect(html).toContain("backend mutation");
     expect(html).toContain('href="#harness"');
     expect(html).not.toContain("data-run");
+  });
+
+  it("labels the supporting System plane by worst adapter status", () => {
+    const ready = renderWorkOverview(healthFixture({ adapters: [readyAdapter("Browser Shuttle")] }));
+    expect(ready).toContain("运行正常");
+
+    const partial = renderWorkOverview(
+      healthFixture({ adapters: [{ ...readyAdapter("Codex"), status: "partial" }] })
+    );
+    expect(partial).toContain("部分可用");
+
+    const broken = renderWorkOverview(
+      healthFixture({ adapters: [{ ...readyAdapter("Codex"), status: "error" }] })
+    );
+    expect(broken).toContain("需要处理");
   });
 });
 
@@ -60,15 +84,46 @@ describe("NOOS Hub System page", () => {
   it("absorbs connections, configuration, diagnostics and advanced runtime surfaces", () => {
     const html = renderSystem(healthFixture(), null);
 
-    expect(html).toContain("Connections");
-    expect(html).toContain("Configuration");
-    expect(html).toContain("Diagnostics");
-    expect(html).toContain("Advanced");
-    expect(html).toContain("Sleep recovery");
+    expect(html).toContain("连接");
+    expect(html).toContain("配置");
+    expect(html).toContain("诊断");
+    expect(html).toContain("高级");
+    expect(html).toContain("睡眠恢复");
     expect(html).toContain('data-run="doctor"');
+    expect(html).toContain('data-action="refresh"');
     expect(html).toContain("data-config-key");
     expect(html).toContain('href="#harness"');
     expect(html).toContain("recovery-pill");
+  });
+
+  it("stays quiet when healthy and surfaces a count when connections need work", () => {
+    const healthy = renderSystem(healthFixture(), null);
+    expect(healthy).toContain("正常工作所需的一切均可用。");
+    expect(healthy).toContain("运行正常");
+    expect(healthy).not.toContain("个连接需要处理");
+
+    const degraded = renderSystem(
+      healthFixture({
+        adapters: [
+          { ...readyAdapter("Codex"), status: "error" },
+          { ...readyAdapter("Local Inbox"), status: "needs_action" }
+        ]
+      }),
+      null
+    );
+    expect(degraded).toContain("2 个连接需要处理");
+    expect(degraded).toContain("需要处理");
+  });
+});
+
+describe("NOOS Hub copy locales", () => {
+  it("keeps zh-CN and en structurally identical", () => {
+    const keyPaths = (value: unknown, prefix = ""): string[] =>
+      typeof value === "object" && value !== null
+        ? Object.entries(value).flatMap(([key, child]) => keyPaths(child, `${prefix}${key}.`))
+        : [prefix.slice(0, -1)];
+
+    expect(keyPaths(copyLocales["zh-CN"])).toEqual(keyPaths(copyLocales.en));
   });
 });
 

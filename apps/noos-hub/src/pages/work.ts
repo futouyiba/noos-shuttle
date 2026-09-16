@@ -1,4 +1,5 @@
 import type { HubHealth } from "../types";
+import { copy as c } from "../ui/copy";
 import { escapeHtml as e } from "../ui/html";
 
 /**
@@ -6,12 +7,11 @@ import { escapeHtml as e } from "../ui/html";
  *
  * Everything below is an illustrative presentation projection: names, counts,
  * timestamps and review examples are fixture copy from the reviewed Figma
- * frames, not canonical WorkItem state and not derived from Harness events,
- * leases or submission journals. No control on these pages triggers a backend
- * mutation; "Start adjudication" is UX intent only.
+ * frames (localized via ui/copy.ts), not canonical WorkItem state and not
+ * derived from Harness events, leases or submission journals. No control on
+ * these pages triggers a backend mutation; "Start adjudication" is UX intent
+ * only.
  */
-
-const fixtureNote = `<p class="presentation-note">UI fixture · Illustrative examples, not live work or canonical state · Read-only</p>`;
 
 const unavailable = `disabled title="Illustrative fixture; nothing is connected in v0"`;
 
@@ -30,54 +30,51 @@ function worstAdapterStatus(health: HubHealth): string {
 export function renderWorkOverview(health: HubHealth): string {
   const vaultCount = health.vault_stats.handoffs_active + health.vault_stats.crystals_active;
   const worst = worstAdapterStatus(health);
-  const systemOk = worst === "ready";
-  const systemLabel = systemOk ? "Operational" : worst === "partial" ? "Partial" : "Needs attention";
+  const systemLabel =
+    worst === "ready"
+      ? c.work.supporting.operational
+      : worst === "partial"
+        ? c.work.supporting.partial
+        : c.work.supporting.needsAttention;
 
   return `
-  <div class="work-page">${fixtureNote}
-    <section class="work-section" aria-label="Needs your attention">
-      <header><h2>Needs your attention</h2><span class="work-count">2</span></header>
+  <div class="work-page"><p class="presentation-note">${e(c.work.fixtureNote)}</p>
+    <section class="work-section" aria-label="${e(c.work.needsAttention)}">
+      <header><h2>${e(c.work.needsAttention)}</h2><span class="work-count">2</span></header>
+      ${c.work.attention
+        .map(
+          (row) => `
       <article class="work-attention">
         <div class="work-attention-body">
-          <header><strong>FCF · DSL R3</strong><span class="work-tag">Adjudicate</span></header>
-          <p class="attention-copy">Review returned · 2 blocking issues</p>
-          <p class="attention-sub">Needs your adjudication</p>
-          <small>Reviewer · 8m ago</small>
+          <header><strong>${e(row.title)}</strong><span class="work-tag">${e(row.tag)}</span></header>
+          <p class="attention-copy">${e(row.copy)}</p>
+          <p class="attention-sub">${e(row.sub)}</p>
+          <small>${e(row.meta)}</small>
         </div>
-        <a class="text-link" href="#work-detail">Review →</a>
-      </article>
-      <article class="work-attention">
-        <div class="work-attention-body">
-          <header><strong>NOOS Harness Dogfood</strong><span class="work-tag">Inspect</span></header>
-          <p class="attention-copy">Operation remains UNCERTAIN</p>
-          <p class="attention-sub">Reconciliation is still ambiguous</p>
-          <small>3m ago</small>
-        </div>
-        <a class="text-link" href="#harness">Runtime →</a>
-      </article>
+        <a class="text-link" href="${e(row.href)}">${e(c.work[row.link as "reviewLink" | "runtimeLink"])}</a>
+      </article>`
+        )
+        .join("")}
     </section>
 
-    <section class="work-section" aria-label="In progress">
-      <header><h2>In progress</h2><span class="work-count">3</span></header>
-      ${compactRow("FCF 0.3.4-b", "Designer · revising configuration model", "12m ago", "#work-detail")}
-      ${compactRow("Resume Renderer", "Codex · updating summary", "27m ago", "#work-detail")}
-      ${compactRow("NOOS Hub", "Harness · runtime inspection idle", "41m ago", "#harness")}
+    <section class="work-section" aria-label="${e(c.work.inProgress)}">
+      <header><h2>${e(c.work.inProgress)}</h2><span class="work-count">3</span></header>
+      ${c.work.progress.map((row) => compactRow(row.title, row.sub, row.time, row.href)).join("")}
     </section>
 
-    <section class="work-section" aria-label="Recently changed">
-      <header><h2>Recently changed</h2></header>
-      ${compactRow("Blind Holdout R1", "Governance · promoted", "Today 14:32", "#work-detail")}
-      ${compactRow("Terminology cleanup", "Design · completed", "Today 11:08", "#work-detail")}
+    <section class="work-section" aria-label="${e(c.work.recentlyChanged)}">
+      <header><h2>${e(c.work.recentlyChanged)}</h2></header>
+      ${c.work.changed.map((row) => compactRow(row.title, row.sub, row.time, row.href)).join("")}
     </section>
 
     <section class="work-supporting" aria-label="Supporting planes">
       <a href="#vault">
-        <span>Vault</span>
-        <strong>${vaultCount} recent artifact${vaultCount === 1 ? "" : "s"}</strong>
+        <span>${e(c.work.supporting.vault)}</span>
+        <strong>${vaultCount} ${e(c.work.supporting.artifacts)}</strong>
       </a>
       <a href="#system">
-        <span>System</span>
-        <strong class="sys-status"><i class="sys-dot${systemOk ? "" : " sys-dot--warn"}" aria-hidden="true"></i>${systemLabel}</strong>
+        <span>${e(c.work.supporting.system)}</span>
+        <strong class="sys-status"><i class="sys-dot${worst === "ready" ? "" : " sys-dot--warn"}" aria-hidden="true"></i>${e(systemLabel)}</strong>
       </a>
     </section>
   </div>`;
@@ -95,78 +92,76 @@ function compactRow(title: string, summary: string, time: string, href: string):
 }
 
 export function renderWorkDetail(): string {
+  const d = c.work.detail;
+
   return `
-  <div class="work-detail">${fixtureNote}
+  <div class="work-detail"><p class="presentation-note">${e(c.work.fixtureNote)}</p>
     <div class="work-detail-grid">
       <div class="work-detail-primary">
-        <section class="decision-panel" aria-label="Needs your decision">
+        <section class="decision-panel" aria-label="${e(d.decisionTitle)}">
           <header>
-            <h2>Needs your decision</h2>
-            <span class="work-tag">2 blocking</span>
+            <h2>${e(d.decisionTitle)}</h2>
+            <span class="work-tag">${e(d.decisionCount)}</span>
           </header>
-          <strong>Reviewer found two contract-level issues that block promotion.</strong>
-          <p>Resolve the findings below, then return the candidate to the design/review loop.</p>
+          <strong>${e(d.decisionBody)}</strong>
+          <p>${e(d.decisionNote)}</p>
           <div class="work-actions">
-            <button type="button" class="text-link" disabled aria-describedby="adjudication-note">Start adjudication →</button>
-            <button type="button" class="text-link text-link--muted" ${unavailable}>Open review result</button>
+            <button type="button" class="text-link" disabled aria-describedby="adjudication-note">${e(d.startAdjudication)}</button>
+            <button type="button" class="text-link text-link--muted" ${unavailable}>${e(d.openReviewResult)}</button>
           </div>
-          <small id="adjudication-note">Future UX intent only · v0 performs no backend mutation.</small>
+          <small id="adjudication-note">${e(d.adjudicationNote)}</small>
         </section>
 
-        <section class="detail-block" aria-label="Current state">
-          <h2>Current state</h2>
+        <section class="detail-block" aria-label="${e(d.currentState)}">
+          <h2>${e(d.currentState)}</h2>
           <dl>
-            ${kv("Status", "Review returned")}
-            ${kv("Needs action from", "You")}
-            ${kv("Last meaningful change", "Reviewer completed review · 8m ago")}
+            ${kv(d.status, d.statusValue)}
+            ${kv(d.needsActionFrom, d.you)}
+            ${kv(d.lastChange, d.lastChangeValue)}
           </dl>
         </section>
 
-        <section class="detail-block" aria-label="Review findings">
-          <header><h2>Review findings</h2><span class="blocking-count">2 blocking</span></header>
+        <section class="detail-block" aria-label="${e(d.findingsTitle)}">
+          <header><h2>${e(d.findingsTitle)}</h2><span class="blocking-count">${e(d.decisionCount)}</span></header>
+          ${d.findings
+            .map(
+              (finding) => `
           <article class="finding">
-            <h3>01 · DecisionBasis identity can drift across recovery</h3>
-            <p>Equivalent runtime snapshots must resolve to one stable semantic basis.</p>
-          </article>
-          <article class="finding">
-            <h3>02 · First-apply eligibility is not durable enough</h3>
-            <p>Authorized delta needs deterministic eligibility after crash/retry.</p>
-          </article>
+            <h3>${e(finding.title)}</h3>
+            <p>${e(finding.text)}</p>
+          </article>`
+            )
+            .join("")}
         </section>
 
-        <section class="detail-block" aria-label="Recent progress">
-          <h2>Recent progress</h2>
-          ${progressRow("8m", "Reviewer completed review", "2 blocking issues returned")}
-          ${progressRow("27m", "Designer submitted Candidate v3", "semantic identity tightened")}
-          ${progressRow("43m", "Integration requested narrow revision", "scope held to XCONTRACT-03")}
+        <section class="detail-block" aria-label="${e(d.progressTitle)}">
+          <h2>${e(d.progressTitle)}</h2>
+          ${d.progress.map((row) => progressRow(row.time, row.title, row.note)).join("")}
         </section>
       </div>
 
       <aside class="work-detail-secondary">
-        <section class="detail-block" aria-label="Artifacts">
-          <h2>Artifacts</h2>
-          ${artifact("Design Candidate v3", "exact revision · ready for adjudication")}
-          ${artifact("Review Result #9", "Reviewer · completed 8m ago")}
+        <section class="detail-block" aria-label="${e(d.artifactsTitle)}">
+          <h2>${e(d.artifactsTitle)}</h2>
+          ${d.artifacts.map((row) => artifact(row.title, row.note)).join("")}
         </section>
 
-        <section class="detail-block" aria-label="Who is involved">
-          <h2>Who is involved</h2>
+        <section class="detail-block" aria-label="${e(d.involvedTitle)}">
+          <h2>${e(d.involvedTitle)}</h2>
           <dl class="compact-dl">
-            ${kv("Now", "You · adjudication")}
-            ${kv("From", "Reviewer")}
-            ${kv("Next", "Designer · narrow revision")}
+            ${d.involved.map((row) => kv(row.label, row.value)).join("")}
           </dl>
         </section>
 
-        <section class="next-panel" aria-label="What happens next">
-          <h2>What happens next</h2>
-          <p>Accepted findings return to Designer for a narrow revision. Rejected findings remain recorded with rationale.</p>
+        <section class="next-panel" aria-label="${e(d.nextTitle)}">
+          <h2>${e(d.nextTitle)}</h2>
+          <p>${e(d.nextBody)}</p>
         </section>
 
-        <section class="detail-block work-advanced" aria-label="Advanced">
-          <h2>Advanced</h2>
-          <a class="text-link" href="#harness">Inspect runtime →</a>
-          <p>Opens the existing Harness Inspector, an independent diagnostic fixture. It is not linked to this example work item.</p>
+        <section class="detail-block work-advanced" aria-label="${e(d.advanced)}">
+          <h2>${e(d.advanced)}</h2>
+          <a class="text-link" href="#harness">${e(d.inspectRuntime)}</a>
+          <p>${e(d.advancedNote)}</p>
         </section>
       </aside>
     </div>
@@ -195,6 +190,6 @@ function artifact(title: string, note: string): string {
         <h3>${e(title)}</h3>
         <p>${e(note)}</p>
       </div>
-      <button type="button" class="text-link text-link--muted" ${unavailable}>Open →</button>
+      <button type="button" class="text-link text-link--muted" ${unavailable}>${e(c.work.detail.open)}</button>
     </article>`;
 }

@@ -2009,17 +2009,11 @@ ul {
     padding-right: 20px;
   }
 
-  .work-detail-grid,
-  .work-supporting {
-    grid-template-columns: 1fr;
-  }
 
   .topbar,
   .section-head,
   .vault-command,
-  .help-hero,
-  .work-attention,
-  .sys-row {
+  .help-hero {
     flex-direction: column;
     align-items: stretch;
   }
@@ -2230,10 +2224,10 @@ ul {
   gap: 4px;
   align-content: start;
   min-height: 0;
-  border: 1px solid #e0e4eb;
-  border-radius: 10px;
-  background: #ffffff;
-  padding: 14px 16px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  padding: 0;
   text-decoration: none;
 }
 
@@ -2250,12 +2244,13 @@ ul {
   font: 600 14px/1.45 Inter, system-ui, sans-serif;
 }
 
-.sys-status .sys-dot {
-  background: #1f6e45;
+.work-supporting a:hover {
+  background: transparent;
+  border-color: transparent;
 }
 
-.sys-dot--warn {
-  background: #8b5a11 !important;
+.work-supporting a:hover strong {
+  color: #213b70;
 }
 
 .sys-dot {
@@ -2263,6 +2258,10 @@ ul {
   height: 8px;
   border-radius: 50%;
   background: #1f6e45;
+}
+
+.sys-dot--warn {
+  background: #8b5a11;
 }
 
 /* Quiet inline link used across Work/System surfaces */
@@ -2541,13 +2540,10 @@ button.text-link:disabled,
 
 .system-summary {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: space-between;
   gap: 14px;
-  border: 1px solid #e0e4eb;
-  border-radius: 10px;
-  background: #ffffff;
-  padding: 16px 18px;
+  padding: 4px 2px 0;
 }
 
 .system-summary strong {
@@ -2639,4 +2635,39 @@ button.text-link:disabled,
 
 .system-manage-body {
   padding: 0 14px 14px;
+}
+
+/* Narrow-viewport overrides for the Work/System surfaces. Declared after the
+   base rules above on purpose: same specificity means this later block wins. */
+@media (max-width: 760px) {
+  .work-detail-grid,
+  .work-supporting {
+    grid-template-columns: 1fr;
+  }
+
+  .work-attention,
+  .sys-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .sys-row .pill,
+  .sys-row .recovery-pill,
+  .sys-row .sys-pill {
+    align-self: flex-start;
+  }
+
+  .detail-block dl > div {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+
+  .detail-block dd {
+    text-align: left;
+  }
+
+  .work-actions {
+    gap: 10px;
+  }
 }

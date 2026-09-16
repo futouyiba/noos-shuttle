@@ -12,11 +12,12 @@ import { renderVault } from "./pages/vault";
 import { renderSystem } from "./pages/system";
 import { renderWorkDetail, renderWorkOverview } from "./pages/work";
 import { createVaultBrowserState, renderVaultBrowser, type VaultBrowserState } from "./pages/vault-browser";
-import { parseSectionId, type SectionId } from "./routes";
+import { parseSectionId, navSectionFor, type SectionId } from "./routes";
 import { sleepRecoveryDisplay } from "./status";
 import "./styles.css";
 import type { HubHealth, SleepRecoveryStatus, UpdateCheckMode, UpdateStatus } from "./types";
 import { renderUpdateBannerHtml, renderUpdateDialogHtml } from "./update/render";
+import { copy as c } from "./ui/copy";
 import { escapeHtml } from "./ui/html";
 import { setVaultFileActionDataRuns } from "./vault-file-actions";
 
@@ -85,12 +86,12 @@ function renderShell(): void {
     <aside class="sidebar">
       <div class="brand">
         <strong>NOOS</strong>
-        <span>Work continuity</span>
+        <span>${escapeHtml(c.shell.brandSubtitle)}</span>
       </div>
       <nav aria-label="Primary">
         ${navItems.map((item) => navButton(item.id, item.label)).join("")}
       </nav>
-      <div class="sidebar-version">v0.2 exploration</div>
+      <div class="sidebar-version">${escapeHtml(c.shell.versionNote)}</div>
     </aside>
     <main class="workspace">
       <header class="topbar">
@@ -101,7 +102,6 @@ function renderShell(): void {
         </div>
         <div class="topbar-actions">
           <button type="button" data-section="help" class="topbar-link">帮助</button>
-          <button type="button" data-action="refresh" class="topbar-link">刷新</button>
         </div>
       </header>
       <section class="update-banner" id="update-banner" hidden></section>
@@ -121,9 +121,6 @@ function renderShell(): void {
   `;
 
   bindSectionButtons(appElement);
-  appElement.querySelector('[data-action="refresh"]')?.addEventListener("click", () => {
-    void loadHealth({ force: true });
-  });
   appElement.querySelector('[data-action="clear-log"]')?.addEventListener("click", () => setLog(""));
 }
 
@@ -136,7 +133,7 @@ function applyRequestedHarnessScenario(): void {
 }
 
 function navButton(section: SectionId, label: string): string {
-  const active = activeSection === section;
+  const active = navSectionFor(activeSection) === section;
   const classes = active ? "active" : "";
   return `<button type="button" data-section="${section}" class="${classes}" ${active ? 'aria-current="page"' : ""}><span class="nav-dot" aria-hidden="true"></span>${label}</button>`;
 }
@@ -536,9 +533,10 @@ function renderCurrentSection(): void {
   if (!content || !currentHealth) return;
 
   renderShellContext();
+  const activeNav = navSectionFor(activeSection);
   appElement.querySelectorAll<HTMLButtonElement>("[data-section]").forEach((button) => {
-    button.classList.toggle("active", button.dataset.section === activeSection);
-    if (button.dataset.section === activeSection) {
+    button.classList.toggle("active", button.dataset.section === activeNav);
+    if (button.dataset.section === activeNav) {
       button.setAttribute("aria-current", "page");
     } else {
       button.removeAttribute("aria-current");
@@ -579,6 +577,11 @@ function renderCurrentSection(): void {
   content.querySelectorAll<HTMLButtonElement>("[data-run]").forEach((button) => {
     button.addEventListener("click", (event) => {
       void runAction(button.dataset.run ?? "", event.currentTarget as HTMLButtonElement);
+    });
+  });
+  content.querySelectorAll<HTMLButtonElement>('[data-action="refresh"]').forEach((button) => {
+    button.addEventListener("click", () => {
+      void loadHealth({ force: true });
     });
   });
   bindContentActionButtons(content);
