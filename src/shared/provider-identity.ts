@@ -34,7 +34,9 @@ export function extractProviderConversationId(rawUrl: string | undefined): strin
     /^\/c\/([^/?#]+)/,
     /^\/chat\/([^/?#]+)/,
     /^\/app\/[^/]+\/chat\/([^/?#]+)/,
-    /^\/u\/\d+\/c\/([^/?#]+)/
+    /^\/u\/\d+\/c\/([^/?#]+)/,
+    /^\/g\/[^/]+\/c\/([^/?#]+)/,
+    /^\/g\/[^/]+\/u\/\d+\/c\/([^/?#]+)/
   ]
     .map((pattern) => url.pathname.match(pattern)?.[1])
     .find(Boolean);

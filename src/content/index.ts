@@ -3361,7 +3361,10 @@ function detectConversationId(url: URL): string {
     /^\/c\/([^/?#]+)/,
     /^\/chat\/([^/?#]+)/,
     /^\/app\/[^/]+\/chat\/([^/?#]+)/,
-    /^\/u\/\d+\/c\/([^/?#]+)/
+    /^\/u\/\d+\/c\/([^/?#]+)/,
+    // ChatGPT Projects nest conversations under the project slug: /g/<project>/c/<id>.
+    /^\/g\/[^/]+\/c\/([^/?#]+)/,
+    /^\/g\/[^/]+\/u\/\d+\/c\/([^/?#]+)/
   ];
 
   for (const pattern of patterns) {
