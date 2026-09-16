@@ -5,7 +5,15 @@ release/
 coverage/
 .tmp/
 output/
-.claude/skills/
+# Local skill installs stay untracked; the six agent-workflow trigger
+# skills are versioned (spec appendix B wrappers)
+.claude/skills/*
+!.claude/skills/noos-dispatch/
+!.claude/skills/noos-implement/
+!.claude/skills/noos-review/
+!.claude/skills/noos-design/
+!.claude/skills/noos-merge/
+!.claude/skills/noos-fix/
 __pycache__/
 *.pyc
 target/
