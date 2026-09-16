@@ -92,6 +92,7 @@ struct VaultFileSummary {
     title: Option<String>,
     key: Option<String>,
     source_url: Option<String>,
+    source_app: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -351,6 +352,209 @@ struct CachedHubHealth {
 static HUB_HEALTH_CACHE: OnceLock<Mutex<Option<CachedHubHealth>>> = OnceLock::new();
 static SLEEP_RECOVERY_STATUS: OnceLock<Mutex<SleepRecoveryStatus>> = OnceLock::new();
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+static CARRIER_FOCUS_QUEUE: OnceLock<Mutex<Vec<CarrierFocusRequest>>> = OnceLock::new();
+
+/// Hub「查看对话」V1: an in-memory focus queue drained by the browser
+/// extension over the paired local HTTP bridge. Focus is observation-only
+/// (no lease); requests expire instead of persisting so a stale click from
+/// before a Hub restart can never steer the browser later.
+#[derive(Clone, Serialize, PartialEq)]
+struct CarrierFocusRequest {
+    request_id: String,
+    conversation_ref: String,
+    conversation_url: String,
+    lookup_key: Option<String>,
+    enqueued_at_epoch: u64,
+}
+
+const CARRIER_FOCUS_REQUEST_TTL_SECS: u64 = 600;
+const CARRIER_FOCUS_MAX_QUEUE: usize = 32;
+
+/// Provider hosts that may be focused — mirrors the extension's
+/// SUPPORTED_PROVIDER_HOSTS whitelist (external origins like GitHub must
+/// never drive browser windows).
+const SUPPORTED_PROVIDER_HOSTS: &[&str] = &[
+    "chatgpt.com",
+    "chat.openai.com",
+    "claude.ai",
+    "gemini.google.com",
+    "aistudio.google.com",
+    "chat.deepseek.com",
+    "kimi.moonshot.cn",
+    "yuanbao.tencent.com",
+    "www.doubao.com",
+    "chat.qwen.ai",
+    "grok.com",
+    "www.perplexity.ai",
+    "poe.com",
+];
+
+fn carrier_focus_queue() -> &'static Mutex<Vec<CarrierFocusRequest>> {
+    CARRIER_FOCUS_QUEUE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn purge_expired_carrier_focus_requests(queue: &mut Vec<CarrierFocusRequest>, now_epoch_value: u64) {
+    queue.retain(|request| {
+        now_epoch_value.saturating_sub(request.enqueued_at_epoch) <= CARRIER_FOCUS_REQUEST_TTL_SECS
+    });
+}
+
+fn enqueue_carrier_focus_request(
+    source_url: &str,
+    lookup_key: Option<String>,
+) -> Result<CarrierFocusRequest, String> {
+    let (conversation_ref, conversation_url) =
+        carrier_focus_target_from_source_url(source_url)?;
+    let mut queue = carrier_focus_queue()
+        .lock()
+        .map_err(|_| "Carrier focus queue is poisoned.".to_string())?;
+    purge_expired_carrier_focus_requests(&mut queue, now_epoch());
+
+    // Idempotent per conversation: clicking 查看对话 twice enqueues once.
+    if let Some(existing) = queue
+        .iter()
+        .find(|request| request.conversation_ref == conversation_ref)
+    {
+        return Ok(existing.clone());
+    }
+
+    let request = CarrierFocusRequest {
+        request_id: format!(
+            "focus_{}",
+            stable_hash_hex(&format!("carrier-focus:{conversation_ref}"))
+        ),
+        conversation_ref,
+        conversation_url,
+        lookup_key,
+        enqueued_at_epoch: now_epoch(),
+    };
+    if queue.len() >= CARRIER_FOCUS_MAX_QUEUE {
+        queue.remove(0);
+    }
+    queue.push(request.clone());
+    Ok(request)
+}
+
+fn pending_carrier_focus_requests() -> Vec<CarrierFocusRequest> {
+    let Ok(mut queue) = carrier_focus_queue().lock() else {
+        return Vec::new();
+    };
+    purge_expired_carrier_focus_requests(&mut queue, now_epoch());
+    queue.clone()
+}
+
+fn ack_carrier_focus_request(request_id: &str) -> bool {
+    let Ok(mut queue) = carrier_focus_queue().lock() else {
+        return false;
+    };
+    purge_expired_carrier_focus_requests(&mut queue, now_epoch());
+    let Some(index) = queue
+        .iter()
+        .position(|request| request.request_id == request_id)
+    else {
+        return false;
+    };
+    queue.remove(index);
+    true
+}
+
+fn is_supported_provider_host(host: &str) -> bool {
+    let normalized = host.trim().to_ascii_lowercase();
+    let normalized = normalized.strip_suffix('.').unwrap_or(&normalized);
+    SUPPORTED_PROVIDER_HOSTS
+        .iter()
+        .any(|candidate| normalized == *candidate || normalized.ends_with(&format!(".{candidate}")))
+}
+
+/// Narrow `https://host/path` split for provider URLs — no URL crate in the
+/// Hub dependency set, so the parsing is hand-rolled like the other URL
+/// helpers here. Returns `(host, path_without_query_or_fragment)`.
+fn https_url_host_and_path(raw: &str) -> Option<(String, String)> {
+    let rest = raw.strip_prefix("https://")?;
+    let (authority, path) = match rest.find('/') {
+        Some(split) => (&rest[..split], &rest[split..]),
+        None => (rest, "/"),
+    };
+    let host = authority.rsplit('@').next().unwrap_or_default();
+    if host.is_empty() {
+        return None;
+    }
+    let path = path.split('?').next().unwrap_or(path);
+    let path = path.split('#').next().unwrap_or(path);
+    Some((host.to_string(), path.to_string()))
+}
+
+/// Extracts the provider conversation ref from a whitelisted provider URL
+/// using the same start-anchored route shapes as the extension's
+/// extractProviderConversationId — the anchoring matters: a looser match
+/// here would disagree with the extension's tab matching and re-open
+/// observer tabs forever. Returns `(conversation_ref, cleaned_url)` where
+/// cleaned_url keeps only `https://host/path` (query and fragment dropped)
+/// so the observer tab lands on a canonical conversation URL.
+fn carrier_focus_target_from_source_url(raw: &str) -> Result<(String, String), String> {
+    let (host, path) = https_url_host_and_path(raw.trim()).ok_or_else(|| {
+        "Only https provider conversation URLs can be focused.".to_string()
+    })?;
+    if !is_supported_provider_host(&host) {
+        return Err("This source is not a supported provider conversation; the browser cannot be focused on it.".to_string());
+    }
+    let segments: Vec<&str> = path.split('/').filter(|segment| !segment.is_empty()).collect();
+    let raw_id = pick_conversation_id_segment(&segments).ok_or_else(|| {
+        "The source URL does not point at a provider conversation.".to_string()
+    })?;
+    let conversation_ref = percent_decode(raw_id);
+    if conversation_ref.is_empty() || conversation_ref.starts_with("WEB:") {
+        return Err("The source URL does not point at a provider conversation.".to_string());
+    }
+    Ok((
+        conversation_ref,
+        format!("https://{host}{path}"),
+    ))
+}
+
+/// Start-anchored conversation route shapes, mirroring the extension:
+/// `/c/<id>`, `/chat/<id>`, `/app/<x>/chat/<id>`, `/u/<digits>/c/<id>`,
+/// `/g/<project>/c/<id>`, `/g/<project>/u/<digits>/c/<id>`.
+fn pick_conversation_id_segment<'a>(segments: &[&'a str]) -> Option<&'a str> {
+    let id_at = |prefix: &[&str]| -> Option<&str> {
+        let id_index = prefix.len();
+        let id = *segments.get(id_index)?;
+        (!id.is_empty()).then_some(id)
+    };
+    let numeric = |segment: Option<&&str>| segment.is_some_and(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()));
+
+    match segments.first() {
+        Some(&"c") => id_at(&["c"]),
+        Some(&"chat") => id_at(&["chat"]),
+        Some(&"app") => {
+            if segments.get(2).copied() == Some("chat") {
+                id_at(&["app", "", "chat"])
+            } else {
+                None
+            }
+        }
+        Some(&"u") => {
+            if segments.get(2).copied() == Some("c") && numeric(segments.get(1)) {
+                id_at(&["u", "", "c"])
+            } else {
+                None
+            }
+        }
+        Some(&"g") => {
+            if segments.get(2).copied() == Some("c") {
+                id_at(&["g", "", "c"])
+            } else if segments.get(2).copied() == Some("u")
+                && segments.get(4).copied() == Some("c")
+                && numeric(segments.get(3))
+            {
+                id_at(&["g", "", "u", "", "c"])
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -470,6 +674,18 @@ fn compute_hub_health() -> HubHealth {
             github_adapter(&repo_root),
         ],
     }
+}
+
+#[tauri::command]
+fn enqueue_carrier_focus(source_url: String, lookup_key: Option<String>) -> Result<String, String> {
+    let request = enqueue_carrier_focus_request(&source_url, lookup_key)?;
+    serde_json::to_string(&json!({
+        "ok": true,
+        "request_id": request.request_id,
+        "conversation_ref": request.conversation_ref,
+        "message": "已请求浏览器聚焦对应对话；Browser Shuttle 会在数秒内切换到该对话标签页。"
+    }))
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -622,6 +838,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_hub_health,
             run_hub_action,
+            enqueue_carrier_focus,
             get_sleep_recovery_status,
             mark_sleep_suspended,
             recover_from_sleep,
@@ -1040,6 +1257,7 @@ fn handle_local_write_request(mut stream: TcpStream) -> Result<(), String> {
         && (path == "/v1/vault/recent"
             || path == "/v1/vault/object"
             || path == "/v1/vault/browse"
+            || path == "/v1/focus/requests"
             || path == "/v1/wiki/default-target")
     {
         if !is_authorized_handoff_write(&headers) {
@@ -1055,6 +1273,14 @@ fn handle_local_write_request(mut stream: TcpStream) -> Result<(), String> {
 
         if path == "/v1/vault/recent" {
             return write_json_response(&mut stream, 200, &vault_recent_payload(&noos_home()));
+        }
+
+        if path == "/v1/focus/requests" {
+            return write_json_response(
+                &mut stream,
+                200,
+                &json!({ "ok": true, "requests": pending_carrier_focus_requests() }),
+            );
         }
 
         if path == "/v1/wiki/default-target" {
@@ -1104,6 +1330,37 @@ fn handle_local_write_request(mut stream: TcpStream) -> Result<(), String> {
         let response = run_browser_hub_action(request);
         let status = if response.ok { 200 } else { 400 };
         return write_json_response(&mut stream, status, &response);
+    }
+
+    if method == "POST" && path == "/v1/focus/ack" {
+        if !is_authorized_handoff_write(&headers) {
+            return write_json_response(
+                &mut stream,
+                401,
+                &write_error(
+                    "unauthorized",
+                    "Browser Shuttle is not connected to NOOS Hub.",
+                ),
+            );
+        }
+
+        let body_start = end + 4;
+        let body_end = body_start + content_length;
+        let body = &buffer[body_start..body_end.min(buffer.len())];
+        #[derive(Deserialize)]
+        struct FocusAckBody {
+            request_id: String,
+        }
+        let ack: FocusAckBody =
+            serde_json::from_slice(body).map_err(|error| error.to_string())?;
+        if ack_carrier_focus_request(&ack.request_id) {
+            return write_json_response(&mut stream, 200, &json!({ "ok": true }));
+        }
+        return write_json_response(
+            &mut stream,
+            404,
+            &write_error("unknown_request", "No pending carrier focus request with this id."),
+        );
     }
 
     let is_ingest = method == "POST"
@@ -5491,6 +5748,7 @@ fn vault_file_summary_json(object_type: &str, file: VaultFileSummary) -> Value {
         "name": file.name,
         "path": file.path,
         "source_url": file.source_url,
+        "source_app": file.source_app,
         "modified_epoch": file.modified_epoch
     })
 }
@@ -5900,6 +6158,21 @@ fn atomic_temp_path(path: &Path) -> PathBuf {
     path.with_file_name(temp_name)
 }
 
+/// Reads one `key=value` field from the `<!-- NOOS:HUB:SOURCE ... -->`
+/// comment that ingest appends, e.g. `url=` / `app=`, so vault objects
+/// saved without frontmatter still surface their source to the UI.
+fn hub_source_comment_field(content: &str, key: &str) -> Option<String> {
+    let marker_start = content.find("<!-- NOOS:HUB:SOURCE ")?;
+    let after_marker = &content[marker_start + "<!-- NOOS:HUB:SOURCE ".len()..];
+    let comment_body = after_marker.split("-->").next().unwrap_or_default();
+    let prefix = format!("{key}=");
+    let value = comment_body
+        .split_whitespace()
+        .find_map(|token| token.strip_prefix(&prefix).map(str::to_string))?;
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
 fn append_source_comment(content: &mut String, source: &HandoffSource) {
     let app = source.app.clone().unwrap_or_default();
     let url = source.url.clone().unwrap_or_default();
@@ -6252,7 +6525,10 @@ fn recent_markdown_files(directory: &Path, limit: usize) -> Vec<VaultFileSummary
                             .or_else(|| extract_frontmatter_value(&content, "crystal_key"))
                             .or_else(|| extract_frontmatter_value(&content, "lookup_key"))
                             .or_else(|| extract_frontmatter_value(&content, "filename_slug")),
-                        source_url: extract_frontmatter_value(&content, "source_url"),
+                        source_url: extract_frontmatter_value(&content, "source_url")
+                            .or_else(|| hub_source_comment_field(&content, "url")),
+                        source_app: extract_frontmatter_value(&content, "source_app")
+                            .or_else(|| hub_source_comment_field(&content, "app")),
                     })
                 })
                 .collect::<Vec<_>>()
@@ -6996,6 +7272,116 @@ fn home_dir() -> PathBuf {
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    fn carrier_focus_target_accepts_whitelisted_provider_conversation_urls() {
+        let (reference, url) =
+            carrier_focus_target_from_source_url("https://chatgpt.com/c/abc-123?model=auto")
+                .unwrap();
+        assert_eq!(reference, "abc-123");
+        assert_eq!(url, "https://chatgpt.com/c/abc-123");
+
+        let (reference, _) =
+            carrier_focus_target_from_source_url("https://chat.deepseek.com/chat/ds-1").unwrap();
+        assert_eq!(reference, "ds-1");
+
+        let (reference, _) =
+            carrier_focus_target_from_source_url("https://chatgpt.com/g/proj/c/id9").unwrap();
+        assert_eq!(reference, "id9");
+
+        let (reference, _) =
+            carrier_focus_target_from_source_url("https://chatgpt.com/u/123/c/id-u").unwrap();
+        assert_eq!(reference, "id-u");
+
+        let (reference, _) =
+            carrier_focus_target_from_source_url("https://chatgpt.com/c/a%20b").unwrap();
+        assert_eq!(reference, "a b");
+    }
+
+    #[test]
+    fn carrier_focus_target_rejects_non_provider_or_non_conversation_urls() {
+        assert!(carrier_focus_target_from_source_url("https://github.com/futouyiba/noos-shuttle").is_err());
+        assert!(carrier_focus_target_from_source_url("https://evil-chatgpt.com/c/abc").is_err());
+        assert!(carrier_focus_target_from_source_url("http://chatgpt.com/c/abc").is_err());
+        assert!(carrier_focus_target_from_source_url("https://chatgpt.com/").is_err());
+        // Route shapes are start-anchored, matching the extension.
+        assert!(carrier_focus_target_from_source_url("https://chatgpt.com/x/c/abc").is_err());
+        // WEB: prefixed refs are not conversation identities.
+        assert!(carrier_focus_target_from_source_url("https://chatgpt.com/c/WEB%3Atemp").is_err());
+    }
+
+    #[test]
+    fn carrier_focus_queue_is_idempotent_per_conversation_and_ack_removes() {
+        // Shared static: drain first so the test is order-independent.
+        if let Ok(mut queue) = carrier_focus_queue().lock() {
+            queue.clear();
+        }
+        let first = enqueue_carrier_focus_request("https://chatgpt.com/c/queue-a", Some("key-a".into())).unwrap();
+        let second = enqueue_carrier_focus_request("https://chatgpt.com/c/queue-a?utm=1", None).unwrap();
+        assert_eq!(first.request_id, second.request_id);
+
+        let pending = pending_carrier_focus_requests();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].conversation_ref, "queue-a");
+        assert_eq!(pending[0].conversation_url, "https://chatgpt.com/c/queue-a");
+        assert_eq!(pending[0].lookup_key.as_deref(), Some("key-a"));
+
+        assert!(ack_carrier_focus_request(&first.request_id));
+        assert!(!ack_carrier_focus_request(&first.request_id));
+        assert!(pending_carrier_focus_requests().is_empty());
+    }
+
+    #[test]
+    fn carrier_focus_queue_purges_expired_requests() {
+        let base = |request_id: &str| CarrierFocusRequest {
+            request_id: request_id.to_string(),
+            conversation_ref: request_id.to_string(),
+            conversation_url: format!("https://chatgpt.com/c/{request_id}"),
+            lookup_key: None,
+            enqueued_at_epoch: 1_000,
+        };
+
+        let mut expired = vec![base("focus_old")];
+        purge_expired_carrier_focus_requests(&mut expired, 1_000 + CARRIER_FOCUS_REQUEST_TTL_SECS + 1);
+        assert!(expired.is_empty());
+
+        let mut fresh = vec![base("focus_fresh")];
+        purge_expired_carrier_focus_requests(&mut fresh, 1_000 + CARRIER_FOCUS_REQUEST_TTL_SECS);
+        assert_eq!(fresh.len(), 1);
+    }
+
+    #[test]
+    fn hub_source_comment_field_extracts_app_and_url() {
+        let content = "---\ntitle: T\n---\n\nbody\n\n<!-- NOOS:HUB:SOURCE app=browser-shuttle url=https://chatgpt.com/c/abc conversation_id=abc captured_at=2026-09-17T00:00:00Z -->\n";
+        assert_eq!(
+            hub_source_comment_field(content, "url").as_deref(),
+            Some("https://chatgpt.com/c/abc")
+        );
+        assert_eq!(
+            hub_source_comment_field(content, "app").as_deref(),
+            Some("browser-shuttle")
+        );
+        assert_eq!(hub_source_comment_field("no marker", "url"), None);
+    }
+
+    #[test]
+    fn recent_markdown_files_falls_back_to_hub_source_comment() {
+        let root = unique_test_dir("focus-recent-source");
+        let dir = root.join("vault/handoffs/active");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("20260917-focus-source.md"),
+            "# Thread: Focus Source\n\nbody\n\n<!-- NOOS:HUB:SOURCE app=codex url=https://chatgpt.com/c/zz conversation_id=zz captured_at=2026-09-17T00:00:00Z -->\n",
+        )
+        .unwrap();
+
+        let files = recent_markdown_files(&dir, 8);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].source_url.as_deref(), Some("https://chatgpt.com/c/zz"));
+        assert_eq!(files[0].source_app.as_deref(), Some("codex"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn local_write_port_defaults_without_env_override() {
