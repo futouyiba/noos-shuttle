@@ -101,6 +101,22 @@ function observation(overrides: Partial<SubmissionObservation> = {}): Submission
   };
 }
 
+/**
+ * The control claim delta id embeds the ledger claim's millisecond stamp
+ * (`claim:<operationId>:<dispatchClaimedAt>`). Two claims of the same operation
+ * that land in the same millisecond collide on that id, and the second mint is
+ * rejected as a deltaId reuse — on a fast machine a whole re-arm cycle can run
+ * inside one clock tick (the root cause of this suite's single-run flake).
+ * Tests that re-claim an already-claimed operation advance the wall clock one
+ * tick first so each attempt gets a distinct stamp.
+ */
+async function advancePastClaimTick(): Promise<void> {
+  const tick = Date.now();
+  while (Date.now() === tick) {
+    await new Promise(resolve => setTimeout(resolve, 1));
+  }
+}
+
 describe("runChildDeliveryProbe", () => {
   it("resolves the parent via the work item binding and dispatches exactly once", async () => {
     const { deps, storage, backing } = harness();
@@ -328,6 +344,7 @@ await prepareChildDeliveryTransport(deps, { childThreadId: "child-l2", destinati
     expect(afterRearm?.operationRevision).toBeGreaterThan(2);
     // The next claim mints F18 — a different attempt identity on the same
     // logical operation (adjudication Q1).
+    await advancePastClaimTick();
     const second = await runChildDeliveryProbe({
       context: context(),
       baseline: { ...baseline, observedAt: Date.now() + 7_500 }
@@ -376,6 +393,7 @@ await prepareChildDeliveryTransport(deps, { childThreadId: "child-l2", destinati
     expect(afterRearm?.state).toBe("PREPARED");
     expect(afterRearm?.providerConversationRef).toBe("conv-l9");
     // The next claim mints F18 under the rolled-over authority.
+    await advancePastClaimTick();
     const second = await runChildDeliveryProbe({
       context: rolledOver,
       baseline: { ...baseline, routeRef: "/c/conv-l9", observedAt: Date.now() + 7_500 }
