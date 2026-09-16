@@ -23,6 +23,15 @@ import { ProviderExecutionJournal, createChromeExecutionJournalStore } from "../
 import { DurableOperationalStateReducer, createChromeOperationalStateReducerStore } from "../core/durable-operational-state-reducer";
 import { SubmissionOperationLedger, createChromeSubmissionStore, type SubmissionOperationMutation } from "../core/submission-operation";
 import {
+  BCR_EXPERIMENTAL_MAX_BUDGET,
+  CONTINUATION_RUN_STORE_KEY,
+  emptyContinuationRunStore,
+  reduceContinuationRunStore,
+  type ContinuationRunMutation,
+  type ContinuationRunMutationResult,
+  type ContinuationRunStore
+} from "../core/continuation-run";
+import {
   ChildWorkerLedger,
   createChromeChildWorkerStore,
   isCreateChildIntentInput,
@@ -51,6 +60,63 @@ const workItemInbox = chrome.storage?.local
   ? new WorkItemInbox(createChromeWorkItemStore(workItemStorage, workItemCoordinator))
   : new WorkItemInbox(new InMemoryWorkItemStore());
 let submissionOperationCoordinator: SubmissionOperationLedger | undefined;
+
+const CONTINUATION_RUN_LOCK = "noos-continuation-run-authority";
+
+function isContinuationRunStoreShape(value: unknown): value is ContinuationRunStore {
+  if (!value || typeof value !== "object") return false;
+  const store = value as Partial<ContinuationRunStore>;
+  return typeof store.activeByConversation === "object" && store.activeByConversation !== null &&
+    Array.isArray(store.ended) && Array.isArray(store.candidates);
+}
+
+/** The background coordinator owns the durable run store; content scripts only project it. */
+async function handleContinuationRunMutation(mutation: ContinuationRunMutation): Promise<ContinuationRunMutationResult> {
+  const storage = chrome.storage?.local;
+  if (!storage) return { ok: false, error: "storage_unavailable" };
+  if (!mutation || typeof mutation !== "object" || !isKnownContinuationRunMutation(mutation)) return { ok: false, error: "invalid_mutation" };
+  return navigator.locks.request(CONTINUATION_RUN_LOCK, async () => {
+    const persisted = await storage.get(CONTINUATION_RUN_STORE_KEY);
+    const store: ContinuationRunStore = isContinuationRunStoreShape(persisted[CONTINUATION_RUN_STORE_KEY])
+      ? persisted[CONTINUATION_RUN_STORE_KEY]
+      : emptyContinuationRunStore();
+    const result = reduceContinuationRunStore(store, mutation);
+    if (result.ok && result.store !== store) await storage.set({ [CONTINUATION_RUN_STORE_KEY]: result.store });
+    return result;
+  });
+}
+
+function isKnownContinuationRunMutation(mutation: ContinuationRunMutation): boolean {
+  switch (mutation.type) {
+    case "get_active":
+      return typeof mutation.providerConversationRef === "string" && mutation.providerConversationRef.trim() !== "";
+    case "start":
+      return !!mutation.input && typeof mutation.input === "object" &&
+        typeof mutation.input.runId === "string" && mutation.input.runId.trim() !== "" &&
+        typeof mutation.input.workItemId === "string" && mutation.input.workItemId.trim() !== "" &&
+        typeof mutation.input.logicalThreadId === "string" && mutation.input.logicalThreadId.trim() !== "" &&
+        typeof mutation.input.providerConversationRef === "string" && mutation.input.providerConversationRef.trim() !== "" &&
+        typeof mutation.input.bindingEpoch === "number" && Number.isFinite(mutation.input.bindingEpoch) &&
+        typeof mutation.input.maxContinuations === "number" && Number.isFinite(mutation.input.maxContinuations) &&
+        typeof mutation.input.now === "number" && Number.isFinite(mutation.input.now);
+    case "apply":
+      return typeof mutation.runId === "string" && mutation.runId.trim() !== "" &&
+        !!mutation.event && typeof mutation.event === "object" && typeof mutation.event.type === "string" &&
+        typeof mutation.now === "number" && Number.isFinite(mutation.now);
+    case "check_dispatch":
+      return typeof mutation.runId === "string" && mutation.runId.trim() !== "" &&
+        typeof mutation.providerConversationRef === "string" && mutation.providerConversationRef.trim() !== "" &&
+        typeof mutation.bindingEpoch === "number" && Number.isFinite(mutation.bindingEpoch);
+    case "record_round_evidence":
+      return typeof mutation.runId === "string" && mutation.runId.trim() !== "" &&
+        Number.isInteger(mutation.continuationIndex) && mutation.continuationIndex >= 1 &&
+        typeof mutation.capturedAt === "number" && Number.isFinite(mutation.capturedAt) &&
+        typeof mutation.decision === "string" && typeof mutation.humanAction === "string";
+    case "attach_candidate":
+      return !!mutation.candidate && typeof mutation.candidate === "object" &&
+        typeof mutation.candidate.candidateId === "string" && mutation.candidate.candidateId.trim() !== "";
+  }
+}
 
 function getSubmissionOperationCoordinator(): SubmissionOperationLedger | undefined {
   const storage = chrome.storage?.local;
@@ -115,6 +181,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           message: error instanceof Error ? error.message : "Work Item action failed."
         })
       );
+    return true;
+  }
+
+  if (message?.type === "NOOS_CONTINUATION_RUN_MUTATION") {
+    if (sender.frameId !== 0 || !Number.isSafeInteger(sender.tab?.id) || !isAllowedProviderSender(sender)) {
+      sendResponse({ ok: false, error: "sender_not_allowed" });
+      return false;
+    }
+    handleContinuationRunMutation(message.mutation as ContinuationRunMutation)
+      .then(result => sendResponse(result.ok
+        ? { ok: true, run: result.run, budgetCap: BCR_EXPERIMENTAL_MAX_BUDGET }
+        : { ok: false, error: result.error }))
+      .catch((error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
     return true;
   }
 
