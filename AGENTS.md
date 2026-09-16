@@ -101,7 +101,7 @@ canonical role/state。
 - 飞书导出、发布、资源包或文件夹相关改动：运行 `npm run typecheck`、相关 `vitest`、`npm run build`、`cargo test --manifest-path apps/noos-hub/src-tauri/Cargo.toml feishu`；涉及 Rust 后端时加跑 `cargo fmt --manifest-path apps/noos-hub/src-tauri/Cargo.toml -- --check`。
 - LLM Wiki 图片或多模态 ingest 改动：运行 `npm run wiki:typecheck` 和 `npm run wiki:test`。
 - review-intake 工具改动：运行 `node --check scripts/review-intake.mjs`、一次 `npm run review:intake` 自检，以及 `npm run typecheck` / `npm test`。
-- UI impact 工具改动：运行 `node --check scripts/ui-impact.mjs`、`node --check scripts/ui-impact-core.mjs`、`npx vitest run tests/ui-impact.test.mjs`，并至少对一个真实 base/head 跑一次 `npm run ui:impact`。
+- UI impact 工具改动：运行 `node --check scripts/ui-impact.mjs`、`node --check scripts/ui-impact-core.mjs`、`npx vitest run tests/ui-impact.test.ts`，并至少对一个真实 base/head 跑一次 `npm run ui:impact`。
 
 如果无法运行验证，说明原因和剩余风险。
 
