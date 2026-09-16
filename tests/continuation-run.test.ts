@@ -281,6 +281,111 @@ describe("reduceContinuationRunStore", () => {
   });
 });
 
+describe("AUTO_X5 mode", () => {
+  function autoRun(overrides: Partial<ContinuationRun> = {}): ContinuationRun {
+    return run({ mode: "AUTO_X5", goal: "Settle the gate question", scope: "Gate policy only", ...overrides });
+  }
+
+  function dispatchAutoRound(current: ContinuationRun, round: number, assessmentPasses = true): ContinuationRun {
+    const operationId = `${current.runId}:go:${round}`;
+    let next = applyRunEvent(current, { type: "DISPATCH_ISSUED", operationId }, 100 + round).run;
+    next = applyRunEvent(next, { type: "OPERATION_ACCEPTED", operationId, turnRef: `turn:t${round}` }, 100 + round).run;
+    next = applyRunEvent(next, { type: "OPERATION_COMPLETED", operationId, turnRef: `turn:t${round}` }, 100 + round).run;
+    if (next.phase === "EVALUATING") {
+      next = applyRunEvent(next, assessmentPasses ? { type: "EVALUATION_PASSED" } : { type: "EVALUATION_STOPPED", reason: "GOAL_SATISFIED" }, 100 + round).run;
+    }
+    return next;
+  }
+
+  it("requires a goal for AUTO_X5 starts and rejects invalid scope", () => {
+    const base = { runId: "bcr-a", workItemId: "w", logicalThreadId: "t", providerConversationRef: "conv-a", bindingEpoch: 1, maxContinuations: 5, mode: "AUTO_X5" as const, now: 1 };
+    expect(() => startContinuationRun(base)).toThrow(/goal/);
+    expect(() => startContinuationRun({ ...base, goal: "  " })).toThrow(/goal/);
+    expect(() => startContinuationRun({ ...base, goal: "g", scope: " " })).toThrow(/scope/);
+    const started = startContinuationRun({ ...base, goal: "g" });
+    expect(started.goal).toBe("g");
+    expect(started.scope).toBeUndefined();
+    expect(started.phase).toBe("READY_TO_GO");
+  });
+
+  it("routes COMPLETED into EVALUATING for AUTO runs and AWAITING_HUMAN_DECISION for ASSISTED", () => {
+    const dispatchedAuto = applyRunEvent(autoRun(), { type: "DISPATCH_ISSUED", operationId: "op-1" }, 101).run;
+    const completedAuto = applyRunEvent(dispatchedAuto, { type: "OPERATION_ACCEPTED", operationId: "op-1" }, 102).run;
+    const completed = applyRunEvent(completedAuto, { type: "OPERATION_COMPLETED", operationId: "op-1" }, 103).run;
+    expect(completed.phase).toBe("EVALUATING");
+    const dispatchedAssisted = applyRunEvent(run(), { type: "DISPATCH_ISSUED", operationId: "op-1" }, 101).run;
+    const completedAssisted = applyRunEvent(dispatchedAssisted, { type: "OPERATION_ACCEPTED", operationId: "op-1" }, 102).run;
+    const assisted = applyRunEvent(completedAssisted, { type: "OPERATION_COMPLETED", operationId: "op-1" }, 103).run;
+    expect(assisted.phase).toBe("AWAITING_HUMAN_DECISION");
+  });
+
+  it("runs AUTO rounds: evaluate-pass advances, evaluate-stop ends with the mapped reason", () => {
+    let current = autoRun({ maxContinuations: 3 });
+    current = dispatchAutoRound(current, 1, true);
+    expect(current.phase).toBe("READY_TO_GO");
+    expect(current.consumedContinuations).toBe(1);
+    current = dispatchAutoRound(current, 2, false);
+    expect(current.status).toBe("ENDED");
+    expect(current.stopReason).toBe("GOAL_SATISFIED");
+    expect(current.consumedContinuations).toBe(2);
+  });
+
+  it("ends BUDGET_EXHAUSTED when the last AUTO round completes even if evaluation would pass", () => {
+    let current = autoRun({ maxContinuations: 1 });
+    const dispatched = applyRunEvent(current, { type: "DISPATCH_ISSUED", operationId: "op-1" }, 101).run;
+    const accepted = applyRunEvent(dispatched, { type: "OPERATION_ACCEPTED", operationId: "op-1" }, 102).run;
+    const completed = applyRunEvent(accepted, { type: "OPERATION_COMPLETED", operationId: "op-1" }, 103).run;
+    expect(completed.status).toBe("ENDED");
+    expect(completed.stopReason).toBe("BUDGET_EXHAUSTED");
+    expect(applyRunEvent(completed, { type: "EVALUATION_PASSED" }, 104).changed).toBe(false);
+  });
+
+  it("refuses HUMAN_CONTINUE and dispatch during EVALUATING, but a queued Stop always applies", () => {
+    const dispatched = applyRunEvent(autoRun(), { type: "DISPATCH_ISSUED", operationId: "op-1" }, 101).run;
+    const evaluating = applyRunEvent(dispatched, { type: "OPERATION_ACCEPTED", operationId: "op-1" }, 102).run;
+    const completed = applyRunEvent(evaluating, { type: "OPERATION_COMPLETED", operationId: "op-1" }, 103).run;
+    expect(applyRunEvent(completed, { type: "HUMAN_CONTINUE" }, 104).changed).toBe(false);
+    expect(applyRunEvent(completed, { type: "DISPATCH_ISSUED", operationId: "op-2" }, 104).changed).toBe(false);
+    const stopped = applyRunEvent(completed, { type: "HUMAN_STOP" }, 104).run;
+    expect(stopped.status).toBe("CANCELLED");
+    expect(stopped.stopReason).toBe("USER_CANCELLED");
+    const passed = applyRunEvent(completed, { type: "EVALUATION_PASSED" }, 104).run;
+    expect(passed.phase).toBe("READY_TO_GO");
+    const passedAgain = applyRunEvent(passed, { type: "EVALUATION_PASSED" }, 105);
+    expect(passedAgain.changed).toBe(false);
+  });
+
+  it("records continuation mode and assessment on round evidence", () => {
+    let store = emptyContinuationRunStore();
+    const started = reduceContinuationRunStore(store, { type: "start", input: { runId: "bcr-a", workItemId: "w", logicalThreadId: "t", providerConversationRef: "conv-a", bindingEpoch: 1, maxContinuations: 5, mode: "AUTO_X5", goal: "g", now: 1 } });
+    store = started.ok ? started.store : store;
+    const evidence = reduceContinuationRunStore(store, {
+      type: "record_round_evidence",
+      runId: "bcr-a",
+      continuationIndex: 1,
+      decision: "AUTO_CONTINUE",
+      humanAction: "pending",
+      continuationMode: "REANCHOR_GO",
+      assessment: { goal_status: "IN_PROGRESS", confidence: "HIGH" },
+      capturedAt: 2
+    });
+    expect(evidence.ok).toBe(true);
+    store = evidence.ok ? evidence.store : store;
+    expect(store.candidates[0].continuationMode).toBe("REANCHOR_GO");
+    expect(store.candidates[0].assessment).toEqual({ goal_status: "IN_PROGRESS", confidence: "HIGH" });
+    const bad = reduceContinuationRunStore(store, {
+      type: "record_round_evidence",
+      runId: "bcr-a",
+      continuationIndex: 2,
+      decision: "AUTO_CONTINUE",
+      humanAction: "pending",
+      assessment: "not-an-object" as unknown as Record<string, unknown>,
+      capturedAt: 3
+    });
+    expect(bad.ok).toBe(false);
+  });
+});
+
 describe("createFixtureCandidate", () => {
   it("builds a stable candidate id and keeps evidence fields", () => {
     const active = run({ consumedContinuations: 2, lastConsumedTurnRef: "turn:t2" });

@@ -22,6 +22,7 @@
   "host_permissions": [
     "https://chatgpt.com/*",
     "https://chat.openai.com/*",
+    "https://api.deepseek.com/*",
     "https://claude.ai/*",
     "https://gemini.google.com/*",
     "https://aistudio.google.com/*",

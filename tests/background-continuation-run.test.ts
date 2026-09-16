@@ -37,6 +37,10 @@ interface RunReply {
   ok: boolean;
   run?: { runId: string; status: string; phase: string; consumedContinuations: number; stopReason?: string; lastConsumedTurnRef?: string };
   error?: string;
+  evaluatorConfigured?: boolean;
+  model?: string;
+  decision?: string;
+  stopReason?: string;
 }
 
 function send(handler: MessageHandler, mutation: object): Promise<RunReply> {
@@ -129,5 +133,62 @@ describe("background continuation run coordinator", () => {
     expect(garbage.ok).toBe(false);
     const unknownEvent = await send_({ type: "apply", runId: "bcr-bg-1", event: { type: "NOT_AN_EVENT" }, now: 1 });
     expect(unknownEvent.ok).toBe(false);
+  });
+
+  it("stores evaluator config without echoing the key and reports configured state", async () => {
+    const backing: Record<string, unknown> = {};
+    const { handler } = await loadHandler(backing);
+    const raw = (message: object) => new Promise<RunReply>(resolve => {
+      handler(message, providerSender(), value => resolve(value as RunReply));
+    });
+    const unset = await raw({ type: "NOOS_CONTINUATION_EVAL_CONFIG" });
+    expect(unset.ok).toBe(true);
+    expect(unset.evaluatorConfigured).toBe(false);
+    const saved = await raw({ type: "NOOS_CONTINUATION_EVAL_CONFIG", config: { apiKey: "sk-abc", model: "deepseek-chat" } });
+    expect(saved.ok).toBe(true);
+    expect(saved.evaluatorConfigured).toBe(true);
+    expect(saved.model).toBe("deepseek-chat");
+    expect(JSON.stringify(backing.noosBcrEvaluatorConfig)).toContain("sk-abc");
+    const readBack = await raw({ type: "NOOS_CONTINUATION_EVAL_CONFIG" });
+    expect(readBack.evaluatorConfigured).toBe(true);
+    expect(JSON.stringify(readBack)).not.toContain("sk-abc");
+  });
+
+  it("evaluates an AUTO round through the stored config and fails closed otherwise", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+      goal_status: "IN_PROGRESS", focus_status: "OPEN_ADVANCING", scope_relation: "WITHIN_SCOPE",
+      dependency: "NONE", anchor_need: "NONE", confidence: "HIGH"
+    }) } }] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchImpl);
+    const backing: Record<string, unknown> = {};
+    const { handler } = await loadHandler(backing);
+    const raw = (message: object) => new Promise<RunReply>(resolve => {
+      handler(message, providerSender(), value => resolve(value as RunReply));
+    });
+    const unconfigured = await raw({ type: "NOOS_CONTINUATION_EVALUATE", runId: "bcr-bg-1", assistantTurnExcerpt: "advanced" });
+    expect(unconfigured.ok).toBe(false);
+    expect(unconfigured.error).toBe("evaluator_unconfigured");
+    await raw({ type: "NOOS_CONTINUATION_EVAL_CONFIG", config: { apiKey: "sk-abc", model: "deepseek-chat" } });
+    const noRun = await raw({ type: "NOOS_CONTINUATION_EVALUATE", runId: "ghost", assistantTurnExcerpt: "advanced" });
+    expect(noRun.ok).toBe(false);
+    expect(noRun.error).toBe("no_active_auto_run");
+    await send(handler, { type: "start", input: { ...START_INPUT, mode: "AUTO_X5", goal: "Settle the gate question" } });
+    // Only an EVALUATING run may be evaluated: drive round 1 to completion.
+    await send(handler, { type: "apply", runId: "bcr-bg-1", event: { type: "DISPATCH_ISSUED", operationId: "bcr-bg-1:go:1" }, now: 101 });
+    await send(handler, { type: "apply", runId: "bcr-bg-1", event: { type: "OPERATION_ACCEPTED", operationId: "bcr-bg-1:go:1" }, now: 102 });
+    const completed = await send(handler, { type: "apply", runId: "bcr-bg-1", event: { type: "OPERATION_COMPLETED", operationId: "bcr-bg-1:go:1", turnRef: "turn:t1" }, now: 103 });
+    expect(completed.run?.phase).toBe("EVALUATING");
+    const passing = await raw({ type: "NOOS_CONTINUATION_EVALUATE", runId: "bcr-bg-1", assistantTurnExcerpt: "advanced the focus" });
+    expect(passing.ok).toBe(true);
+    expect(passing.decision).toBe("WOULD_CONTINUE");
+    const body = JSON.parse((fetchImpl.mock.calls[0] as unknown as [string, { body: string }])[1].body);
+    expect(body.model).toBe("deepseek-chat");
+    expect(body.messages[1].content).toContain("Settle the gate question");
+    const failing = vi.fn(async () => new Response("denied", { status: 401 }));
+    vi.stubGlobal("fetch", failing);
+    const denied = await raw({ type: "NOOS_CONTINUATION_EVALUATE", runId: "bcr-bg-1", assistantTurnExcerpt: "advanced" });
+    expect(denied.ok).toBe(true);
+    expect(denied.decision).toBe("WOULD_STOP");
+    expect(denied.stopReason).toBe("EVALUATOR_UNAVAILABLE");
   });
 });
