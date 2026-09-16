@@ -54,6 +54,24 @@ describe("content script smoke flow", () => {
     await page.close();
   }, 20000);
 
+  it("resolves provider identity on ChatGPT project routes (/g/<project>/c/<id>)", async () => {
+    const page = await newMockChatPage({ startWithHandoffs: false, injectContentScript: false });
+    await page.evaluate(() => {
+      history.replaceState({}, "", "/g/g-p-project-abc/c/project-conversation-id");
+      window.addEventListener("noos:runtime-observation", event => {
+        (window as unknown as { observed: unknown }).observed = (event as CustomEvent).detail;
+      });
+    });
+    await page.addScriptTag({ content: contentScript });
+    const observed = () => page.evaluate(() => (window as unknown as {
+      observed: { state: string; conversationIdentityState: string; providerConversationRef?: string }
+    }).observed);
+    await expect.poll(async () => (await observed()).providerConversationRef, { timeout: 8000 }).toBe("project-conversation-id");
+    expect((await observed()).conversationIdentityState).toBe("resolved");
+    await expect.poll(async () => (await observed()).state, { timeout: 10000 }).toBe("READY");
+    await page.close();
+  }, 20000);
+
   it("retries a failed carrier handshake without inventing a confirmed tab", async () => {
     const page = await newMockChatPage({ startWithHandoffs: false, injectContentScript: false });
     await page.evaluate(() => {
