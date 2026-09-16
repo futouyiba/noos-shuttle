@@ -23,9 +23,11 @@ description: Independently review a pull request per the agent-workflow spec (re
    lockfile、生成代码一律 §1.2 全项——在本地 checkout 该 PR 亲跑
    关键命令并引用实际输出，核心不变量做变异验证；不采信实现者
    转述。
-5. 不改被审代码；技术异议按 §2.5 回流 designer 重裁，不当场僵持。
+5. 以只读方式执行（§1.2(a) 能力条件：不持有写入工具，Bash 不改写
+   被审工作区）；不改被审代码；技术异议按 §2.5 回流 designer 重裁，
+   不当场僵持。
 6. 结论评论到 PR，首行严格标记 `REVIEW: APPROVE @ <head-sha>` 或
    `REVIEW: REQUEST_CHANGES @ <head-sha>`，第二行 provenance（如
-   `（rev: 直评, 委派: orch）`；由实现会话转述时
-   `（rev: relayed by impl, 委派: impl）`，行为独立性在正文说明）；
-   findings 各带 severity（MAJOR / MINOR）、文件行号与亲跑证据。
+   `（rev: 直评, 委派: orch）`；会话内只读 subagent 形态写
+   `（rev: in-session subagent, 委派: impl）`）；findings 各带
+   severity（MAJOR / MINOR）、文件行号与亲跑证据。
