@@ -211,7 +211,9 @@ function shouldIgnoreNode(node: Node): boolean {
         "form",
         "[contenteditable='true']",
         "[role='textbox']",
-        "#noos-shuttle-root"
+        "#noos-shuttle-root",
+        ".noos-project-import-button",
+        ".noos-project-export-sources-button"
       ].join(",")
     )
   );

@@ -1075,6 +1075,31 @@ describe("content script smoke flow", () => {
   it("adds a NOOS import entry near ChatGPT project source areas", async () => {
     const page = await newMockProjectPage();
 
+    await page.locator(".noos-project-import-button").waitFor();
+    // A heading inside a message must never anchor the injected buttons, and
+    // provider-side clones of a region containing them must not accumulate (#25).
+    expect(await page.locator(".noos-project-import-button").count()).toBe(1);
+    expect(await page.locator(".noos-project-export-sources-button").count()).toBe(1);
+    expect(await page.locator("[data-message-author-role] .noos-project-import-button").count()).toBe(0);
+    await page.evaluate(() => {
+      const clone = (element: Element) => {
+        const copy = element.cloneNode(true) as HTMLElement;
+        copy.dataset.noosTestClone = "1";
+        element.insertAdjacentElement("afterend", copy);
+      };
+      const article = document.querySelector("[data-message-author-role]")!;
+      for (let index = 0; index < 3; index += 1) {
+        clone(article);
+      }
+      clone(document.querySelector("main section")!);
+    });
+    await page.waitForTimeout(800);
+    expect(await page.locator(".noos-project-import-button").count()).toBe(1);
+    expect(await page.locator(".noos-project-export-sources-button").count()).toBe(1);
+    await page.evaluate(() => {
+      document.querySelectorAll("[data-noos-test-clone]").forEach(node => node.remove());
+    });
+
     await page.locator(".noos-project-import-button").click();
     await waitForShuttleText(page, "从 NOOS 导入");
 
@@ -1536,6 +1561,9 @@ async function newMockProjectPage(options: { withFileInput?: boolean } = {}): Pr
       <a href="/c/file-sidebar">xlsb文件介绍</a>
     </nav>
     <main>
+      <article data-message-author-role="assistant">
+        <div><h3>提示词与来源</h3><p>写在 canvas 里的提示词正文（decoy anchor）。</p></div>
+      </article>
       <section>
         <h2>Project sources</h2>
         ${options.withFileInput === false ? "" : `<input type="file" />`}
