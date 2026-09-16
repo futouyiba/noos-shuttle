@@ -32,22 +32,24 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
    - `REVIEW: REQUEST_CHANGES` → 向该 PR 的实现会话投 `fix PR#N`
    - `REVIEW: APPROVE` → 通知实现会话与 orchestrator；向
      integrator 会话投递合并交接（PR 链接、分支、exact head、
-     review 证据链接），并向人提示可 merge
+     review 证据链接；交接消息注明"本交接不构成合并授权"），并
+     向人提示可 merge
    - `DESIGN: REQUEST_CHANGES`（开放 PR）→ 向该 PR 的实现会话投
      `fix PR#N`
    - `DESIGN: APPROVE` → 通知实现会话与 orchestrator
    - `DESIGN: REJECTED` → 通知 orchestrator（proposal issue 由
      designer 侧关单流程处理）
-   - `DESIGN:` 任意 verdict 且 PR 已合并 → 提示 orchestrator 以新
-     dispatch 立 follow-up issue
+   - `DESIGN: REQUEST_CHANGES` 或 `DESIGN: REJECTED` 且 PR 已合并
+     → 提示 orchestrator 以新 dispatch 立 follow-up issue
    - `INTEGRATED:` → 记录并通知 orchestrator
 4. 会话寻址：`ccd_session_mgmt list_sessions` 按标题 / 分支匹配
    该 PR 的实现会话；匹配不到则进 pending（`{"type":"unrouted",
    "comment":<id>, "action":<拟投暗号>}`）。投递用 send_message，
    消息含 PR 链接与评论链接。
 5. stage 链（B.2 多动词跨角色）：`stages` 数组记录
-   `{"pr":"PR#N","await":"REVIEW","next":"review PR#N"}` 形式的
-   待续条目；本次轮询见到 await 的标记出现即派发 next 并移除，
+   `{"pr":"PR#N","await":"REVIEW: APPROVE","next":"review PR#N"}`
+   形式的待续条目（await 写带收敛性 verdict 的完整标记，避免
+   过早触发）；本次轮询见到 await 标记出现即派发 next 并移除，
    否则保留。
 6. 写回状态：watermark = 本次见到的最大评论时间；processed 追加
    并截断到最近 500 条；写回前重新读取并按并集合并（防与手动
