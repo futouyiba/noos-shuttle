@@ -44,20 +44,23 @@ anchor and validates 40-hex SHAs and `owner/name#number` refs).
   verifies live packet CONTENT by recomputing the semantic fingerprint (not just the marker's claimed
   fingerprint field, reported separately as claim integrity), and envelope rendering round-trip-checks
   the fenced marker so text containing ``` is rejected instead of emitting an unparseable marker.
-- `tests/cross-agent-mailbox.test.ts` (34 tests) — persist-before-post, create-or-get variants, packet
+- `tests/cross-agent-mailbox.test.ts` (46 tests) — persist-before-post, create-or-get variants, packet
   revision lineage, envelope determinism and round-trip safety, forbidden-field rejection (including
   smuggled `result_kind`/`is_sufficient` markers), observation freezing, edit conflicts, competing
   results, forced-interleaving concurrency (the lost-update window the revision fence closes),
   discovery cross-checks (content-vs-claim fingerprints, same-revision divergences, unobserved markers,
-  foreign packet AND result markers), restart-safety, and launch instructions.
+  foreign packet AND result markers), restart-safety, launch instructions, and the C1–C5 closure suites
+  (result tamper matrix, escalation payload integrity, packet-binding enforcement, conflict/anomaly
+  create-or-get replay).
 - `scripts/noos-mailbox.mjs` + `npm run mailbox` — thin `gh`-backed CLI (`init`, `open`, `revise-packet`,
   `record-post`, `render-result`, `discover`, `observe`, `show`). Comment ingestion uses
   `gh api --paginate --slurp` so multi-page issue comment threads parse correctly. The ledger defaults
   to `.noos/runtime/mailbox/<owner>__<repo>__issue-<n>.json` (gitignored runtime state, single ledger
   per GitHub Issue work item). Node ≥ 23.6 native type stripping imports the core directly; no new
-  dependency. `tests/noos-mailbox-cli.test.ts` (6 tests) covers the CLI helpers (argument parsing,
-  ledger path derivation, provenance mapping, paginated comment flattening) and an end-to-end
-  open → discover → render-result → observe → discover flow against a fake `gh`.
+  dependency. `tests/noos-mailbox-cli.test.ts` (7 tests) covers the CLI helpers (argument parsing,
+  ledger path derivation, provenance mapping, paginated comment flattening), an end-to-end
+  open → discover → render-result → observe → discover flow against a fake `gh`, and C3 integrity-anomaly
+  surfacing in operator output.
 
 ## Represented loop (acceptance)
 
@@ -79,8 +82,8 @@ Executed from repository root on this branch:
 
 ```sh
 npm run typecheck
-npx vitest run tests/cross-agent-mailbox.test.ts        # 34 passed
-npx vitest run tests/noos-mailbox-cli.test.ts           # 6 passed
+npx vitest run tests/cross-agent-mailbox.test.ts        # 46 passed (incl. C1-C5 suites)
+npx vitest run tests/noos-mailbox-cli.test.ts           # 7 passed (incl. C3 surfacing)
 npm test -- --exclude tests/content-ui-smoke.test.ts    # full suite without the browser fixture
 node --check scripts/noos-mailbox.mjs
 npm run mailbox -- init/open/show/render-result smoke   # dry flow on a temp ledger (no gh calls)
@@ -119,6 +122,52 @@ also addressed:
   content or claimed fingerprint (order-independent); regression-tested in both orders.
 - **N2 (P3) foreign-result CLI print** — `discover` prints the result id for foreign result markers
   instead of an undefined work-item parenthetical.
+
+## Primary Design disposition C1–C5 (final-head integrity closure)
+
+Primary Design adjudicated `960ea8b` as not closure-eligible (PR #24 comment `5690471474`, Issue #10
+comment `5690472636`): direction and F1–F8 closure accepted, #10 stays mailbox/provenance-only, five
+provenance/idempotency findings must close. All five are implemented in this revision:
+
+- **C1 — result identity is the recomputed semantic fingerprint.** `resultContentFingerprintFromWire`
+  recomputes the fingerprint from the parsed result payload with the exact field set
+  `buildResultEnvelope` fingerprints. Observation identity, dedup, and conflict detection use only the
+  recomputed value — never the marker's declared `result_fingerprint`, which is recorded separately
+  (`declaredResultFingerprint`) for auditing. A declared≠recomputed mismatch freezes a durable
+  `RESULT_FINGERPRINT_CLAIM_MISMATCH` integrity anomaly (`PENDING_TRIAGE`); an edited result retaining
+  an old claim produces a fingerprint conflict on recomputed identity, never an idempotent replay.
+  Tamper-matrix tests cover: content-edited + retained claim (conflict + anomaly), forged claim over
+  identical content (anomaly only, no replay), honest marker (no anomaly).
+- **C2 — live Escalation payload integrity.** `escalationContentFingerprintFromWire` recomputes the
+  escalation semantic fingerprint (question, blocker, roles, authority basis/refs, evidence refs,
+  provenance exact-revision refs, source operation/work item) from the live marker. Discovery reports
+  `escalationFingerprintMatchesLedger` (wire content ↔ durable ledger Escalation) and
+  `liveEscalationClaimIntegrity` (declared `escalation_fingerprint` ↔ wire content); any mismatching
+  live copy forces the flag false — a mutated escalation cannot look clean because the packet subobject
+  is intact. No semantic adjudication is added; both signals are deterministic fingerprint comparisons.
+  Adversarial tests: question tamper, provenance+role tamper, self-consistent re-declared fingerprint
+  over tampered content (claim passes, ledger match fails), honest copy passes both.
+- **C3 — CLI surfaces every core integrity anomaly.** `discover` now prints explicit INTEGRITY lines
+  for: live escalation payload vs ledger mismatch, escalation fingerprint claim mismatch, packet
+  fingerprint claim mismatch, same-revision packet divergences, durable result claim-mismatch anomalies
+  (`INTEGRITY ANOMALY [...]`), and `PENDING CONFLICT` records; `observe` prints anomalies and conflicts
+  as they are frozen. Covered by a fake-`gh` CLI test asserting the lines appear in operator output.
+- **C4 — results bind to an exact source packet.** `source_packet_id` is mandatory and non-empty in
+  `buildResultEnvelope` (`source_packet_id_required`), in marker parsing (`invalid_shape` on
+  null/omitted), and in the CLI (`render-result --packet` required). At observation, a result targeting
+  a locally known escalation must reference a packet of that escalation in the ledger; otherwise a
+  durable `RESULT_PACKET_NOT_OF_ESCALATION` anomaly is recorded and surfaced — the observation is
+  frozen for audit but never clean. Foreign-escalation results are still surfaced without membership
+  validation (no local ledger to validate against), which does not weaken known-escalation validation.
+- **C5 — conflicts are create-or-get.** `ResultFingerprintConflict` carries a stable `conflictKey`
+  (`escalation|result|recorded|observed`, all recomputed fingerprints); replays of the same conflicting
+  fingerprint — across comments or restarts — reuse the existing `PENDING_TRIAGE` record, while a
+  genuinely different fingerprint may create a distinct conflict. `MailboxIntegrityAnomaly` records are
+  create-or-get by an analogous stable `anomalyKey`. Replay/restart tests pin both.
+
+Boundary unchanged: still no `result_kind`, no destination-authored sufficiency, no
+resolution/withdrawal/templates/ResolutionPolicy, no WAIT plane, no automatic resume; every escalation
+remains `HUMAN_MEDIATED` + `OPEN`; GitHub remains transport only.
 
 ## Known limits
 

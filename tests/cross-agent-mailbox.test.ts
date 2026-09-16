@@ -4,6 +4,7 @@ import {
   compileLaunchInstructions,
   CrossAgentMailbox,
   emptyMailboxState,
+  escalationContentFingerprintFromWire,
   extractMarkerBlocks,
   findForbiddenEnvelopeFields,
   InMemoryMailboxStore,
@@ -254,6 +255,7 @@ describe("immutable packet identity, revision, fingerprint", () => {
       buildResultEnvelope({
         resultId: "res-unsafe",
         sourceEscalationId: "esc-mailbox-1",
+        sourcePacketId: "esc-mailbox-1/packet/r1",
         sourceRole: "PRIMARY_DESIGN",
         authorityRole: "PRIMARY_DESIGN",
         completionStatus: "COMPLETE",
@@ -387,6 +389,7 @@ describe("immutable observation capture and result dedup", () => {
     const rendered = await buildResultEnvelope({
       resultId: "res-adjudication-1",
       sourceEscalationId: "esc-mailbox-1",
+      sourcePacketId: "esc-mailbox-1/packet/r1",
       sourceRole: "PRIMARY_DESIGN",
       authorityRole: "PRIMARY_DESIGN",
       completionStatus: "COMPLETE",
@@ -408,6 +411,7 @@ describe("immutable observation capture and result dedup", () => {
     const rendered = await buildResultEnvelope({
       resultId: "res-adjudication-1",
       sourceEscalationId: "esc-mailbox-1",
+      sourcePacketId: "esc-mailbox-1/packet/r1",
       sourceRole: "PRIMARY_DESIGN",
       authorityRole: "PRIMARY_DESIGN",
       completionStatus: "COMPLETE",
@@ -426,6 +430,7 @@ describe("immutable observation capture and result dedup", () => {
     const original = await buildResultEnvelope({
       resultId: "res-adjudication-1",
       sourceEscalationId: "esc-mailbox-1",
+      sourcePacketId: "esc-mailbox-1/packet/r1",
       sourceRole: "PRIMARY_DESIGN",
       authorityRole: "PRIMARY_DESIGN",
       completionStatus: "COMPLETE",
@@ -436,6 +441,7 @@ describe("immutable observation capture and result dedup", () => {
     const edited = await buildResultEnvelope({
       resultId: "res-adjudication-1",
       sourceEscalationId: "esc-mailbox-1",
+      sourcePacketId: "esc-mailbox-1/packet/r1",
       sourceRole: "PRIMARY_DESIGN",
       authorityRole: "PRIMARY_DESIGN",
       completionStatus: "COMPLETE",
@@ -461,6 +467,7 @@ describe("immutable observation capture and result dedup", () => {
     const first = await buildResultEnvelope({
       resultId: "res-adjudication-1",
       sourceEscalationId: "esc-mailbox-1",
+      sourcePacketId: "esc-mailbox-1/packet/r1",
       sourceRole: "PRIMARY_DESIGN",
       authorityRole: "PRIMARY_DESIGN",
       completionStatus: "COMPLETE",
@@ -470,6 +477,7 @@ describe("immutable observation capture and result dedup", () => {
     const second = await buildResultEnvelope({
       resultId: "res-adjudication-2",
       sourceEscalationId: "esc-mailbox-1",
+      sourcePacketId: "esc-mailbox-1/packet/r1",
       sourceRole: "PRIMARY_DESIGN",
       authorityRole: "PRIMARY_DESIGN",
       completionStatus: "PARTIAL",
@@ -492,6 +500,7 @@ describe("immutable observation capture and result dedup", () => {
     const smuggled = await buildResultEnvelope({
       resultId: "res-smuggled",
       sourceEscalationId: "esc-mailbox-1",
+      sourcePacketId: "esc-mailbox-1/packet/r1",
       sourceRole: "PRIMARY_DESIGN",
       authorityRole: "PRIMARY_DESIGN",
       completionStatus: "COMPLETE",
@@ -512,23 +521,23 @@ describe("immutable observation capture and result dedup", () => {
   });
 });
 
-describe("restart-safe marker discovery", () => {
-  async function preparedMailboxWithPostedPacket() {
-    const opened = await openedMailbox();
-    const mailbox = opened.mailbox;
-    await mailbox.compilePacket(packetInput("esc-mailbox-1"));
-    const state = await mailbox.snapshot();
-    const packet = state.packets[0];
-    const rendered = await mailbox.renderPacketEnvelope("esc-mailbox-1", packet.packetId);
-    await mailbox.recordPost({
-      markerKind: "ESCALATION_PACKET",
-      packetId: packet.packetId,
-      commentRef: "futouyiba/noos-shuttle#10/comment/100",
-      envelopeFingerprint: rendered.envelopeFingerprint
-    });
-    return { mailbox, store: opened.store, rendered, packet };
-  }
+async function preparedMailboxWithPostedPacket() {
+  const opened = await openedMailbox();
+  const mailbox = opened.mailbox;
+  await mailbox.compilePacket(packetInput("esc-mailbox-1"));
+  const state = await mailbox.snapshot();
+  const packet = state.packets[0];
+  const rendered = await mailbox.renderPacketEnvelope("esc-mailbox-1", packet.packetId);
+  await mailbox.recordPost({
+    markerKind: "ESCALATION_PACKET",
+    packetId: packet.packetId,
+    commentRef: "futouyiba/noos-shuttle#10/comment/100",
+    envelopeFingerprint: rendered.envelopeFingerprint
+  });
+  return { mailbox, store: opened.store, rendered, packet };
+}
 
+describe("restart-safe marker discovery", () => {
   it("discovers the blocking escalation and latest packet from the ledger alone", async () => {
     const { mailbox } = await preparedMailboxWithPostedPacket();
     await mailbox.compilePacket(packetInput("esc-mailbox-1", { scope: "Narrowed after partial adjudication." }));
@@ -616,6 +625,7 @@ describe("restart-safe marker discovery", () => {
     const foreignResult = await buildResultEnvelope({
       resultId: "res-foreign-1",
       sourceEscalationId: "esc-not-in-ledger",
+      sourcePacketId: "esc-not-in-ledger/packet/r1",
       sourceRole: "PRIMARY_DESIGN",
       authorityRole: "PRIMARY_DESIGN",
       completionStatus: "COMPLETE",
@@ -637,6 +647,7 @@ describe("restart-safe marker discovery", () => {
     const original = await buildResultEnvelope({
       resultId: "res-edit-1",
       sourceEscalationId: "esc-mailbox-1",
+      sourcePacketId: "esc-mailbox-1/packet/r1",
       sourceRole: "PRIMARY_DESIGN",
       authorityRole: "PRIMARY_DESIGN",
       completionStatus: "COMPLETE",
@@ -646,6 +657,7 @@ describe("restart-safe marker discovery", () => {
     const edited = await buildResultEnvelope({
       resultId: "res-edit-1",
       sourceEscalationId: "esc-mailbox-1",
+      sourcePacketId: "esc-mailbox-1/packet/r1",
       sourceRole: "PRIMARY_DESIGN",
       authorityRole: "PRIMARY_DESIGN",
       completionStatus: "COMPLETE",
@@ -713,5 +725,258 @@ describe("error surface", () => {
     await expect(mailbox.compilePacket(packetInput("esc-missing"))).rejects.toBeInstanceOf(MailboxInvariantError);
     await expect(mailbox.compilePacket(packetInput("esc-missing"))).rejects.toMatchObject({ code: "escalation_not_found" });
     expect(new MailboxConflictError("x", "y").name).toBe("MailboxConflictError");
+  });
+});
+
+function wireToBody(wire: unknown): string {
+  return "```noos-mailbox\n" + JSON.stringify(wire, null, 2) + "\n```";
+}
+
+async function c1MailboxWithOriginalResult(): Promise<{
+  mailbox: CrossAgentMailbox;
+  store: InMemoryMailboxStore;
+  original: RenderedEnvelope;
+}> {
+  const opened = await openedMailbox();
+  await opened.mailbox.compilePacket(packetInput("esc-mailbox-1"));
+  const original = await buildResultEnvelope({
+    resultId: "res-c1",
+    sourceEscalationId: "esc-mailbox-1",
+    sourcePacketId: "esc-mailbox-1/packet/r1",
+    sourceRole: "PRIMARY_DESIGN",
+    authorityRole: "PRIMARY_DESIGN",
+    completionStatus: "COMPLETE",
+    summary: "Original adjudication.",
+    recommendedNextAction: "Continue."
+  });
+  await opened.mailbox.observeComments([markerComment("futouyiba/noos-shuttle#10/comment/111", original)]);
+  return { mailbox: opened.mailbox, store: opened.store, original };
+}
+
+describe("C1: result identity is the recomputed semantic fingerprint", () => {
+  it("detects an edited result retaining the old declared fingerprint and never treats it as idempotent replay", async () => {
+    const { mailbox, original } = await c1MailboxWithOriginalResult();
+    const wire = JSON.parse(JSON.stringify(original.envelope));
+    wire.result.summary = "TAMPERED summary; declared fingerprint retained.";
+    const outcome = await mailbox.observeComments([
+      { commentRef: "futouyiba/noos-shuttle#10/comment/222", author: "design-agent", updatedAt: "2026-09-16T01:00:00Z", body: wireToBody(wire) }
+    ]);
+    expect(outcome.integrityAnomalies.map((anomaly) => anomaly.kind)).toContain("RESULT_FINGERPRINT_CLAIM_MISMATCH");
+    expect(outcome.resultObservations).toHaveLength(0);
+    expect(outcome.resultFingerprintConflicts).toHaveLength(1);
+    const conflict = outcome.resultFingerprintConflicts[0];
+    // Conflict identity uses recomputed fingerprints, never the stale claim.
+    expect(conflict.observedFingerprint).not.toBe(wire.result.result_fingerprint);
+    expect(conflict.observedFingerprint).not.toBe(resultEnvelopeWire(original).result.result_fingerprint);
+    expect(conflict.recordedFingerprint).toBe(resultEnvelopeWire(original).result.result_fingerprint);
+  });
+
+  it("treats a forged declared fingerprint over identical content as an anomaly, not a clean replay", async () => {
+    const { mailbox, original } = await c1MailboxWithOriginalResult();
+    const wire = JSON.parse(JSON.stringify(original.envelope));
+    wire.result.result_fingerprint = "sha256:" + "d".repeat(64);
+    const outcome = await mailbox.observeComments([
+      { commentRef: "futouyiba/noos-shuttle#10/comment/222", author: "design-agent", updatedAt: "2026-09-16T01:00:00Z", body: wireToBody(wire) }
+    ]);
+    expect(outcome.resultObservations).toHaveLength(0);
+    expect(outcome.resultFingerprintConflicts).toHaveLength(0);
+    expect(outcome.integrityAnomalies).toHaveLength(1);
+    expect(outcome.integrityAnomalies[0].kind).toBe("RESULT_FINGERPRINT_CLAIM_MISMATCH");
+    const state = await mailbox.snapshot();
+    expect(state.resultObservations).toHaveLength(1);
+    // The original observation is untouched; the forged claim is frozen on the
+    // new comment observation and in the anomaly record, never on the identity.
+    expect(state.resultObservations[0].resultFingerprint).toBe(resultEnvelopeWire(original).result.result_fingerprint);
+    expect(state.resultObservations[0].declaredResultFingerprint).toBe(resultEnvelopeWire(original).result.result_fingerprint);
+    expect(outcome.commentObservations[0].parsedResultFingerprint).toBe("sha256:" + "d".repeat(64));
+  });
+
+  it("records no anomaly for an honest marker whose declared fingerprint matches its content", async () => {
+    const { mailbox } = await c1MailboxWithOriginalResult();
+    const honest = await buildResultEnvelope({
+      resultId: "res-c1-honest",
+      sourceEscalationId: "esc-mailbox-1",
+      sourcePacketId: "esc-mailbox-1/packet/r1",
+      sourceRole: "PRIMARY_DESIGN",
+      authorityRole: "PRIMARY_DESIGN",
+      completionStatus: "COMPLETE",
+      summary: "Honest second result.",
+      recommendedNextAction: "Continue."
+    });
+    const outcome = await mailbox.observeComments([markerComment("futouyiba/noos-shuttle#10/comment/333", honest)]);
+    expect(outcome.integrityAnomalies).toHaveLength(0);
+    expect(outcome.resultObservations).toHaveLength(1);
+  });
+});
+
+describe("C2: live escalation payload integrity", () => {
+  it("flags a tampered escalation payload even when the packet subobject is intact", async () => {
+    const { mailbox, rendered } = await preparedMailboxWithPostedPacket();
+    const wire = JSON.parse(JSON.stringify(rendered.envelope));
+    wire.escalation.question = "TAMPERED question?";
+    const report = await mailbox.discover([
+      { commentRef: "futouyiba/noos-shuttle#10/comment/100", author: "impl-agent", updatedAt: "2026-09-16T00:00:00Z", body: wireToBody(wire) }
+    ]);
+    expect(report.escalations[0].escalationFingerprintMatchesLedger).toBe(false);
+    expect(report.escalations[0].liveEscalationClaimIntegrity).toBe(false);
+    expect(report.escalations[0].packetFingerprintMatchesLive).toBe(true);
+  });
+
+  it("still fails the ledger match when the tamperer re-declares a self-consistent fingerprint", async () => {
+    const { mailbox, rendered } = await preparedMailboxWithPostedPacket();
+    const wire = JSON.parse(JSON.stringify(rendered.envelope));
+    wire.escalation.blocker_summary = "TAMPERED blocker.";
+    wire.escalation.escalation_fingerprint = await escalationContentFingerprintFromWire(wire.escalation);
+    const report = await mailbox.discover([
+      { commentRef: "futouyiba/noos-shuttle#10/comment/100", author: "impl-agent", updatedAt: "2026-09-16T00:00:00Z", body: wireToBody(wire) }
+    ]);
+    expect(report.escalations[0].liveEscalationClaimIntegrity).toBe(true);
+    expect(report.escalations[0].escalationFingerprintMatchesLedger).toBe(false);
+  });
+
+  it("passes both checks for an honest live copy", async () => {
+    const { mailbox, rendered } = await preparedMailboxWithPostedPacket();
+    const report = await mailbox.discover([
+      { commentRef: "futouyiba/noos-shuttle#10/comment/100", author: "impl-agent", updatedAt: "2026-09-16T00:00:00Z", body: rendered.body }
+    ]);
+    expect(report.escalations[0].escalationFingerprintMatchesLedger).toBe(true);
+    expect(report.escalations[0].liveEscalationClaimIntegrity).toBe(true);
+  });
+
+  it("flags provenance and role tampering in the escalation payload", async () => {
+    const { mailbox, rendered } = await preparedMailboxWithPostedPacket();
+    const wire = JSON.parse(JSON.stringify(rendered.envelope));
+    wire.escalation.provenance.pull_request_head_sha = "b49303cabf436f3398a596685d36d2792e6a08a1b";
+    wire.escalation.destination_role = "OTHER_ROLE";
+    const report = await mailbox.discover([
+      { commentRef: "futouyiba/noos-shuttle#10/comment/100", author: "impl-agent", updatedAt: "2026-09-16T00:00:00Z", body: wireToBody(wire) }
+    ]);
+    expect(report.escalations[0].escalationFingerprintMatchesLedger).toBe(false);
+  });
+});
+
+describe("C4: results must bind to an exact source packet", () => {
+  it("rejects construction and parsing without an exact source_packet_id", async () => {
+    await expect(
+      buildResultEnvelope({
+        resultId: "res-c4",
+        sourceEscalationId: "esc-mailbox-1",
+        sourcePacketId: "",
+        sourceRole: "PRIMARY_DESIGN",
+        authorityRole: "PRIMARY_DESIGN",
+        completionStatus: "COMPLETE",
+        summary: "Missing packet binding.",
+        recommendedNextAction: "Continue."
+      })
+    ).rejects.toMatchObject({ code: "source_packet_id_required" });
+    const base = await buildResultEnvelope({
+      resultId: "res-c4",
+      sourceEscalationId: "esc-mailbox-1",
+      sourcePacketId: "esc-mailbox-1/packet/r1",
+      sourceRole: "PRIMARY_DESIGN",
+      authorityRole: "PRIMARY_DESIGN",
+      completionStatus: "COMPLETE",
+      summary: "Packet binding present.",
+      recommendedNextAction: "Continue."
+    });
+    const nulled = JSON.parse(JSON.stringify(base.envelope));
+    nulled.result.source_packet_id = null;
+    expect(await parseEnvelopeJson(wireToBody(nulled).replace(/^```noos-mailbox\n/, "").replace(/\n```$/, ""))).toMatchObject({
+      ok: false,
+      reason: "invalid_shape"
+    });
+    const omitted = JSON.parse(JSON.stringify(base.envelope));
+    delete omitted.result.source_packet_id;
+    expect(await parseEnvelopeJson(JSON.stringify(omitted))).toMatchObject({ ok: false, reason: "invalid_shape" });
+  });
+
+  it("surfaces a known-escalation result bound to a packet outside that escalation", async () => {
+    const { mailbox } = await c1MailboxWithOriginalResult();
+    const misbound = await buildResultEnvelope({
+      resultId: "res-c4-misbound",
+      sourceEscalationId: "esc-mailbox-1",
+      sourcePacketId: "esc-mailbox-1/packet/r9",
+      sourceRole: "PRIMARY_DESIGN",
+      authorityRole: "PRIMARY_DESIGN",
+      completionStatus: "COMPLETE",
+      summary: "Bound to a packet revision that does not exist.",
+      recommendedNextAction: "Continue."
+    });
+    const outcome = await mailbox.observeComments([markerComment("futouyiba/noos-shuttle#10/comment/444", misbound)]);
+    expect(outcome.integrityAnomalies.map((anomaly) => anomaly.kind)).toContain("RESULT_PACKET_NOT_OF_ESCALATION");
+    // The observation is frozen for audit but must not look clean.
+    expect(outcome.resultObservations).toHaveLength(1);
+    const report = await mailbox.discover();
+    expect(report.integrityAnomalies.map((anomaly) => anomaly.kind)).toContain("RESULT_PACKET_NOT_OF_ESCALATION");
+  });
+
+  it("still surfaces foreign-escalation results without weakening known-escalation validation", async () => {
+    const { mailbox } = await c1MailboxWithOriginalResult();
+    const foreign = await buildResultEnvelope({
+      resultId: "res-c4-foreign",
+      sourceEscalationId: "esc-unknown",
+      sourcePacketId: "esc-unknown/packet/r1",
+      sourceRole: "PRIMARY_DESIGN",
+      authorityRole: "PRIMARY_DESIGN",
+      completionStatus: "COMPLETE",
+      summary: "Foreign escalation result.",
+      recommendedNextAction: "Route manually."
+    });
+    const outcome = await mailbox.observeComments([markerComment("futouyiba/noos-shuttle#10/comment/555", foreign)]);
+    expect(outcome.integrityAnomalies).toHaveLength(0);
+    const report = await mailbox.discover([markerComment("futouyiba/noos-shuttle#10/comment/555", foreign)]);
+    expect(report.foreignEscalations).toHaveLength(1);
+    expect(report.foreignEscalations[0]).toMatchObject({ escalationId: "esc-unknown", resultId: "res-c4-foreign" });
+  });
+});
+
+describe("C5: fingerprint conflicts are create-or-get", () => {
+  async function c5Prepared() {
+    const { mailbox, store } = await c1MailboxWithOriginalResult();
+    const divergent = await buildResultEnvelope({
+      resultId: "res-c1",
+      sourceEscalationId: "esc-mailbox-1",
+      sourcePacketId: "esc-mailbox-1/packet/r1",
+      sourceRole: "PRIMARY_DESIGN",
+      authorityRole: "PRIMARY_DESIGN",
+      completionStatus: "COMPLETE",
+      summary: "Divergent adjudication content.",
+      recommendedNextAction: "Continue differently."
+    });
+    return { mailbox, store, divergent };
+  }
+
+  it("replays of the same conflicting fingerprint reuse one durable conflict", async () => {
+    const { mailbox, store, divergent } = await c5Prepared();
+    const first = await mailbox.observeComments([markerComment("futouyiba/noos-shuttle#10/comment/222", divergent)]);
+    expect(first.resultFingerprintConflicts).toHaveLength(1);
+    const conflict = first.resultFingerprintConflicts[0];
+    const mirrored = await mailbox.observeComments([markerComment("futouyiba/noos-shuttle#10/comment/223", divergent)]);
+    expect(mirrored.resultFingerprintConflicts).toHaveLength(0);
+    const restarted = await new CrossAgentMailbox(store).observeComments([
+      markerComment("futouyiba/noos-shuttle#10/comment/224", divergent)
+    ]);
+    expect(restarted.resultFingerprintConflicts).toHaveLength(0);
+    const state = await mailbox.snapshot();
+    expect(state.resultFingerprintConflicts).toHaveLength(1);
+    expect(state.resultFingerprintConflicts[0].conflictKey).toBe(conflict.conflictKey);
+  });
+
+  it("a genuinely different fingerprint may create a distinct conflict", async () => {
+    const { mailbox, divergent } = await c5Prepared();
+    await mailbox.observeComments([markerComment("futouyiba/noos-shuttle#10/comment/222", divergent)]);
+    const third = await buildResultEnvelope({
+      resultId: "res-c1",
+      sourceEscalationId: "esc-mailbox-1",
+      sourcePacketId: "esc-mailbox-1/packet/r1",
+      sourceRole: "PRIMARY_DESIGN",
+      authorityRole: "PRIMARY_DESIGN",
+      completionStatus: "PARTIAL",
+      summary: "Yet another divergent content.",
+      recommendedNextAction: "Escalate to human."
+    });
+    const outcome = await mailbox.observeComments([markerComment("futouyiba/noos-shuttle#10/comment/225", third)]);
+    expect(outcome.resultFingerprintConflicts).toHaveLength(1);
+    expect((await mailbox.snapshot()).resultFingerprintConflicts).toHaveLength(2);
   });
 });

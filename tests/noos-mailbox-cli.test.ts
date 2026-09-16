@@ -212,4 +212,68 @@ describe("cli mailbox flow with a fake gh", () => {
     expect(withoutId.status).toBe(1);
     expect(withoutId.stderr).toContain("--escalation-id is required");
   });
+
+  it("surfaces core integrity anomalies in discover output (C3)", () => {
+    const reopened = runCli(openArgs);
+    expect(reopened.status).toBe(0);
+    const markerBody = reopened.stdout.split("--- marker body ---\n")[1];
+    const wire = JSON.parse(markerBody.slice(markerBody.indexOf("{"), markerBody.lastIndexOf("}") + 1));
+    wire.escalation.question = "TAMPERED question?";
+    const tamperedPacketBody = "```noos-mailbox\n" + JSON.stringify(wire, null, 2) + "\n```";
+
+    setFakeComments([[{ id: 100, user: { login: "impl-agent" }, updated_at: "2026-09-16T00:00:00Z", body: tamperedPacketBody }]]);
+    const tamperedDiscover = runCli(["discover", "--issue", "futouyiba/noos-shuttle#10", "--ledger", ledger]);
+    expect(tamperedDiscover.status).toBe(0);
+    expect(tamperedDiscover.stdout).toContain("INTEGRITY: live escalation payload does not match the durable ledger Escalation");
+    expect(tamperedDiscover.stdout).toContain("INTEGRITY: escalation_fingerprint claim does not match its own content");
+
+    const result = runCli([
+      "render-result",
+      "--escalation",
+      "esc-cli-1",
+      "--packet",
+      "esc-cli-1/packet/r1",
+      "--result-id",
+      "res-cli-c3",
+      "--source-role",
+      "PRIMARY_DESIGN",
+      "--authority-role",
+      "PRIMARY_DESIGN",
+      "--status",
+      "COMPLETE",
+      "--summary",
+      "C3 adjudication.",
+      "--next-action",
+      "Continue the same operation."
+    ]);
+    expect(result.status).toBe(0);
+    const resultBody = result.stdout.split("--- result marker body ---\n")[1];
+    setFakeComments([
+      [
+        { id: 100, user: { login: "impl-agent" }, updated_at: "2026-09-16T00:00:00Z", body: markerBody },
+        { id: 299, user: { login: "design-agent" }, updated_at: "2026-09-16T01:30:00Z", body: resultBody }
+      ]
+    ]);
+    const honestObserve = runCli(["observe", "--issue", "futouyiba/noos-shuttle#10", "--ledger", ledger]);
+    expect(honestObserve.status).toBe(0);
+    expect(honestObserve.stdout).toContain("res-cli-c3");
+
+    const resultWire = JSON.parse(resultBody.slice(resultBody.indexOf("{"), resultBody.lastIndexOf("}") + 1));
+    resultWire.result.summary = "TAMPERED summary; declared fingerprint retained.";
+    const tamperedResultBody = "```noos-mailbox\n" + JSON.stringify(resultWire, null, 2) + "\n```";
+    setFakeComments([
+      [
+        { id: 100, user: { login: "impl-agent" }, updated_at: "2026-09-16T00:00:00Z", body: markerBody },
+        { id: 300, user: { login: "design-agent" }, updated_at: "2026-09-16T02:00:00Z", body: tamperedResultBody }
+      ]
+    ]);
+    const observed = runCli(["observe", "--issue", "futouyiba/noos-shuttle#10", "--ledger", ledger]);
+    expect(observed.status).toBe(0);
+    expect(observed.stdout).toContain("INTEGRITY ANOMALY [RESULT_FINGERPRINT_CLAIM_MISMATCH]");
+    expect(observed.stdout).toContain("CONFLICT");
+    const afterDiscover = runCli(["discover", "--issue", "futouyiba/noos-shuttle#10", "--ledger", ledger]);
+    expect(afterDiscover.status).toBe(0);
+    expect(afterDiscover.stdout).toContain("INTEGRITY ANOMALY [RESULT_FINGERPRINT_CLAIM_MISMATCH]");
+    expect(afterDiscover.stdout).toContain("PENDING CONFLICT");
+  });
 });

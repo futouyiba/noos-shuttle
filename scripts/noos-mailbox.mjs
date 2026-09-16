@@ -51,9 +51,9 @@ function usage(exitCode = 0) {
       [--post] [--ledger <path>]
   npm run mailbox -- revise-packet --escalation <id> --reason ... --goal ... --scope ... \\
       --return ... --stop ... [--non-goal <text>]... [--artifact <ref>]... [--context <ref>]... [--post] [--ledger <path>]
-  npm run mailbox -- render-result --escalation <id> --result-id <id> --source-role R --authority-role R \\
+  npm run mailbox -- render-result --escalation <id> --packet <id> --result-id <id> --source-role R --authority-role R \\
       --status COMPLETE|PARTIAL|BLOCKED|FAILED_SAFE --summary <text|@file|-> --next-action <text> \\
-      [--packet <id>] [--artifact <ref>]... [--authority <ref>]... [--evidence <ref>]... [--open-question <q>]... \\
+      [--artifact <ref>]... [--authority <ref>]... [--evidence <ref>]... [--open-question <q>]... \\
       [--post --issue owner/name#N]
   npm run mailbox -- discover --issue owner/name#N [--ledger <path>]
   npm run mailbox -- observe --issue owner/name#N [--comment <id>] [--ledger <path>]
@@ -392,7 +392,7 @@ async function commandRenderResult(values, flags) {
   const rendered = await buildResultEnvelope({
     resultId: requireValue(values, "result-id"),
     sourceEscalationId: requireValue(values, "escalation"),
-    sourcePacketId: values.get("packet"),
+    sourcePacketId: requireValue(values, "packet"),
     sourceRole: requireValue(values, "source-role"),
     authorityRole: requireValue(values, "authority-role"),
     completionStatus: status,
@@ -433,8 +433,23 @@ async function commandDiscover(values) {
         `  latest packet: ${packet ? `${packet.packetId} r${packet.packetRevision} (${packet.postCommentRefs.join(", ") || "not posted"})` : "none"}` +
         (escalation.packetFingerprintMatchesLive === undefined
           ? "\n"
-          : ` | live fingerprint match: ${escalation.packetFingerprintMatchesLive}\n`)
+          : ` | packet content-vs-ledger: ${escalation.packetFingerprintMatchesLive ? "MATCH" : "MISMATCH"}\n`)
     );
+    // C3: every integrity signal the core knows must be visible here.
+    if (escalation.livePacketClaimIntegrity === false) {
+      process.stdout.write(`  INTEGRITY: packet fingerprint claim does not match its own content\n`);
+    }
+    if (escalation.escalationFingerprintMatchesLedger === false) {
+      process.stdout.write(`  INTEGRITY: live escalation payload does not match the durable ledger Escalation\n`);
+    }
+    if (escalation.liveEscalationClaimIntegrity === false) {
+      process.stdout.write(`  INTEGRITY: escalation_fingerprint claim does not match its own content\n`);
+    }
+    for (const divergence of escalation.sameRevisionDivergences) {
+      process.stdout.write(
+        `  INTEGRITY: same-revision packet divergence at ${divergence.commentRef} (${divergence.packetId}; claimed ${divergence.claimedFingerprint}, content ${divergence.contentFingerprint})\n`
+      );
+    }
     const unobserved = escalation.liveResultMarkers.filter((marker) => !marker.observed);
     if (escalation.liveResultMarkers.length > 0) {
       for (const marker of escalation.liveResultMarkers) {
@@ -458,6 +473,14 @@ async function commandDiscover(values) {
       latestResult: latestResult ? { resultId: latestResult.resultId, commentRef: latestResult.commentRef } : undefined
     });
     process.stdout.write(`  resume instruction:\n  ${instructions.resumeInstruction}\n`);
+  }
+  for (const anomaly of report.integrityAnomalies) {
+    process.stdout.write(`- INTEGRITY ANOMALY [${anomaly.kind}] result ${anomaly.resultId} at ${anomaly.commentRef}: ${anomaly.detail}\n`);
+  }
+  for (const conflict of report.pendingConflicts) {
+    process.stdout.write(
+      `- PENDING CONFLICT ${conflict.conflictId}: result ${conflict.resultId} recorded ${conflict.recordedFingerprint} vs observed ${conflict.observedFingerprint}\n`
+    );
   }
   for (const foreign of report.foreignEscalations) {
     const detail = foreign.resultId
@@ -497,6 +520,11 @@ async function commandObserve(values) {
       `- CONFLICT ${conflict.conflictId}: result ${conflict.resultId} recorded ${conflict.recordedFingerprint} but observed ${conflict.observedFingerprint} — PENDING_TRIAGE, needs Human decision\n`
     );
   }
+  for (const anomaly of outcome.integrityAnomalies) {
+    process.stdout.write(
+      `- INTEGRITY ANOMALY [${anomaly.kind}] result ${anomaly.resultId} at ${anomaly.commentRef}: ${anomaly.detail} — PENDING_TRIAGE, needs Human decision\n`
+    );
+  }
   if (outcome.resultObservations.length > 0) {
     const report = await mailbox.discover(comments);
     for (const escalation of report.escalations) {
@@ -529,8 +557,13 @@ async function commandShow(values) {
   const posts = state.posts.filter((post) => packets.some((packet) => packet.packetId === post.packetId));
   const results = state.resultObservations.filter((observation) => observation.escalationId === escalationId);
   const conflicts = state.resultFingerprintConflicts.filter((conflict) => conflict.escalationId === escalationId);
+  const anomalies = state.integrityAnomalies.filter((anomaly) => anomaly.escalationId === escalationId);
   process.stdout.write(
-    JSON.stringify({ escalation, packets, posts, resultObservations: results, resultFingerprintConflicts: conflicts }, null, 2)
+    JSON.stringify(
+      { escalation, packets, posts, resultObservations: results, resultFingerprintConflicts: conflicts, integrityAnomalies: anomalies },
+      null,
+      2
+    )
   );
 }
 

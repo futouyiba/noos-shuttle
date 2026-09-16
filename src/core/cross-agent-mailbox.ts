@@ -337,7 +337,8 @@ export interface ResultEnvelopeWire {
     result_id: string;
     result_fingerprint: string;
     source_escalation_id: string;
-    source_packet_id: string | null;
+    /** Exact packet provenance is mandatory (contract §3.6 HandoffResult). */
+    source_packet_id: string;
     source_role: string;
     authority_role: string;
     completion_status: MailboxCompletionStatus;
@@ -497,10 +498,6 @@ export async function parseEnvelopeJson(json: string): Promise<EnvelopeParseResu
       if (!MAILBOX_COMPLETION_STATUSES.includes(completionStatus as MailboxCompletionStatus)) {
         throw new MailboxInvariantError("invalid_shape", `Unknown completion_status: ${completionStatus}`);
       }
-      const sourcePacketId = result.source_packet_id;
-      if (sourcePacketId !== null && sourcePacketId !== undefined && typeof sourcePacketId !== "string") {
-        throw new MailboxInvariantError("invalid_shape", "result.source_packet_id must be a string or null.");
-      }
       const envelope: ResultEnvelopeWire = {
         noos_mailbox: MAILBOX_ENVELOPE_VERSION,
         marker_kind: "ESCALATION_RESULT",
@@ -508,7 +505,8 @@ export async function parseEnvelopeJson(json: string): Promise<EnvelopeParseResu
           result_id: requireString(result, "result_id"),
           result_fingerprint: requireString(result, "result_fingerprint"),
           source_escalation_id: requireString(result, "source_escalation_id"),
-          source_packet_id: sourcePacketId ?? null,
+          // C4: exact packet provenance is mandatory; null/omitted rejects.
+          source_packet_id: requireString(result, "source_packet_id"),
           source_role: requireString(result, "source_role"),
           authority_role: requireString(result, "authority_role"),
           completion_status: completionStatus as MailboxCompletionStatus,
@@ -581,15 +579,37 @@ export interface CommentObservation {
 export interface ResultObservation {
   readonly resultObservationId: string;
   readonly resultId: string;
+  /** Trusted semantic identity: recomputed from the result content, never the marker's claim. */
   readonly resultFingerprint: string;
+  /** The fingerprint the marker claimed; recorded for claim-integrity auditing. */
+  readonly declaredResultFingerprint: string;
   readonly escalationId: string;
   readonly authorityRole: string;
   readonly commentObservationId: string;
   readonly firstObservedAt: string;
 }
 
+export type MailboxIntegrityAnomalyKind =
+  | "RESULT_FINGERPRINT_CLAIM_MISMATCH"
+  | "RESULT_PACKET_NOT_OF_ESCALATION";
+
+export interface MailboxIntegrityAnomaly {
+  readonly anomalyId: string;
+  /** Stable create-or-get key; replayed transport of the same anomaly reuses the record. */
+  readonly anomalyKey: string;
+  readonly kind: MailboxIntegrityAnomalyKind;
+  readonly escalationId: string;
+  readonly resultId: string;
+  readonly commentRef: string;
+  readonly detail: string;
+  readonly recordedAt: string;
+  readonly status: "PENDING_TRIAGE";
+}
+
 export interface ResultFingerprintConflict {
   readonly conflictId: string;
+  /** Stable create-or-get key over (escalation, result, recorded, observed) fingerprints. */
+  readonly conflictKey: string;
   readonly escalationId: string;
   readonly resultId: string;
   readonly recordedFingerprint: string;
@@ -608,6 +628,7 @@ export interface CrossAgentMailboxState {
   commentObservations: CommentObservation[];
   resultObservations: ResultObservation[];
   resultFingerprintConflicts: ResultFingerprintConflict[];
+  integrityAnomalies: MailboxIntegrityAnomaly[];
 }
 
 export interface AtomicMailboxStore {
@@ -623,8 +644,13 @@ export function emptyMailboxState(): CrossAgentMailboxState {
     posts: [],
     commentObservations: [],
     resultObservations: [],
-    resultFingerprintConflicts: []
+    resultFingerprintConflicts: [],
+    integrityAnomalies: []
   };
+}
+
+function conflictKeyOf(escalationId: string, resultId: string, recordedFingerprint: string, observedFingerprint: string): string {
+  return `${escalationId}|${resultId}|${recordedFingerprint}|${observedFingerprint}`;
 }
 
 function normalizeState(value: CrossAgentMailboxState | undefined): CrossAgentMailboxState {
@@ -636,8 +662,17 @@ function normalizeState(value: CrossAgentMailboxState | undefined): CrossAgentMa
     packets: state.packets ?? [],
     posts: state.posts ?? [],
     commentObservations: state.commentObservations ?? [],
-    resultObservations: state.resultObservations ?? [],
-    resultFingerprintConflicts: state.resultFingerprintConflicts ?? []
+    resultObservations: (state.resultObservations ?? []).map((observation) => ({
+      ...observation,
+      declaredResultFingerprint: observation.declaredResultFingerprint ?? observation.resultFingerprint
+    })),
+    resultFingerprintConflicts: (state.resultFingerprintConflicts ?? []).map((conflict) => ({
+      ...conflict,
+      conflictKey:
+        conflict.conflictKey ??
+        conflictKeyOf(conflict.escalationId, conflict.resultId, conflict.recordedFingerprint, conflict.observedFingerprint)
+    })),
+    integrityAnomalies: state.integrityAnomalies ?? []
   };
 }
 
@@ -745,7 +780,34 @@ export interface ObserveCommentsOutcome {
   readonly commentObservations: readonly CommentObservation[];
   readonly resultObservations: readonly ResultObservation[];
   readonly resultFingerprintConflicts: readonly ResultFingerprintConflict[];
+  readonly integrityAnomalies: readonly MailboxIntegrityAnomaly[];
   readonly skippedAlreadyObserved: readonly string[];
+}
+
+function appendIntegrityAnomaly(
+  state: CrossAgentMailboxState,
+  input: {
+    kind: MailboxIntegrityAnomalyKind;
+    escalationId: string;
+    resultId: string;
+    commentRef: string;
+    detail: string;
+  },
+  now: string
+): { next: CrossAgentMailboxState; result: MailboxIntegrityAnomaly } | undefined {
+  // Create-or-get: repeated transport of the same anomaly reuses the record.
+  const anomalyKey = `${input.kind}|${input.escalationId}|${input.resultId}|${input.commentRef}|${input.detail}`;
+  if (state.integrityAnomalies.some((anomaly) => anomaly.anomalyKey === anomalyKey)) {
+    return undefined;
+  }
+  const anomaly: MailboxIntegrityAnomaly = {
+    anomalyId: newId("anomaly"),
+    anomalyKey,
+    ...input,
+    recordedAt: now,
+    status: "PENDING_TRIAGE"
+  };
+  return { next: { ...state, integrityAnomalies: [...state.integrityAnomalies, anomaly] }, result: anomaly };
 }
 
 function packetIdFor(escalationId: string, revision: number): string {
@@ -774,6 +836,61 @@ async function packetContentFingerprintFromWire(
     preciseQuestions: packet.precise_questions,
     expectedReturnContract: packet.expected_return_contract,
     stopCondition: packet.stop_condition
+  });
+}
+
+/**
+ * Recomputes the result semantic fingerprint from a parsed marker using the
+ * exact field set buildResultEnvelope fingerprints, so observation identity,
+ * dedup, and conflict detection use trusted CONTENT rather than the marker's
+ * claimed result_fingerprint (C1). Exported for tools and adversarial tests.
+ */
+export async function resultContentFingerprintFromWire(result: ResultEnvelopeWire["result"]): Promise<string> {
+  return fingerprint({
+    result_id: result.result_id,
+    source_escalation_id: result.source_escalation_id,
+    source_packet_id: result.source_packet_id,
+    source_role: result.source_role,
+    authority_role: result.authority_role,
+    completion_status: result.completion_status,
+    summary: result.summary,
+    artifact_refs: result.artifact_refs,
+    authority_refs: result.authority_refs,
+    evidence_refs: result.evidence_refs,
+    unresolved_questions: result.unresolved_questions,
+    recommended_next_action: result.recommended_next_action
+  });
+}
+
+/**
+ * Recomputes the escalation semantic fingerprint from a parsed live marker
+ * using the exact field set openEscalation fingerprints, so discovery can
+ * cross-check live escalation CONTENT against both the marker's claim and the
+ * durable ledger Escalation (C2). Exported for tools and adversarial tests.
+ */
+export async function escalationContentFingerprintFromWire(escalation: PacketEnvelopeWire["escalation"]): Promise<string> {
+  return fingerprint({
+    escalationId: escalation.escalation_id,
+    workItemRef: escalation.work_item_ref,
+    sourceOperationRef: escalation.source_operation_ref,
+    sourceRole: escalation.source_role,
+    destinationRole: escalation.destination_role,
+    kind: escalation.kind,
+    resolutionMode: escalation.resolution_mode,
+    blockerSummary: escalation.blocker_summary,
+    question: escalation.question,
+    authorityBasisRef: escalation.authority_basis_ref,
+    authorityRefs: escalation.authority_refs,
+    evidenceRefs: escalation.evidence_refs,
+    provenance: {
+      repository: escalation.provenance.repository,
+      issueRef: escalation.provenance.issue_ref,
+      pullRequestRef: escalation.provenance.pull_request_ref,
+      pullRequestHeadSha: escalation.provenance.pull_request_head_sha,
+      commitSha: escalation.provenance.commit_sha,
+      pathRefs: escalation.provenance.path_refs,
+      blobRefs: escalation.provenance.blob_refs
+    }
   });
 }
 
@@ -1032,17 +1149,29 @@ export class CrossAgentMailbox {
    * Freezes immutable observations for marker-bearing comments (contract §15).
    * A comment edited after a previous observation is recorded as a NEW
    * observation with editedAfterObservation=true; history is never rewritten.
-   * Valid result markers are deduplicated by (result_id, result_fingerprint):
-   * same pair is idempotent; a different fingerprint for a known result_id
-   * records a PENDING_TRIAGE conflict instead of being silently accepted.
+   *
+   * Result identity is the RECOMPUTED semantic fingerprint of the result
+   * content, never the marker's claimed `result_fingerprint` (C1); a claim
+   * that disagrees with its own content is recorded as a durable integrity
+   * anomaly rather than treated as a clean observation. For locally known
+   * escalations, `source_packet_id` must belong to that escalation (C4).
+   * Dedup/conflicts use the recomputed identity, and conflicts are
+   * create-or-get by a stable key (C5).
    */
   async observeComments(comments: readonly RawMailboxComment[]): Promise<ObserveCommentsOutcome> {
     const outcome: {
       commentObservations: CommentObservation[];
       resultObservations: ResultObservation[];
       resultFingerprintConflicts: ResultFingerprintConflict[];
+      integrityAnomalies: MailboxIntegrityAnomaly[];
       skippedAlreadyObserved: string[];
-    } = { commentObservations: [], resultObservations: [], resultFingerprintConflicts: [], skippedAlreadyObserved: [] };
+    } = {
+      commentObservations: [],
+      resultObservations: [],
+      resultFingerprintConflicts: [],
+      integrityAnomalies: [],
+      skippedAlreadyObserved: []
+    };
 
     return this.commit(async (state) => {
       let next = state;
@@ -1097,7 +1226,7 @@ export class CrossAgentMailbox {
             firstValid?.marker_kind === "ESCALATION_PACKET"
               ? firstValid.packet.packet_id
               : firstValid?.marker_kind === "ESCALATION_RESULT"
-                ? firstValid.result.source_packet_id ?? undefined
+                ? firstValid.result.source_packet_id
                 : undefined,
           parsedResultId: firstValid?.marker_kind === "ESCALATION_RESULT" ? firstValid.result.result_id : undefined,
           parsedResultFingerprint:
@@ -1112,29 +1241,84 @@ export class CrossAgentMailbox {
             continue;
           }
           const result = marker.envelope.result;
+          // C1: recomputed semantic identity is the only trusted identity.
+          const semanticFingerprint = await resultContentFingerprintFromWire(result);
+          if (result.result_fingerprint !== semanticFingerprint) {
+            const appended = appendIntegrityAnomaly(
+              next,
+              {
+                kind: "RESULT_FINGERPRINT_CLAIM_MISMATCH",
+                escalationId: result.source_escalation_id,
+                resultId: result.result_id,
+                commentRef,
+                detail: `Declared result_fingerprint ${result.result_fingerprint} != recomputed semantic fingerprint ${semanticFingerprint}.`
+              },
+              this.clock()
+            );
+            if (appended) {
+              next = appended.next;
+              outcome.integrityAnomalies.push(clone(appended.result));
+            }
+          }
+          // C4: a result for a locally known escalation must bind to an exact
+          // packet of that escalation; otherwise surface the anomaly.
+          const escalationKnown = next.escalations.some((item) => item.escalationId === result.source_escalation_id);
+          if (
+            escalationKnown &&
+            !next.packets.some(
+              (packet) => packet.packetId === result.source_packet_id && packet.escalationId === result.source_escalation_id
+            )
+          ) {
+            const appended = appendIntegrityAnomaly(
+              next,
+              {
+                kind: "RESULT_PACKET_NOT_OF_ESCALATION",
+                escalationId: result.source_escalation_id,
+                resultId: result.result_id,
+                commentRef,
+                detail: `source_packet_id ${result.source_packet_id} does not belong to escalation ${result.source_escalation_id} in this ledger.`
+              },
+              this.clock()
+            );
+            if (appended) {
+              next = appended.next;
+              outcome.integrityAnomalies.push(clone(appended.result));
+            }
+          }
           const recorded = next.resultObservations.find((observation) => observation.resultId === result.result_id);
           if (recorded) {
-            if (recorded.resultFingerprint === result.result_fingerprint) {
+            if (recorded.resultFingerprint === semanticFingerprint) {
               continue;
             }
-            const conflict: ResultFingerprintConflict = {
-              conflictId: newId("conflict"),
-              escalationId: result.source_escalation_id,
-              resultId: result.result_id,
-              recordedFingerprint: recorded.resultFingerprint,
-              observedFingerprint: result.result_fingerprint,
-              commentObservationId: commentObservation.commentObservationId,
-              recordedAt: this.clock(),
-              status: "PENDING_TRIAGE"
-            };
-            next = { ...next, resultFingerprintConflicts: [...next.resultFingerprintConflicts, conflict] };
-            outcome.resultFingerprintConflicts.push(clone(conflict));
+            // C5: create-or-get by (escalation, result, recorded, observed).
+            const conflictKey = conflictKeyOf(
+              result.source_escalation_id,
+              result.result_id,
+              recorded.resultFingerprint,
+              semanticFingerprint
+            );
+            if (!next.resultFingerprintConflicts.some((conflict) => conflict.conflictKey === conflictKey)) {
+              const conflict: ResultFingerprintConflict = {
+                conflictId: newId("conflict"),
+                conflictKey,
+                escalationId: result.source_escalation_id,
+                resultId: result.result_id,
+                recordedFingerprint: recorded.resultFingerprint,
+                observedFingerprint: semanticFingerprint,
+                commentObservationId: commentObservation.commentObservationId,
+                recordedAt: this.clock(),
+                status: "PENDING_TRIAGE"
+              };
+              next = { ...next, resultFingerprintConflicts: [...next.resultFingerprintConflicts, conflict] };
+              outcome.resultFingerprintConflicts.push(clone(conflict));
+            }
             continue;
           }
           const observation: ResultObservation = {
             resultObservationId: newId("result-observation"),
             resultId: result.result_id,
-            resultFingerprint: result.result_fingerprint,
+            resultFingerprint: semanticFingerprint,
+            declaredResultFingerprint: result.result_fingerprint,
             escalationId: result.source_escalation_id,
             authorityRole: result.authority_role,
             commentObservationId: commentObservation.commentObservationId,
@@ -1172,6 +1356,11 @@ export class CrossAgentMailbox {
       let liveMaxRevision = 0;
       let liveMaxClaimedFingerprint: string | undefined;
       let liveMaxContentFingerprint: string | undefined;
+      // C2: live escalation payload integrity — wire content vs durable ledger,
+      // and claimed escalation_fingerprint vs wire content. Any single
+      // mismatching live copy forces the flag false (never "clean").
+      let escalationFingerprintMatchesLedger: boolean | undefined;
+      let liveEscalationClaimIntegrity: boolean | undefined;
       const sameRevisionDivergences: DiscoveredPacketDivergence[] = [];
       const liveResultMarkers: DiscoveredResultMarker[] = [];
       for (const parsed of parsedComments) {
@@ -1183,6 +1372,16 @@ export class CrossAgentMailbox {
             marker.envelope.marker_kind === "ESCALATION_PACKET" &&
             marker.envelope.escalation.escalation_id === escalation.escalationId
           ) {
+            const wireEscalation = marker.envelope.escalation;
+            const escalationContentFingerprint = await escalationContentFingerprintFromWire(wireEscalation);
+            escalationFingerprintMatchesLedger =
+              escalationFingerprintMatchesLedger === undefined
+                ? escalationContentFingerprint === escalation.escalationFingerprint
+                : escalationFingerprintMatchesLedger && escalationContentFingerprint === escalation.escalationFingerprint;
+            liveEscalationClaimIntegrity =
+              liveEscalationClaimIntegrity === undefined
+                ? wireEscalation.escalation_fingerprint === escalationContentFingerprint
+                : liveEscalationClaimIntegrity && wireEscalation.escalation_fingerprint === escalationContentFingerprint;
             const claimed = marker.envelope.packet.packet_fingerprint;
             // Verify the live CONTENT, not just the claimed fingerprint field:
             // a tampered copy can leave the claimed string untouched.
@@ -1246,6 +1445,8 @@ export class CrossAgentMailbox {
           liveMaxClaimedFingerprint === undefined || liveMaxContentFingerprint === undefined
             ? undefined
             : liveMaxClaimedFingerprint === liveMaxContentFingerprint,
+        escalationFingerprintMatchesLedger,
+        liveEscalationClaimIntegrity,
         sameRevisionDivergences,
         observedResults: observedResults.map((observation) => ({
           resultId: observation.resultId,
@@ -1308,7 +1509,8 @@ export class CrossAgentMailbox {
       foreignEscalations,
       malformedMarkers,
       forbiddenFieldMarkers,
-      pendingConflicts: state.resultFingerprintConflicts.filter((conflict) => conflict.status === "PENDING_TRIAGE")
+      pendingConflicts: state.resultFingerprintConflicts.filter((conflict) => conflict.status === "PENDING_TRIAGE"),
+      integrityAnomalies: state.integrityAnomalies.filter((anomaly) => anomaly.status === "PENDING_TRIAGE")
     };
   }
 
@@ -1380,7 +1582,8 @@ async function renderEnvelope(envelope: MailboxEnvelopeWire): Promise<RenderedEn
 export interface BuildResultEnvelopeInput {
   resultId?: string;
   sourceEscalationId: string;
-  sourcePacketId?: string;
+  /** Exact packet provenance is mandatory (contract §3.6 HandoffResult / C4). */
+  sourcePacketId: string;
   sourceRole: string;
   authorityRole: string;
   completionStatus: MailboxCompletionStatus;
@@ -1402,7 +1605,11 @@ export async function buildResultEnvelope(input: BuildResultEnvelopeInput): Prom
   const semantic = {
     result_id: resultId,
     source_escalation_id: nonEmpty(input.sourceEscalationId, "source_escalation_id_required", "sourceEscalationId is required."),
-    source_packet_id: input.sourcePacketId?.trim() || null,
+    source_packet_id: nonEmpty(
+      input.sourcePacketId,
+      "source_packet_id_required",
+      "sourcePacketId is required: a result must bind to the exact packet it answers (contract §3.6)."
+    ),
     source_role: nonEmpty(input.sourceRole, "source_role_required", "sourceRole is required."),
     authority_role: nonEmpty(input.authorityRole, "authority_role_required", "authorityRole is required."),
     completion_status: (() => {
@@ -1505,6 +1712,10 @@ export interface DiscoveredEscalation {
   packetFingerprintMatchesLive?: boolean;
   /** The live marker's claimed fingerprint field matches its own content. */
   livePacketClaimIntegrity?: boolean;
+  /** Live escalation payload content matches the durable ledger Escalation. */
+  escalationFingerprintMatchesLedger?: boolean;
+  /** The live marker's claimed escalation_fingerprint matches its own content. */
+  liveEscalationClaimIntegrity?: boolean;
   /** Live packet copies claiming the same max revision but diverging in content or claim. */
   sameRevisionDivergences: readonly DiscoveredPacketDivergence[];
   observedResults: readonly { resultId: string; resultFingerprint: string; commentObservationId: string; authorityRole: string }[];
@@ -1538,4 +1749,6 @@ export interface MailboxDiscoveryReport {
   malformedMarkers: readonly DiscoveredMalformedMarker[];
   forbiddenFieldMarkers: readonly DiscoveredForbiddenMarker[];
   pendingConflicts: readonly ResultFingerprintConflict[];
+  /** Durable observation-time integrity anomalies (result claim/packet binding). */
+  integrityAnomalies: readonly MailboxIntegrityAnomaly[];
 }
