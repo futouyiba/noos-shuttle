@@ -241,6 +241,24 @@ function latestPacketFor(state, escalationId) {
   return packets.sort((a, b) => a.packetRevision - b.packetRevision)[packets.length - 1];
 }
 
+/**
+ * True when a discovered escalation carries any integrity failure the core
+ * already knows: durable PENDING_TRIAGE anomalies/conflicts, or live marker
+ * tampering (packet/escalation content-vs-ledger, claim self-consistency,
+ * same-revision divergences). Used to gate resume boilerplate behind HOLD.
+ */
+function escalationHasIntegrityFailure(escalation, report) {
+  return (
+    escalation.conflictIds.length > 0 ||
+    report.integrityAnomalies.some((anomaly) => anomaly.escalationId === escalation.escalationId) ||
+    escalation.packetFingerprintMatchesLive === false ||
+    escalation.livePacketClaimIntegrity === false ||
+    escalation.escalationFingerprintMatchesLedger === false ||
+    escalation.liveEscalationClaimIntegrity === false ||
+    escalation.sameRevisionDivergences.length > 0
+  );
+}
+
 function printPostHint() {
   process.stdout.write("\nPost this body as ONE Issue comment (or re-run with --post), then record it:\n");
 }
@@ -465,6 +483,14 @@ async function commandDiscover(values) {
       process.stdout.write(`  PENDING TRIAGE conflicts: ${escalation.conflictIds.join(", ")} (edited/competing result fingerprints)\n`);
     }
     const latestResult = escalation.liveResultMarkers.find((marker) => marker.observed);
+    // A result offered as a resume basis must be backed by a fully trusted
+    // escalation state; otherwise hold for Human triage instead of resuming.
+    if (latestResult && escalationHasIntegrityFailure(escalation, report)) {
+      process.stdout.write(
+        `  HOLD — result ${latestResult.resultId} for escalation ${escalation.escalationId} has a PENDING_TRIAGE anomaly, fingerprint conflict, or live marker integrity failure. Do NOT resume on it; route it to Human triage first.\n`
+      );
+      continue;
+    }
     const instructions = compileLaunchInstructions({
       workItemRef: issueRef,
       escalationId: escalation.escalationId,
@@ -534,12 +560,10 @@ async function commandObserve(values) {
       // A frozen result carrying a PENDING_TRIAGE anomaly or fingerprint
       // conflict is NOT a resume basis; say so instead of printing the resume
       // boilerplate next to the anomaly lines.
-      const anomalous =
-        escalation.conflictIds.length > 0 ||
-        report.integrityAnomalies.some((anomaly) => anomaly.escalationId === escalation.escalationId);
+      const anomalous = escalationHasIntegrityFailure(escalation, report);
       if (anomalous) {
         process.stdout.write(
-          `\nHOLD — result ${observed.resultId} for escalation ${escalation.escalationId} has a PENDING_TRIAGE integrity anomaly or fingerprint conflict. Do NOT resume on it; route it to Human triage first.\n`
+          `\nHOLD — result ${observed.resultId} for escalation ${escalation.escalationId} has a PENDING_TRIAGE anomaly, fingerprint conflict, or live marker integrity failure. Do NOT resume on it; route it to Human triage first.\n`
         );
         continue;
       }
