@@ -1,0 +1,67 @@
+name: UI impact routing
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  ui-impact:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout candidate history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect NOOS Hub UI impact
+        id: impact
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          node scripts/ui-impact.mjs \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA" \
+            --json-output ui-impact.json \
+            --markdown-output ui-impact.md \
+            --github-output "$GITHUB_OUTPUT"
+          cat ui-impact.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish sticky PR evidence
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('ui-impact.md', 'utf8');
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+            const existing = comments.find((comment) =>
+              comment.user?.type === 'Bot' && comment.body?.includes('<!-- noos-ui-impact:v0')
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
+      - name: Explain routing result
+        env:
+          LEVEL: ${{ steps.impact.outputs.level }}
+          NEEDS_GOVERNANCE: ${{ steps.impact.outputs.needs_governance }}
+          NEEDS_DESIGN_GATE: ${{ steps.impact.outputs.needs_design_gate }}
+        run: |
+          echo "UI impact level: $LEVEL"
+          echo "UI governance required: $NEEDS_GOVERNANCE"
+          echo "Design Gate required: $NEEDS_DESIGN_GATE"
+          echo "This workflow reports routing evidence only; it does not approve or merge the PR."
