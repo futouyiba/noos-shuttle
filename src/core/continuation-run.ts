@@ -1,7 +1,7 @@
-/** Minimal durable Bounded Continuation Run: one Human authorization for at most N governed GO rounds. Pure transitions; storage, actuation, and observation live with the caller (background coordinator + HumanGoRuntime). V0 mode is ASSISTED — the Human confirms each continuation; no semantic evaluator exists in the extension runtime. */
+/** Minimal durable Bounded Continuation Run: one Human authorization for at most N governed GO rounds. Pure transitions; storage, actuation, and observation live with the caller (background coordinator + HumanGoRuntime). ASSISTED mode asks the Human every round; AUTO_X5 advances rounds through an isolated evaluator behind the same conservative gate. */
 export type ContinuationRunStatus = "CREATED" | "ACTIVE" | "ENDED" | "CANCELLED" | "FAILED_SAFE";
-export type ContinuationRunMode = "ASSISTED";
-export type ContinuationRunPhase = "READY_TO_GO" | "DISPATCHING" | "ASSISTANT_GENERATING" | "STABILIZING" | "AWAITING_HUMAN_DECISION" | "ENDED";
+export type ContinuationRunMode = "ASSISTED" | "AUTO_X5";
+export type ContinuationRunPhase = "READY_TO_GO" | "DISPATCHING" | "ASSISTANT_GENERATING" | "STABILIZING" | "AWAITING_HUMAN_DECISION" | "EVALUATING" | "ENDED";
 export type ContinuationStopReason =
   | "BUDGET_EXHAUSTED"
   | "WAIT_HUMAN"
@@ -17,7 +17,8 @@ export type ContinuationStopReason =
   | "AUTHORITY_CHANGED"
   | "CONVERSATION_REBASE_REQUIRED"
   | "SUBMISSION_UNCERTAIN"
-  | "CARRIER_FAILURE";
+  | "CARRIER_FAILURE"
+  | "EVALUATOR_UNAVAILABLE";
 
 /** Budgets surfaced in the UI; <= EXPERIMENTAL_MAX_BUDGET can actually start. */
 export const BCR_ALLOWED_BUDGETS = [1, 5, 10, 20] as const;
@@ -31,6 +32,9 @@ export interface ContinuationRun {
   providerConversationRef: string;
   bindingEpoch: number;
   mode: ContinuationRunMode;
+  /** Run-local Goal/Scope snapshot frozen at start (AUTO_X5 requires a goal; ASSISTED may omit it). */
+  goal?: string;
+  scope?: string;
   maxContinuations: number;
   consumedContinuations: number;
   status: ContinuationRunStatus;
@@ -52,6 +56,8 @@ export type ContinuationRunEvent =
   | { type: "OPERATION_COMPLETED"; operationId: string; turnRef?: string }
   | { type: "OPERATION_UNCERTAIN"; operationId: string }
   | { type: "HUMAN_CONTINUE" }
+  | { type: "EVALUATION_PASSED" }
+  | { type: "EVALUATION_STOPPED"; reason: ContinuationStopReason }
   | { type: "HUMAN_STOP" }
   | { type: "USER_INTERVENTION" }
   | { type: "AUTHORITY_CHANGED" }
@@ -67,6 +73,9 @@ export interface StartContinuationRunInput {
   providerConversationRef: string;
   bindingEpoch: number;
   maxContinuations: number;
+  mode?: ContinuationRunMode;
+  goal?: string;
+  scope?: string;
   now: number;
 }
 
@@ -78,13 +87,20 @@ export function startContinuationRun(input: StartContinuationRunInput): Continua
   if (!(BCR_ALLOWED_BUDGETS as readonly number[]).includes(input.maxContinuations)) throw new Error(`maxContinuations: expected one of ${BCR_ALLOWED_BUDGETS.join(" | ")}`);
   if (input.maxContinuations > BCR_EXPERIMENTAL_MAX_BUDGET) throw new Error(`maxContinuations ${input.maxContinuations} exceeds experimental cap ${BCR_EXPERIMENTAL_MAX_BUDGET} (real-evidence gate not passed)`);
   if (!Number.isFinite(input.now)) throw new Error("now: number required");
+  const mode = input.mode ?? "ASSISTED";
+  if (mode === "AUTO_X5") {
+    if (typeof input.goal !== "string" || input.goal.trim() === "") throw new Error("goal: non-empty string required for AUTO_X5 runs");
+    if (input.scope !== undefined && (typeof input.scope !== "string" || input.scope.trim() === "")) throw new Error("scope: non-empty string required when provided");
+  }
   return {
     runId: input.runId,
     workItemId: input.workItemId,
     logicalThreadId: input.logicalThreadId,
     providerConversationRef: input.providerConversationRef,
     bindingEpoch: input.bindingEpoch,
-    mode: "ASSISTED",
+    mode,
+    goal: input.goal?.trim(),
+    scope: input.scope?.trim(),
     maxContinuations: input.maxContinuations,
     consumedContinuations: 0,
     status: "ACTIVE",
@@ -158,6 +174,8 @@ export function applyRunEvent(run: ContinuationRun, event: ContinuationRunEvent,
         next.status = "ENDED";
         next.phase = "ENDED";
         next.stopReason = "BUDGET_EXHAUSTED";
+      } else if (next.mode === "AUTO_X5") {
+        next.phase = "EVALUATING";
       } else {
         next.phase = "AWAITING_HUMAN_DECISION";
       }
@@ -175,6 +193,18 @@ export function applyRunEvent(run: ContinuationRun, event: ContinuationRunEvent,
       if (run.consumedContinuations >= run.maxContinuations) return { run, changed: false, error: "budget exhausted" };
       next.phase = "READY_TO_GO";
       next.lastDecision = "HUMAN_CONTINUE";
+      break;
+    }
+    case "EVALUATION_PASSED": {
+      if (run.phase !== "EVALUATING") return { run, changed: false, error: `phase ${run.phase}, expected EVALUATING` };
+      next.phase = "READY_TO_GO";
+      break;
+    }
+    case "EVALUATION_STOPPED": {
+      if (run.phase !== "EVALUATING") return { run, changed: false, error: `phase ${run.phase}, expected EVALUATING` };
+      next.status = "ENDED";
+      next.phase = "ENDED";
+      next.stopReason = event.reason;
       break;
     }
     case "HUMAN_STOP": {
@@ -227,13 +257,15 @@ export interface CandidateContinuationFixture {
   providerConversationRef: string;
   turnRef?: string;
   assistantTurnExcerpt?: string;
-  decision: "HUMAN_CONTINUE" | "HUMAN_STOP" | "BUDGET_ENDED" | "RUN_ABORTED";
+  decision: "HUMAN_CONTINUE" | "HUMAN_STOP" | "AUTO_CONTINUE" | "AUTO_STOP" | "BUDGET_ENDED" | "RUN_ABORTED";
   humanAction: "continued" | "stopped" | "intervened" | "pending";
+  continuationMode?: "PLAIN_GO" | "REANCHOR_GO";
+  assessment?: Record<string, unknown>;
   stopReason?: ContinuationStopReason;
   capturedAt: number;
 }
 
-export function createFixtureCandidate(run: ContinuationRun, input: { continuationIndex: number; turnRef?: string; assistantTurnExcerpt?: string; decision: CandidateContinuationFixture["decision"]; humanAction: CandidateContinuationFixture["humanAction"]; stopReason?: ContinuationStopReason; capturedAt: number }): CandidateContinuationFixture {
+export function createFixtureCandidate(run: ContinuationRun, input: { continuationIndex: number; turnRef?: string; assistantTurnExcerpt?: string; decision: CandidateContinuationFixture["decision"]; humanAction: CandidateContinuationFixture["humanAction"]; continuationMode?: CandidateContinuationFixture["continuationMode"]; assessment?: Record<string, unknown>; stopReason?: ContinuationStopReason; capturedAt: number }): CandidateContinuationFixture {
   return {
     candidateId: `${run.runId}:${input.continuationIndex}`,
     runId: run.runId,
@@ -243,6 +275,8 @@ export function createFixtureCandidate(run: ContinuationRun, input: { continuati
     assistantTurnExcerpt: input.assistantTurnExcerpt,
     decision: input.decision,
     humanAction: input.humanAction,
+    continuationMode: input.continuationMode,
+    assessment: input.assessment,
     stopReason: input.stopReason,
     capturedAt: input.capturedAt
   };
@@ -273,6 +307,8 @@ export type ContinuationRunMutation =
       decision: CandidateContinuationFixture["decision"];
       humanAction: CandidateContinuationFixture["humanAction"];
       stopReason?: ContinuationStopReason;
+      continuationMode?: "PLAIN_GO" | "REANCHOR_GO";
+      assessment?: Record<string, unknown>;
       capturedAt: number;
     }
   | { type: "attach_candidate"; candidate: CandidateContinuationFixture };
@@ -328,12 +364,15 @@ export function reduceContinuationRunStore(store: ContinuationRunStore, mutation
       if (run === undefined) return { ok: false, error: `unknown run ${mutation.runId}` };
       if (!Number.isInteger(mutation.continuationIndex) || mutation.continuationIndex < 1) return { ok: false, error: "continuationIndex: positive integer required" };
       if (!Number.isFinite(mutation.capturedAt)) return { ok: false, error: "capturedAt: number required" };
+      if (mutation.assessment !== undefined && (typeof mutation.assessment !== "object" || mutation.assessment === null)) return { ok: false, error: "assessment: object required when provided" };
       const candidate = createFixtureCandidate(run, {
         continuationIndex: mutation.continuationIndex,
         turnRef: mutation.turnRef,
         assistantTurnExcerpt: mutation.assistantTurnExcerpt,
         decision: mutation.decision,
         humanAction: mutation.humanAction,
+        continuationMode: mutation.continuationMode,
+        assessment: mutation.assessment,
         stopReason: mutation.stopReason,
         capturedAt: mutation.capturedAt
       });

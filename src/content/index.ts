@@ -224,6 +224,9 @@ let bcrExpectedUserCount = -1;
 let bcrMutationInFlight = false;
 let bcrBusy = false;
 let bcrBudgetCap = 5;
+let bcrAutoConfigured = false;
+let bcrEvalModel = "deepseek-chat";
+let bcrLastDispatchReanchor = false;
 let shuttleApp: HTMLElement | null = null;
 
 interface SubmissionDispatchFence {
@@ -319,6 +322,7 @@ function bootstrap(): void {
   render(app);
   installConversationWatcher(app);
   void refreshActiveRun();
+  void refreshBcrEvalConfig();
   installProjectImportBridge(app);
   void refreshVaultStatus(app);
   window.addEventListener("resize", () => {
@@ -370,6 +374,10 @@ function render(app: HTMLElement): void {
                           viewState.locale === "en"
                         }">English</button>
                       </div>
+                      <div class="settings-label">${copy.bcrSettingsTitle}</div>
+                      <input class="bcr-eval-input" type="password" data-action="bcr-eval-key" placeholder="${escapeAttribute(copy.bcrSettingsKey)}" autocomplete="off" />
+                      <input class="bcr-eval-input" type="text" data-action="bcr-eval-model" placeholder="${escapeAttribute(copy.bcrSettingsModel)}" value="${escapeAttribute(bcrEvalModel)}" />
+                      <span class="bcr-note">${bcrAutoConfigured ? escapeHtml(copy.bcrAutoBadge) : escapeHtml(copy.bcrAssistedNote)}</span>
                     </div>`
                   : ""
               }
@@ -437,6 +445,19 @@ function render(app: HTMLElement): void {
       captureContextPackForSelectedThread();
     }
     render(app);
+  });
+
+  app.querySelectorAll<HTMLInputElement>("input[data-action='bcr-eval-key'], input[data-action='bcr-eval-model']").forEach((element) => {
+    element.addEventListener("change", () => {
+      const key = app.querySelector<HTMLInputElement>("input[data-action='bcr-eval-key']");
+      const model = app.querySelector<HTMLInputElement>("input[data-action='bcr-eval-model']");
+      const patch: { apiKey?: string; model?: string } = {};
+      if (key?.value.trim()) patch.apiKey = key.value.trim();
+      if (model?.value.trim()) patch.model = model.value.trim();
+      if (patch.apiKey === undefined && patch.model === undefined) return;
+      if (key) key.value = "";
+      void saveBcrEvalConfig(app, patch);
+    });
   });
 }
 
@@ -515,11 +536,12 @@ function renderChatGptSurface(selectedThread: NoosThread | undefined, copy: (typ
 function renderBcrSection(copy: (typeof COPY)[ShuttleLocale]): string {
   const active = bcrRun;
   if (active) {
+    const auto = active.mode === "AUTO_X5";
     const awaitingDecision = active.phase === "AWAITING_HUMAN_DECISION";
     const readyToGo = active.phase === "READY_TO_GO" && active.pendingSubmissionOperationId === undefined;
     const phase = escapeHtml(bcrPhaseLabel(active, copy));
     return `<div class="bcr-panel" data-bcr-state="active">
-      <div class="bcr-title">${escapeHtml(copy.bcrSectionTitle)} <span class="bcr-note">${escapeHtml(copy.bcrAssistedNote)}</span></div>
+      <div class="bcr-title">${escapeHtml(copy.bcrSectionTitle)} <span class="bcr-note">${auto ? escapeHtml(copy.bcrAutoNote) : escapeHtml(copy.bcrAssistedNote)}</span></div>
       <div class="bcr-status"><strong>${escapeHtml(copy.bcrRunningLabel)} ${active.consumedContinuations} / ${active.maxContinuations}</strong><span class="bcr-phase"> · ${phase}</span></div>
       ${
         awaitingDecision
@@ -546,7 +568,12 @@ function renderBcrSection(copy: (typeof COPY)[ShuttleLocale]): string {
       ${locked ? `title="${escapeAttribute(copy.bcrLockedReason)}"` : ""}>Go${budget > 1 ? ` ×${budget}` : ""}</button>`;
   }).join("");
   return `<div class="bcr-panel" data-bcr-state="${ended ? "ended" : "idle"}">
-    <div class="bcr-title">${escapeHtml(copy.bcrSectionTitle)} <span class="bcr-note">${escapeHtml(copy.bcrAssistedNote)}</span></div>
+    <div class="bcr-title">${escapeHtml(copy.bcrSectionTitle)} <span class="bcr-note">${bcrAutoConfigured ? escapeHtml(copy.bcrAutoBadge) : escapeHtml(copy.bcrAssistedNote)}</span></div>
+    ${
+      bcrAutoConfigured
+        ? `<input class="bcr-goal-input" type="text" data-bcr-goal placeholder="${escapeAttribute(copy.bcrGoalPlaceholder)}" />`
+        : ""
+    }
     ${
       ended
         ? `<div class="bcr-ended">
@@ -557,7 +584,7 @@ function renderBcrSection(copy: (typeof COPY)[ShuttleLocale]): string {
         : ""
     }
     <div class="bcr-budgets">${startButtons}</div>
-    <div class="bcr-hint">${escapeHtml(copy.bcrLockedReason)}</div>
+    <div class="bcr-hint">${escapeHtml(bcrAutoConfigured ? copy.bcrAutoHint : copy.bcrLockedReason)}</div>
   </div>`;
 }
 
@@ -1537,6 +1564,11 @@ function adoptRunState(run: ContinuationRun | null): void {
       // Re-adopted after a reload: baseline from the live observation so the
       // run's own past submissions are never misread as Human intervention.
       bcrExpectedUserCount = runtimeObservationLedger.value?.userMessageCount ?? -1;
+      // An AUTO run left mid-evaluation by a reload resumes its evaluation
+      // here; a READY_TO_GO resume is surfaced as [Send go] instead.
+      if (run.mode === "AUTO_X5" && run.phase === "EVALUATING") {
+        void runExclusiveBcrAction(() => autoAdvanceRound());
+      }
     }
     ensureBcrWatcher();
     return;
@@ -1560,6 +1592,41 @@ async function refreshActiveRun(): Promise<void> {
   await mutateContinuationRun({ type: "get_active", providerConversationRef: conversationRef });
 }
 
+async function refreshBcrEvalConfig(): Promise<void> {
+  try {
+    const response = await sendExtensionMessage<
+      { type: "NOOS_CONTINUATION_EVAL_CONFIG" },
+      { ok: boolean; evaluatorConfigured?: boolean; model?: string; error?: string }
+    >({ type: "NOOS_CONTINUATION_EVAL_CONFIG" });
+    if (response?.ok) {
+      bcrAutoConfigured = response.evaluatorConfigured === true;
+      if (typeof response.model === "string" && response.model.trim() !== "") bcrEvalModel = response.model;
+    }
+  } catch {
+    // Settings surface stays in ASSISTED fallback when the lane is unavailable.
+  }
+}
+
+async function saveBcrEvalConfig(app: HTMLElement, patch: { apiKey?: string; model?: string }): Promise<void> {
+  const copy = COPY[viewState.locale];
+  try {
+    const response = await sendExtensionMessage<
+      { type: "NOOS_CONTINUATION_EVAL_CONFIG"; config?: { apiKey?: string; model?: string } },
+      { ok: boolean; evaluatorConfigured?: boolean; model?: string; error?: string }
+    >({ type: "NOOS_CONTINUATION_EVAL_CONFIG", config: patch });
+    if (response?.ok) {
+      bcrAutoConfigured = response.evaluatorConfigured === true;
+      if (typeof response.model === "string" && response.model.trim() !== "") bcrEvalModel = response.model;
+      viewState.message = copy.bcrSettingsSaved;
+    } else {
+      viewState.message = `${copy.bcrStartFailed}${response?.error ? `: ${response.error}` : ""}`;
+    }
+  } catch {
+    viewState.message = copy.bcrStartFailed;
+  }
+  render(app);
+}
+
 async function startBoundedRun(app: HTMLElement, budget: number): Promise<void> {
   const copy = COPY[viewState.locale];
   if (bcrRun) return;
@@ -1568,6 +1635,19 @@ async function startBoundedRun(app: HTMLElement, budget: number): Promise<void> 
     viewState.message = copy.bcrCarrierNotReady;
     render(app);
     return;
+  }
+  const auto = bcrAutoConfigured;
+  let goal: string | undefined;
+  let mode: "ASSISTED" | "AUTO_X5" = "ASSISTED";
+  if (auto) {
+    const input = app.querySelector<HTMLInputElement>("[data-bcr-goal]");
+    goal = (input?.value ?? "").trim();
+    if (goal === "") {
+      viewState.message = copy.bcrGoalRequired;
+      render(app);
+      return;
+    }
+    mode = "AUTO_X5";
   }
   const now = Date.now();
   const result = await mutateContinuationRun({
@@ -1579,6 +1659,8 @@ async function startBoundedRun(app: HTMLElement, budget: number): Promise<void> 
       providerConversationRef: observation.providerConversationRef,
       bindingEpoch: observation.sourceEpoch,
       maxContinuations: budget,
+      mode,
+      goal,
       now
     }
   });
@@ -1625,8 +1707,12 @@ async function issueRunGo(app: HTMLElement): Promise<void> {
   const round = gate.run ? gate.run.consumedContinuations + 1 : bcrRun.consumedContinuations + 1;
   const operationId = `${bcrRun.runId}:go:${round}`;
   bcrExpectedUserCount = (observation.userMessageCount ?? 0) + 1;
+  // Soft re-anchor V0: after three plain "go" rounds, later rounds restate the
+  // frozen run goal so deep local reasoning does not drift from it.
+  const reanchor = bcrRun.mode === "AUTO_X5" && bcrRun.consumedContinuations >= 3;
+  bcrLastDispatchReanchor = reanchor;
   const outcome: { status: "DISPATCHED" | "UNCERTAIN" | "BLOCKED" } = { status: "BLOCKED" };
-  await dispatchHumanGo("go", getPageContext(), "shuttle-bcr-run", {
+  await dispatchHumanGo(buildContinuationPayload(bcrRun, reanchor), getPageContext(), "shuttle-bcr-run", {
     operationId,
     runLinked: true,
     onResult: reported => { outcome.status = reported; }
@@ -1652,6 +1738,46 @@ async function runExclusiveBcrAction(work: () => Promise<void>): Promise<void> {
   } finally {
     bcrBusy = false;
   }
+}
+
+function buildContinuationPayload(run: ContinuationRun, reanchor: boolean): string {
+  if (!reanchor) return "go";
+  return [
+    "go",
+    "",
+    "[NOOS Re-anchor]",
+    `Current Goal: ${run.goal ?? ""}`,
+    "Keep current scope; do not expand optional follow-ups. Stop if completion or a Human/review/evidence boundary is reached.",
+    "[/NOOS Re-anchor]"
+  ].join("\n");
+}
+
+/** AUTO_X5 advance: evaluate the completed round through the isolated evaluator, then auto-dispatch the next governed GO or end the run. ASSISTED runs never enter here. */
+async function autoAdvanceRound(): Promise<void> {
+  if (!bcrRun || bcrRun.mode !== "AUTO_X5") return;
+  if (bcrRun.phase === "EVALUATING") {
+    const response = await sendExtensionMessage<
+      { type: "NOOS_CONTINUATION_EVALUATE"; runId: string; assistantTurnExcerpt: string },
+      { ok: boolean; decision?: "WOULD_CONTINUE" | "WOULD_STOP"; assessment?: Record<string, unknown>; stopReason?: ContinuationStopReason; vetoHit?: boolean; error?: string }
+    >({ type: "NOOS_CONTINUATION_EVALUATE", runId: bcrRun.runId, assistantTurnExcerpt: lastAssistantExcerpt() ?? "" });
+    if (!response?.ok) {
+      await applyContinuationRunEvent({ type: "EVALUATION_STOPPED", reason: "EVALUATOR_UNAVAILABLE" });
+      renderApp();
+      return;
+    }
+    const continuationMode: "PLAIN_GO" | "REANCHOR_GO" = bcrLastDispatchReanchor ? "REANCHOR_GO" : "PLAIN_GO";
+    if (response.decision === "WOULD_CONTINUE") {
+      await captureBcrCandidate("AUTO_CONTINUE", "pending", undefined, continuationMode, response.assessment);
+      await applyContinuationRunEvent({ type: "EVALUATION_PASSED" });
+    } else {
+      await captureBcrCandidate("AUTO_STOP", "pending", response.stopReason ?? "WAIT_HUMAN", continuationMode, response.assessment);
+      await applyContinuationRunEvent({ type: "EVALUATION_STOPPED", reason: response.stopReason ?? "WAIT_HUMAN" });
+    }
+  }
+  if (bcrRun && bcrRun.mode === "AUTO_X5" && bcrRun.phase === "READY_TO_GO" && shuttleApp) {
+    await issueRunGo(shuttleApp);
+  }
+  renderApp();
 }
 
 async function stopBoundedRun(app: HTMLElement): Promise<void> {
@@ -1720,7 +1846,9 @@ async function bcrWatcherTick(): Promise<void> {
 async function captureBcrCandidate(
   decision: CandidateContinuationFixture["decision"],
   humanAction: CandidateContinuationFixture["humanAction"],
-  stopReason?: ContinuationStopReason
+  stopReason?: ContinuationStopReason,
+  continuationMode?: CandidateContinuationFixture["continuationMode"],
+  assessment?: Record<string, unknown>
 ): Promise<void> {
   if (!bcrRun) return;
   const run = bcrRun;
@@ -1736,6 +1864,8 @@ async function captureBcrCandidate(
     decision,
     humanAction,
     stopReason,
+    continuationMode,
+    assessment,
     capturedAt: Date.now()
   });
 }
@@ -1768,6 +1898,7 @@ function bcrPhaseLabel(run: ContinuationRun, copy: (typeof COPY)[ShuttleLocale])
     case "ASSISTANT_GENERATING": return copy.bcrPhaseGenerating;
     case "STABILIZING": return copy.bcrPhaseStabilizing;
     case "AWAITING_HUMAN_DECISION": return copy.bcrPhaseAwaiting;
+    case "EVALUATING": return copy.bcrPhaseEvaluating;
     case "ENDED": return copy.bcrPhaseEnded;
   }
 }
@@ -3246,6 +3377,9 @@ async function reconcileActiveSubmission(observation: CarrierObservation): Promi
     if (completed?.ok && completed.result?.state === "COMPLETED" &&
       bcrRun?.pendingSubmissionOperationId === active.operationId) {
       await applyContinuationRunEvent({ type: "OPERATION_COMPLETED", operationId: active.operationId, turnRef: turnRefFromEvidence() });
+      if (bcrRun?.mode === "AUTO_X5" && bcrRun.phase === "EVALUATING") {
+        void runExclusiveBcrAction(() => autoAdvanceRound());
+      }
     }
   } catch {
     // Keep the operation active and durable until a later observation can retry.

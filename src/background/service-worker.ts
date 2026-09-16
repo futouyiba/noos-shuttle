@@ -32,6 +32,13 @@ import {
   type ContinuationRunStore
 } from "../core/continuation-run";
 import {
+  BCR_EVALUATOR_ALLOWED_HOST,
+  BCR_EVALUATOR_CONFIG_KEY,
+  BCR_EVALUATOR_DEFAULT_MODEL,
+  evaluateContinuation,
+  normalizeEvaluatorConfig
+} from "../core/continuation-evaluator";
+import {
   ChildWorkerLedger,
   createChromeChildWorkerStore,
   isCreateChildIntentInput,
@@ -86,8 +93,58 @@ async function handleContinuationRunMutation(mutation: ContinuationRunMutation):
   });
 }
 
-function isKnownContinuationRunMutation(mutation: ContinuationRunMutation): boolean {
-  switch (mutation.type) {
+/** Isolated evaluator call for one completed AUTO_X5 round. The goal/scope come from the durable run (never from the wire); the excerpt is bounded; the verdict is always gated by the conservative deterministic policy. */
+async function handleContinuationEvaluate(message: { runId?: unknown; assistantTurnExcerpt?: unknown }): Promise<Record<string, unknown>> {
+  const storage = chrome.storage?.local;
+  if (!storage) return { ok: false, error: "storage_unavailable" };
+  const runId = typeof message.runId === "string" ? message.runId.trim() : "";
+  const excerpt = typeof message.assistantTurnExcerpt === "string" ? message.assistantTurnExcerpt : "";
+  if (runId === "" || excerpt === "") return { ok: false, error: "runId_and_assistantTurnExcerpt_required" };
+  if (excerpt.length > 8_000) return { ok: false, error: "excerpt_too_long" };
+  const rawConfig = (await storage.get(BCR_EVALUATOR_CONFIG_KEY))[BCR_EVALUATOR_CONFIG_KEY];
+  const config = normalizeEvaluatorConfig(rawConfig);
+  if (!config) return { ok: false, error: "evaluator_unconfigured" };
+  const persisted = await storage.get(CONTINUATION_RUN_STORE_KEY);
+  const store: ContinuationRunStore = isContinuationRunStoreShape(persisted[CONTINUATION_RUN_STORE_KEY])
+    ? persisted[CONTINUATION_RUN_STORE_KEY]
+    : emptyContinuationRunStore();
+  const run = Object.values(store.activeByConversation).find(candidate => candidate.runId === runId);
+  if (!run || run.status !== "ACTIVE" || run.mode !== "AUTO_X5" || typeof run.goal !== "string" || run.goal.trim() === "") {
+    return { ok: false, error: "no_active_auto_run" };
+  }
+  const verdict = await evaluateContinuation({
+    goal: run.goal,
+    scope: typeof run.scope === "string" && run.scope.trim() !== "" ? run.scope : run.goal,
+    assistantTurnExcerpt: excerpt
+  }, config);
+  return {
+    ok: true,
+    decision: verdict.decision,
+    assessment: verdict.assessment,
+    stopReason: verdict.stopReason,
+    vetoHit: verdict.vetoHit === true,
+    error: verdict.error
+  };
+}
+
+/** Evaluator config read/write. The key never echoes back to the content script; empty key input preserves the stored one. */
+async function handleContinuationEvalConfig(message: { config?: unknown }): Promise<Record<string, unknown>> {
+  const storage = chrome.storage?.local;
+  if (!storage) return { ok: false, error: "storage_unavailable" };
+  if (message.config !== undefined && message.config !== null) {
+    const config = message.config as { apiKey?: unknown; model?: unknown };
+    const current = normalizeEvaluatorConfig((await storage.get(BCR_EVALUATOR_CONFIG_KEY))[BCR_EVALUATOR_CONFIG_KEY]);
+    const apiKey = typeof config.apiKey === "string" && config.apiKey.trim() !== "" ? config.apiKey.trim() : current?.apiKey;
+    const model = typeof config.model === "string" && config.model.trim() !== "" ? config.model.trim() : current?.model ?? BCR_EVALUATOR_DEFAULT_MODEL;
+    if (!apiKey) return { ok: false, error: "api_key_required" };
+    if (apiKey.length > 300 || model.length > 120) return { ok: false, error: "config_too_long" };
+    await storage.set({ [BCR_EVALUATOR_CONFIG_KEY]: { baseUrl: `https://${BCR_EVALUATOR_ALLOWED_HOST}`, apiKey, model } });
+  }
+  const after = normalizeEvaluatorConfig((await storage.get(BCR_EVALUATOR_CONFIG_KEY))[BCR_EVALUATOR_CONFIG_KEY]);
+  return { ok: true, evaluatorConfigured: Boolean(after), model: after?.model ?? BCR_EVALUATOR_DEFAULT_MODEL };
+}
+
+function isKnownContinuationRunMutation(mutation: ContinuationRunMutation): boolean {  switch (mutation.type) {
     case "get_active":
       return typeof mutation.providerConversationRef === "string" && mutation.providerConversationRef.trim() !== "";
     case "start":
@@ -181,6 +238,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           message: error instanceof Error ? error.message : "Work Item action failed."
         })
       );
+    return true;
+  }
+
+  if (message?.type === "NOOS_CONTINUATION_EVALUATE") {
+    if (sender.frameId !== 0 || !Number.isSafeInteger(sender.tab?.id) || !isAllowedProviderSender(sender)) {
+      sendResponse({ ok: false, error: "sender_not_allowed" });
+      return false;
+    }
+    handleContinuationEvaluate(message)
+      .then(result => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+    return true;
+  }
+
+  if (message?.type === "NOOS_CONTINUATION_EVAL_CONFIG") {
+    if (sender.frameId !== 0 || !Number.isSafeInteger(sender.tab?.id) || !isAllowedProviderSender(sender)) {
+      sendResponse({ ok: false, error: "sender_not_allowed" });
+      return false;
+    }
+    handleContinuationEvalConfig(message)
+      .then(result => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
     return true;
   }
 

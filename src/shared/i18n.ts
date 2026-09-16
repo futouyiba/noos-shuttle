@@ -19,6 +19,16 @@ export interface ShuttleCopy {
   cancel: string;
   bcrSectionTitle: string;
   bcrAssistedNote: string;
+  bcrAutoBadge: string;
+  bcrAutoNote: string;
+  bcrAutoHint: string;
+  bcrGoalPlaceholder: string;
+  bcrGoalRequired: string;
+  bcrPhaseEvaluating: string;
+  bcrSettingsTitle: string;
+  bcrSettingsKey: string;
+  bcrSettingsModel: string;
+  bcrSettingsSaved: string;
   bcrLockedReason: string;
   bcrRunningLabel: string;
   bcrPhaseReady: string;
@@ -211,6 +221,16 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     cancel: "Cancel",
     bcrSectionTitle: "Bounded run",
     bcrAssistedNote: "assisted: each continuation asks you",
+    bcrAutoBadge: "AUTO ×5",
+    bcrAutoNote: "auto ×5: isolated evaluator gates each round",
+    bcrAutoHint: "AUTO: state the run goal above; the evaluator continues rounds while HIGH-confidence and stops on any uncertainty.",
+    bcrGoalPlaceholder: "Run goal: what should this run advance or answer?",
+    bcrGoalRequired: "AUTO mode requires a run goal.",
+    bcrPhaseEvaluating: "Evaluating",
+    bcrSettingsTitle: "BCR auto evaluator (experimental)",
+    bcrSettingsKey: "DeepSeek API Key",
+    bcrSettingsModel: "Model",
+    bcrSettingsSaved: "BCR evaluator config saved.",
     bcrLockedReason: "Locked: experimental BCR is currently capped at ×5 until real evidence passes the gate",
     bcrRunningLabel: "Running",
     bcrPhaseReady: "Ready",
@@ -395,6 +415,16 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     cancel: "取消",
     bcrSectionTitle: "有界连续运行",
     bcrAssistedNote: "assisted 模式：每轮继续都需要你确认",
+    bcrAutoBadge: "AUTO ×5",
+    bcrAutoNote: "auto ×5：隔离评估器逐轮把关",
+    bcrAutoHint: "AUTO：在上方填写本 Run 的目标；评估器仅在 HIGH 置信时继续，任何不确定即停。",
+    bcrGoalPlaceholder: "Run 目标：这一轮要推进/回答什么？",
+    bcrGoalRequired: "AUTO 模式需要填写 Run 目标。",
+    bcrPhaseEvaluating: "评估中",
+    bcrSettingsTitle: "BCR 自动评估（实验）",
+    bcrSettingsKey: "DeepSeek API Key",
+    bcrSettingsModel: "模型",
+    bcrSettingsSaved: "BCR 评估器配置已保存。",
     bcrLockedReason: "已锁定：实验性 BCR 当前上限 ×5，需真实证据通过 gate 后才开放",
     bcrRunningLabel: "运行中",
     bcrPhaseReady: "就绪",
