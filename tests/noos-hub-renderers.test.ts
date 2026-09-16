@@ -152,6 +152,16 @@ describe("NOOS Hub System page", () => {
     expect(degraded).toContain("2 个连接需要处理");
     expect(degraded).toContain("需要处理");
   });
+
+  it("escapes the dynamic local endpoint rendered as a sysRow sub line", () => {
+    const html = renderSystem(
+      healthFixture({ local_write: { endpoint: `http://127.0.0.1:9/<b>&"x"</b>`, paired: true } }),
+      null
+    );
+
+    expect(html).toContain("127.0.0.1:9/&lt;b&gt;&amp;&quot;x&quot;&lt;/b&gt;");
+    expect(html).not.toContain(`<b>&"x"</b>`);
+  });
 });
 
 describe("NOOS Hub copy locales", () => {

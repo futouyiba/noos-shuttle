@@ -76,7 +76,7 @@ export function renderSystem(health: HubHealth, config: ConfigData | null): stri
     <section class="system-section" aria-label="${e(c.system.advanced)}">
       <h2>${e(c.system.advanced)}</h2>
       ${sysRow(c.system.sleepRecovery[0], c.system.sleepRecovery[1], `<span class="recovery-pill" data-recovery-state="running">检查中…</span>`)}
-      ${sysRow(c.system.localEndpoint[0], e(health.local_write.endpoint.replace(/^https?:\/\//, "")), `<span class="sys-arrow" aria-hidden="true">›</span>`)}
+      ${sysRow(c.system.localEndpoint[0], health.local_write.endpoint.replace(/^https?:\/\//, ""), `<span class="sys-arrow" aria-hidden="true">›</span>`)}
       ${sysRow(c.system.runtimeDiagnostics[0], c.system.runtimeDiagnostics[1], `<a class="text-link" href="#harness">${e(c.system.open)}</a>`)}
     </section>
   </div>`;
@@ -93,12 +93,12 @@ function adapterRow(adapter: AdapterHealth): string {
     </div>`;
 }
 
-function sysRow(name: string, subHtml: string, rightHtml: string): string {
+function sysRow(name: string, subText: string, rightHtml: string): string {
   return `
     <div class="sys-row">
       <div class="sys-row-body">
         <strong>${e(name)}</strong>
-        <span>${subHtml}</span>
+        <span>${e(subText)}</span>
       </div>
       ${rightHtml}
     </div>`;
