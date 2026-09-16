@@ -173,6 +173,11 @@ describe("background continuation run coordinator", () => {
     expect(noRun.ok).toBe(false);
     expect(noRun.error).toBe("no_active_auto_run");
     await send(handler, { type: "start", input: { ...START_INPUT, mode: "AUTO_X5", goal: "Settle the gate question" } });
+    // Only an EVALUATING run may be evaluated: drive round 1 to completion.
+    await send(handler, { type: "apply", runId: "bcr-bg-1", event: { type: "DISPATCH_ISSUED", operationId: "bcr-bg-1:go:1" }, now: 101 });
+    await send(handler, { type: "apply", runId: "bcr-bg-1", event: { type: "OPERATION_ACCEPTED", operationId: "bcr-bg-1:go:1" }, now: 102 });
+    const completed = await send(handler, { type: "apply", runId: "bcr-bg-1", event: { type: "OPERATION_COMPLETED", operationId: "bcr-bg-1:go:1", turnRef: "turn:t1" }, now: 103 });
+    expect(completed.run?.phase).toBe("EVALUATING");
     const passing = await raw({ type: "NOOS_CONTINUATION_EVALUATE", runId: "bcr-bg-1", assistantTurnExcerpt: "advanced the focus" });
     expect(passing.ok).toBe(true);
     expect(passing.decision).toBe("WOULD_CONTINUE");

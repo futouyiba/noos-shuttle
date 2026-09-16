@@ -227,6 +227,9 @@ let bcrBudgetCap = 5;
 let bcrAutoConfigured = false;
 let bcrEvalModel = "deepseek-chat";
 let bcrLastDispatchReanchor = false;
+// A Stop pressed while the auto-advance lock is held (evaluator round-trip or
+// dispatch) must not be lost: it is consumed at the next auto-advance boundary.
+let bcrStopRequested = false;
 let shuttleApp: HTMLElement | null = null;
 
 interface SubmissionDispatchFence {
@@ -1329,6 +1332,12 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
   }
 
   if (action === "bcr-stop") {
+    // A Stop during a held auto-advance (evaluator round-trip) is queued and
+    // consumed at the next boundary instead of being silently dropped.
+    if (bcrBusy) {
+      bcrStopRequested = true;
+      return;
+    }
     await runExclusiveBcrAction(() => stopBoundedRun(app));
     return;
   }
@@ -1564,6 +1573,8 @@ function adoptRunState(run: ContinuationRun | null): void {
       // Re-adopted after a reload: baseline from the live observation so the
       // run's own past submissions are never misread as Human intervention.
       bcrExpectedUserCount = runtimeObservationLedger.value?.userMessageCount ?? -1;
+      bcrStopRequested = false;
+      bcrLastDispatchReanchor = false;
       // An AUTO run left mid-evaluation by a reload resumes its evaluation
       // here; a READY_TO_GO resume is surfaced as [Send go] instead.
       if (run.mode === "AUTO_X5" && run.phase === "EVALUATING") {
@@ -1755,6 +1766,16 @@ function buildContinuationPayload(run: ContinuationRun, reanchor: boolean): stri
 /** AUTO_X5 advance: evaluate the completed round through the isolated evaluator, then auto-dispatch the next governed GO or end the run. ASSISTED runs never enter here. */
 async function autoAdvanceRound(): Promise<void> {
   if (!bcrRun || bcrRun.mode !== "AUTO_X5") return;
+  const consumeStop = (): boolean => {
+    if (!bcrStopRequested) return false;
+    bcrStopRequested = false;
+    return true;
+  };
+  if (consumeStop()) {
+    await applyContinuationRunEvent({ type: "HUMAN_STOP" });
+    renderApp();
+    return;
+  }
   if (bcrRun.phase === "EVALUATING") {
     const response = await sendExtensionMessage<
       { type: "NOOS_CONTINUATION_EVALUATE"; runId: string; assistantTurnExcerpt: string },
@@ -1773,6 +1794,11 @@ async function autoAdvanceRound(): Promise<void> {
       await captureBcrCandidate("AUTO_STOP", "pending", response.stopReason ?? "WAIT_HUMAN", continuationMode, response.assessment);
       await applyContinuationRunEvent({ type: "EVALUATION_STOPPED", reason: response.stopReason ?? "WAIT_HUMAN" });
     }
+  }
+  if (consumeStop()) {
+    await applyContinuationRunEvent({ type: "HUMAN_STOP" });
+    renderApp();
+    return;
   }
   if (bcrRun && bcrRun.mode === "AUTO_X5" && bcrRun.phase === "READY_TO_GO" && shuttleApp) {
     await issueRunGo(shuttleApp);
@@ -1874,7 +1900,9 @@ function lastAssistantExcerpt(): string | undefined {
   const messages = Array.from(document.querySelectorAll<HTMLElement>("[data-message-author-role='assistant']"));
   const last = messages[messages.length - 1];
   const text = last?.textContent ?? "";
-  return text ? text.slice(0, 2_000) : undefined;
+  // Tail, not head: stop-boundary phrasing ("please choose", "task complete")
+  // lives at the end of a turn, and the veto window scans this tail.
+  return text ? text.slice(-2_000) : undefined;
 }
 
 async function waitForReadyObservation(timeoutMs = 6_000): Promise<CarrierObservation | null> {

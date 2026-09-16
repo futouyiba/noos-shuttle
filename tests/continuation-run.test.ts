@@ -340,12 +340,15 @@ describe("AUTO_X5 mode", () => {
     expect(applyRunEvent(completed, { type: "EVALUATION_PASSED" }, 104).changed).toBe(false);
   });
 
-  it("refuses HUMAN_CONTINUE and dispatch during EVALUATING", () => {
+  it("refuses HUMAN_CONTINUE and dispatch during EVALUATING, but a queued Stop always applies", () => {
     const dispatched = applyRunEvent(autoRun(), { type: "DISPATCH_ISSUED", operationId: "op-1" }, 101).run;
     const evaluating = applyRunEvent(dispatched, { type: "OPERATION_ACCEPTED", operationId: "op-1" }, 102).run;
     const completed = applyRunEvent(evaluating, { type: "OPERATION_COMPLETED", operationId: "op-1" }, 103).run;
     expect(applyRunEvent(completed, { type: "HUMAN_CONTINUE" }, 104).changed).toBe(false);
     expect(applyRunEvent(completed, { type: "DISPATCH_ISSUED", operationId: "op-2" }, 104).changed).toBe(false);
+    const stopped = applyRunEvent(completed, { type: "HUMAN_STOP" }, 104).run;
+    expect(stopped.status).toBe("CANCELLED");
+    expect(stopped.stopReason).toBe("USER_CANCELLED");
     const passed = applyRunEvent(completed, { type: "EVALUATION_PASSED" }, 104).run;
     expect(passed.phase).toBe("READY_TO_GO");
     const passedAgain = applyRunEvent(passed, { type: "EVALUATION_PASSED" }, 105);
