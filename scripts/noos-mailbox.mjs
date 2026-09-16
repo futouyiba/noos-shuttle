@@ -525,12 +525,24 @@ async function commandObserve(values) {
       `- INTEGRITY ANOMALY [${anomaly.kind}] result ${anomaly.resultId} at ${anomaly.commentRef}: ${anomaly.detail} — PENDING_TRIAGE, needs Human decision\n`
     );
   }
-  if (outcome.resultObservations.length > 0) {
+  if (outcome.resultObservations.length > 0 || outcome.resultFingerprintConflicts.length > 0 || outcome.integrityAnomalies.length > 0) {
     const report = await mailbox.discover(comments);
     for (const escalation of report.escalations) {
       const observed = escalation.observedResults[escalation.observedResults.length - 1];
       if (!observed) continue;
       const live = escalation.liveResultMarkers.find((marker) => marker.resultId === observed.resultId);
+      // A frozen result carrying a PENDING_TRIAGE anomaly or fingerprint
+      // conflict is NOT a resume basis; say so instead of printing the resume
+      // boilerplate next to the anomaly lines.
+      const anomalous =
+        escalation.conflictIds.length > 0 ||
+        report.integrityAnomalies.some((anomaly) => anomaly.escalationId === escalation.escalationId);
+      if (anomalous) {
+        process.stdout.write(
+          `\nHOLD — result ${observed.resultId} for escalation ${escalation.escalationId} has a PENDING_TRIAGE integrity anomaly or fingerprint conflict. Do NOT resume on it; route it to Human triage first.\n`
+        );
+        continue;
+      }
       const instructions = compileLaunchInstructions({
         workItemRef: issueRef,
         escalationId: escalation.escalationId,

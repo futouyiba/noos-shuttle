@@ -427,6 +427,21 @@ export async function parseEnvelopeJson(json: string): Promise<EnvelopeParseResu
       if (!MAILBOX_ESCALATION_KINDS.includes(kind as MailboxEscalationKind)) {
         throw new MailboxInvariantError("invalid_shape", `Unknown escalation kind: ${kind}`);
       }
+      // This mailbox slice has exactly one legal lifecycle/mode pair; a wire
+      // marker claiming anything else is tampered or non-conforming and is
+      // rejected at parse (fail closed) instead of being silently neutralized.
+      if (escalation.resolution_mode !== "HUMAN_MEDIATED") {
+        throw new MailboxInvariantError(
+          "invalid_shape",
+          `escalation.resolution_mode must be "HUMAN_MEDIATED" in this slice; got ${JSON.stringify(escalation.resolution_mode)}.`
+        );
+      }
+      if (escalation.status !== "OPEN") {
+        throw new MailboxInvariantError(
+          "invalid_shape",
+          `escalation.status must be "OPEN" in this slice; got ${JSON.stringify(escalation.status)}.`
+        );
+      }
       const packetRevision = packet.packet_revision;
       if (typeof packetRevision !== "number" || !Number.isInteger(packetRevision) || packetRevision < 1) {
         throw new MailboxInvariantError("invalid_shape", "packet.packet_revision must be an integer >= 1.");
@@ -1407,12 +1422,17 @@ export class CrossAgentMailbox {
           }
           if (marker.envelope.marker_kind === "ESCALATION_RESULT" && marker.envelope.result.source_escalation_id === escalation.escalationId) {
             const result = marker.envelope.result;
+            // Compare against the RECOMPUTED content fingerprint, never the
+            // marker's declared claim, so a tampered-but-observed result is
+            // reported by its trusted semantic identity.
+            const liveResultFingerprint = await resultContentFingerprintFromWire(result);
             const observed = observedResults.some(
-              (observation) => observation.resultId === result.result_id && observation.resultFingerprint === result.result_fingerprint
+              (observation) => observation.resultId === result.result_id && observation.resultFingerprint === liveResultFingerprint
             );
             liveResultMarkers.push({
               resultId: result.result_id,
-              resultFingerprint: result.result_fingerprint,
+              resultFingerprint: liveResultFingerprint,
+              declaredResultFingerprint: result.result_fingerprint,
               commentRef: parsed.commentRef,
               authorityRole: result.authority_role,
               observed
@@ -1678,7 +1698,10 @@ export function compileLaunchInstructions(params: LaunchInstructionParams): Laun
 
 export interface DiscoveredResultMarker {
   resultId: string;
+  /** Trusted recomputed semantic fingerprint of the live result content. */
   resultFingerprint: string;
+  /** The fingerprint the live marker claimed (audit only, never identity). */
+  declaredResultFingerprint: string;
   commentRef: string;
   authorityRole: string;
   observed: boolean;

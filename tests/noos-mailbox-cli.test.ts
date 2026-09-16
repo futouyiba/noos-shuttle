@@ -271,6 +271,9 @@ describe("cli mailbox flow with a fake gh", () => {
     expect(observed.status).toBe(0);
     expect(observed.stdout).toContain("INTEGRITY ANOMALY [RESULT_FINGERPRINT_CLAIM_MISMATCH]");
     expect(observed.stdout).toContain("CONFLICT");
+    // P3a: an anomalous/conflicting result gets a HOLD line, never resume boilerplate.
+    expect(observed.stdout).toContain("HOLD —");
+    expect(observed.stdout).not.toContain("resume instruction:");
     const afterDiscover = runCli(["discover", "--issue", "futouyiba/noos-shuttle#10", "--ledger", ledger]);
     expect(afterDiscover.status).toBe(0);
     expect(afterDiscover.stdout).toContain("INTEGRITY ANOMALY [RESULT_FINGERPRINT_CLAIM_MISMATCH]");
