@@ -4,6 +4,13 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT_PATH="$ROOT_DIR/scripts/noos-hub-launch.sh"
 NOOS_HOME="${NOOS_HOME:-$HOME/.noos}"
+# Normalize before any comparison/derivation: trailing slashes must not turn
+# the dogfood channel into a differently-identified (or differently-hashed)
+# isolated channel.
+while [[ "$NOOS_HOME" == */ && "$NOOS_HOME" != "/" ]]; do
+  NOOS_HOME="${NOOS_HOME%/}"
+done
+[[ -n "$NOOS_HOME" ]] || NOOS_HOME="/"
 RUN_DIR="$NOOS_HOME/run"
 LOG_DIR="$NOOS_HOME/logs"
 PID_FILE="$RUN_DIR/noos-hub.pid"
@@ -11,10 +18,12 @@ WATCHDOG_PID_FILE="$RUN_DIR/noos-hub-watchdog.pid"
 WATCHDOG_PLIST="$RUN_DIR/com.noos.hub.watchdog.plist"
 WATCHDOG_RUNNER="$RUN_DIR/noos-hub-watchdog-runner.sh"
 # One watchdog per NOOS_HOME: an isolated instance must not boot out the
-# dogfood channel's watchdog (or vice versa).
+# dogfood channel's watchdog (or vice versa). Sibling worktrees of the same
+# repo share a long common path prefix, so the truncated slug alone would
+# collide; the checksum of the full NOOS_HOME keeps every instance distinct.
 WATCHDOG_LABEL="com.noos.hub.watchdog"
 if [[ "$NOOS_HOME" != "$HOME/.noos" ]]; then
-  WATCHDOG_LABEL="com.noos.hub.watchdog.$(printf '%s' "$NOOS_HOME" | sed -E 's/[^A-Za-z0-9]+/-/g; s/^-+//; s/-+$//; s/^(.{40}).*/\1/')"
+  WATCHDOG_LABEL="com.noos.hub.watchdog.$(printf '%s' "$NOOS_HOME" | sed -E 's/[^A-Za-z0-9]+/-/g; s/^-+//; s/-+$//; s/^(.{40}).*/\1/')-$(printf '%s' "$NOOS_HOME" | cksum | awk '{print $1}')"
 fi
 LOG_FILE="$LOG_DIR/noos-hub.log"
 HUB_DIR="$ROOT_DIR/apps/noos-hub"
@@ -244,15 +253,19 @@ verify_deploy() {
     echo "Deploy verification FAILED: served build_commit='${commit:-<none>}' != HEAD '${expected}'." >&2
     return 1
   fi
-  if [[ ! "$started" =~ ^[0-9]+$ ]]; then
-    echo "Deploy verification FAILED: started_at='${started:-<none>}' is missing or non-numeric." >&2
+  # Millisecond epoch stamps never exceed 15 digits; longer (or non-numeric,
+  # or leading-zero) values are rejected outright rather than risked in bash
+  # arithmetic, where a parse error (octal-looking digits, overflow) would
+  # silently skip both freshness guards below (fail-open).
+  if [[ ! "$started" =~ ^[0-9]{1,15}$ ]]; then
+    echo "Deploy verification FAILED: started_at='${started:-<none>}' is missing, non-numeric, or malformed." >&2
     return 1
   fi
-  if (( started > now + 5 )); then
+  if (( 10#$started > now + 5 )); then
     echo "Deploy verification FAILED: started_at=${started} is in the future (now=${now})." >&2
     return 1
   fi
-  if (( now - started > 180 )); then
+  if (( now - 10#$started > 180 )); then
     echo "Deploy verification FAILED: started_at=${started} is stale (now=${now})." >&2
     return 1
   fi
@@ -284,8 +297,23 @@ install_bundle() {
     return 1
   fi
   mkdir -p "$(dirname "$INSTALL_APP")"
-  rm -rf "$INSTALL_APP"
-  ditto "$APP_PATH" "$INSTALL_APP"
+  if [[ -e "$INSTALL_APP" ]] && ! rm -rf "$INSTALL_APP"; then
+    # A previous install owned by another local user cannot be rm -rf'd by
+    # this one; renaming only needs write access to the parent directory.
+    local aside
+    aside="$INSTALL_APP.replaced.$(date -u +%Y%m%dT%H%M%SZ)"
+    echo "Cannot remove the existing install at $INSTALL_APP (possibly owned by another user); moving it aside." >&2
+    if ! mv "$INSTALL_APP" "$aside"; then
+      echo "Deploy FAILED: cannot replace $INSTALL_APP (remove and rename-aside both refused)." >&2
+      echo "Resolve it manually (e.g. sudo rm -rf \"$INSTALL_APP\"), then re-run npm run hub:launch." >&2
+      return 1
+    fi
+    echo "Previous install kept aside at: $aside" >&2
+  fi
+  if ! ditto "$APP_PATH" "$INSTALL_APP"; then
+    echo "Deploy FAILED: ditto could not install the bundle to $INSTALL_APP." >&2
+    return 1
+  fi
 }
 
 xml_escape() {
