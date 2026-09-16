@@ -40,7 +40,8 @@ Every continuation still travels the full Slice 1 path; nothing auto-sends. The 
 | Stable-turn gate | Next round only after `reconcileActiveSubmission` proves accepted AND `isStableSubmissionObservation` (READY + quiet + 2s window) AND `record COMPLETED` confirmed → `OPERATION_COMPLETED`; `Carrier == READY` alone never authorizes |
 | Budget semantics | `consumedContinuations` increments on `OPERATION_ACCEPTED` (proven acceptance); `BUDGET_EXHAUSTED` ends the run after the final round completes; goal may still be in progress |
 | UNCERTAIN fail-closed | Dispatch exception/lost response → `OPERATION_UNCERTAIN` → run `FAILED_SAFE / SUBMISSION_UNCERTAIN`; no blind retry (Slice 1 reconciliation still owns the durable op) |
-| Human intervention | Watcher tick: any observed user-message count above the run's expected count (its own authored submissions) → `USER_INTERVENTION` → run CANCELLED; remaining budget never resumes. Manual Shuttle GO actions are refused while a run is ACTIVE |
+| Human intervention | Watcher tick: any observed user-message count above the run's expected count (its own authored submissions) → `USER_INTERVENTION` → run CANCELLED; remaining budget never resumes. The expected count baselines from the live observation on run adoption (reload survival) and on the first tick with a live observation, and re-baselines after a BLOCKED dispatch that sent nothing; manual Shuttle GO actions are refused while a run is ACTIVE; BCR UI actions are reentrancy-guarded (`runExclusiveBcrAction`) so double-clicks cannot interleave gate-check and dispatch |
+| Budget consumption exactly-once | Consumption is keyed to the operation: `OPERATION_ACCEPTED` consumes, and `OPERATION_COMPLETED` backfills consumption when the ACCEPT event was lost (completion implies proven acceptance in Slice 1). A lost ACCEPT can therefore never under-count the budget |
 | Conversation/binding pin | Run pins `providerConversationRef`; conversation change → `CONVERSATION_REBASE_REQUIRED` (both watcher and page-side reset). Carrier reload rotates the authority: `REBIND` re-pins the binding generation between rounds on the same conversation; mid-round recovery stays with Slice 1 |
 | Budget gating | `startContinuationRun` rejects budgets > `BCR_EXPERIMENTAL_MAX_BUDGET` (5); UI shows Go / Go ×5 enabled, ×10 / ×20 visible-disabled with the lock reason; the cap is delivered from the background (`budgetCap`), not hardcoded UI optimism |
 | Stop conditions | `BUDGET_EXHAUSTED`, `USER_CANCELLED`, `USER_INTERVENTION`, `SUBMISSION_UNCERTAIN`, `CARRIER_FAILURE`, `AUTHORITY_CHANGED`, `CONVERSATION_REBASE_REQUIRED` (+ reserved `WAIT_*`/`GOAL_SATISFIED`/`SCOPE_*`/`STALLED` in the enum for assisted reporting) |
@@ -76,6 +77,7 @@ The first build made `content` and `service-worker` share the new `continuation-
 3. `HUB_LIVE_PROJECTION_PENDING` — bridge gaps listed in §3.
 4. Soft re-anchor not implemented (no runtime Goal/Focus source; fabrication forbidden).
 5. Content-addressed `turnRef` (`turn:<fingerprint>`) is the best available stable turn identity; provider-native message ids remain the preferred future upgrade (BCR candidate §15).
+6. Known V0-assisted limitation: if the `OPERATION_COMPLETED` transition itself cannot be applied, the run stays at `ASSISTANT_GENERATING` (fail-safe; the only exit is `[Stop]`, and the durable op keeps its own Slice 1 recovery). Acceptable because every round requires a Human decision anyway.
 
 ## 11. Deliverables
 

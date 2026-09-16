@@ -114,6 +114,16 @@ describe("applyRunEvent — full assisted budget lifecycle", () => {
     expect(replayed.changed).toBe(false);
     expect(replayed.run.consumedContinuations).toBe(1);
   });
+
+  it("backfills acceptance on COMPLETED so budget stays exactly-once if ACCEPT was lost", () => {
+    const dispatched = applyRunEvent(run({ maxContinuations: 1 }), { type: "DISPATCH_ISSUED", operationId: "op-1" }, 101).run;
+    // ACCEPT event lost (e.g. worker restart between the two reconciles):
+    const completed = applyRunEvent(dispatched, { type: "OPERATION_COMPLETED", operationId: "op-1", turnRef: "turn:a" }, 102);
+    expect(completed.run.consumedContinuations).toBe(1);
+    expect(completed.run.acceptedOperationId).toBe("op-1");
+    expect(completed.run.status).toBe("ENDED");
+    expect(completed.run.stopReason).toBe("BUDGET_EXHAUSTED");
+  });
 });
 
 describe("applyRunEvent — fail-closed paths", () => {

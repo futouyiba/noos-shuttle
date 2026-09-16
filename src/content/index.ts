@@ -222,6 +222,7 @@ let bcrLastEndedRun: ContinuationRun | null = null;
 let bcrWatcherId: number | null = null;
 let bcrExpectedUserCount = -1;
 let bcrMutationInFlight = false;
+let bcrBusy = false;
 let bcrBudgetCap = 5;
 let shuttleApp: HTMLElement | null = null;
 
@@ -1291,22 +1292,22 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
 
   if (action.startsWith("bcr-start-")) {
     const budget = Number(action.replace("bcr-start-", ""));
-    if (Number.isInteger(budget)) await startBoundedRun(app, budget);
+    if (Number.isInteger(budget)) await runExclusiveBcrAction(() => startBoundedRun(app, budget));
     return;
   }
 
   if (action === "bcr-continue") {
-    await continueBoundedRun(app);
+    await runExclusiveBcrAction(() => continueBoundedRun(app));
     return;
   }
 
   if (action === "bcr-stop") {
-    await stopBoundedRun(app);
+    await runExclusiveBcrAction(() => stopBoundedRun(app));
     return;
   }
 
   if (action === "bcr-go") {
-    if (bcrRun?.phase === "READY_TO_GO") await issueRunGo(app);
+    if (bcrRun?.phase === "READY_TO_GO") await runExclusiveBcrAction(() => issueRunGo(app));
     return;
   }
 
@@ -1505,6 +1506,7 @@ async function dispatchHumanGo(payload: string, context: PageContext, workItemId
 }
 
 async function mutateContinuationRun(mutation: ContinuationRunMutation): Promise<{ ok: boolean; run?: ContinuationRun; error?: string }> {
+  bcrMutationInFlight = true;
   try {
     const response = await sendExtensionMessage<
       { type: "NOOS_CONTINUATION_RUN_MUTATION"; mutation: ContinuationRunMutation },
@@ -1517,6 +1519,8 @@ async function mutateContinuationRun(mutation: ContinuationRunMutation): Promise
     return { ok: true, run: response.run };
   } catch {
     return { ok: false, error: "continuation_run_unavailable" };
+  } finally {
+    bcrMutationInFlight = false;
   }
 }
 
@@ -1527,7 +1531,13 @@ function adoptRunState(run: ContinuationRun | null): void {
     return;
   }
   if (run.status === "ACTIVE") {
+    const isNewRun = bcrRun?.runId !== run.runId;
     bcrRun = run;
+    if (isNewRun) {
+      // Re-adopted after a reload: baseline from the live observation so the
+      // run's own past submissions are never misread as Human intervention.
+      bcrExpectedUserCount = runtimeObservationLedger.value?.userMessageCount ?? -1;
+    }
     ensureBcrWatcher();
     return;
   }
@@ -1626,8 +1636,22 @@ async function issueRunGo(app: HTMLElement): Promise<void> {
   } else if (outcome.status === "UNCERTAIN") {
     await applyContinuationRunEvent({ type: "DISPATCH_ISSUED", operationId, providerConversationRef: observation.providerConversationRef, bindingEpoch: bindingEpochAtDispatch });
     await applyContinuationRunEvent({ type: "OPERATION_UNCERTAIN", operationId });
+  } else {
+    // Nothing was sent; re-sync the intervention baseline so a later foreign
+    // message cannot hide behind the pre-dispatch bump.
+    bcrExpectedUserCount = runtimeObservationLedger.value?.userMessageCount ?? bcrExpectedUserCount;
   }
   render(app);
+}
+
+async function runExclusiveBcrAction(work: () => Promise<void>): Promise<void> {
+  if (bcrBusy) return;
+  bcrBusy = true;
+  try {
+    await work();
+  } finally {
+    bcrBusy = false;
+  }
 }
 
 async function stopBoundedRun(app: HTMLElement): Promise<void> {
@@ -1662,13 +1686,20 @@ async function bcrWatcherTick(): Promise<void> {
   if (!bcrRun || bcrMutationInFlight) return;
   const observation = runtimeObservationLedger.value;
   if (!observation?.providerConversationRef) return;
+  const observedUserCount = observation.userMessageCount ?? 0;
+  // -1 means "not yet baselined" (no observation yet at adoption): the first
+  // tick with a live observation baselines instead of comparing.
+  if (bcrExpectedUserCount < 0) {
+    bcrExpectedUserCount = observedUserCount;
+    return;
+  }
   if (observation.providerConversationRef !== bcrRun.providerConversationRef) {
     await applyContinuationRunEvent({ type: "CONVERSATION_REBASE_REQUIRED" });
     return;
   }
   // Any user message this run did not author is a Human intervention: the
   // remaining budget never resumes (task contract §16).
-  if ((observation.userMessageCount ?? 0) > bcrExpectedUserCount) {
+  if (observedUserCount > bcrExpectedUserCount) {
     await captureBcrCandidate("RUN_ABORTED", "intervened", "USER_INTERVENTION");
     await applyContinuationRunEvent({ type: "USER_INTERVENTION" });
     return;

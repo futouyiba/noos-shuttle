@@ -146,6 +146,13 @@ export function applyRunEvent(run: ContinuationRun, event: ContinuationRunEvent,
     }    case "OPERATION_COMPLETED": {
       if (run.pendingSubmissionOperationId !== event.operationId) return { run, changed: false, error: "completion for a non-pending operation" };
       next.pendingSubmissionOperationId = undefined;
+      if (run.acceptedOperationId !== event.operationId) {
+        // Completion implies proven acceptance (Slice 1 records COMPLETED only
+        // after PROVEN_ACCEPTED + a stable turn); backfill so budget
+        // consumption stays exactly-once even if the ACCEPT event was lost.
+        next.acceptedOperationId = event.operationId;
+        next.consumedContinuations = run.consumedContinuations + 1;
+      }
       if (event.turnRef !== undefined) next.lastConsumedTurnRef = event.turnRef;
       if (next.consumedContinuations >= next.maxContinuations) {
         next.status = "ENDED";
