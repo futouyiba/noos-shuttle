@@ -17,6 +17,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install test dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Verify UI impact classifier
+        run: |
+          node --check scripts/ui-impact.mjs
+          npx vitest run tests/ui-impact.test.mjs
+
       - name: Detect NOOS Hub UI impact
         id: impact
         env:
