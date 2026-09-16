@@ -96,6 +96,8 @@ describe("NOOS Hub Work pages (presentation fixtures, zh-CN default)", () => {
     expect(html).toContain("接下来会发生什么");
     expect(html).toContain("开始裁定");
     expect(html).toContain("backend mutation");
+    expect(html).toContain("示例 fixture；v0 未连接任何真实对象");
+    expect(html).not.toContain("Illustrative fixture; nothing is connected");
     expect(html).toContain('href="#harness"');
     expect(html).not.toContain("data-run");
   });

@@ -13,7 +13,7 @@ import { escapeHtml as e } from "../ui/html";
  * only.
  */
 
-const unavailable = `disabled title="Illustrative fixture; nothing is connected in v0"`;
+const unavailable = `disabled title="${e(c.work.detail.fixtureTooltip)}"`;
 
 const statusOrder = ["ready", "partial", "needs_action", "missing", "error"] as const;
 
