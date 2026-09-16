@@ -17,13 +17,11 @@ NOOS Shuttle 是用于在 Chatbox、Agent、Coding Agent 和创作工具之间�
 
 https://raw.githubusercontent.com/futouyiba/noos_docs/main/docs/agent-workflow.md
 
-门禁摘要（完整条款见规范 §1）：任何 PR 未获独立 reviewer APPROVE（引用
-被审 exact head）不得合并；reviewed head 之后的 commit 需增量复审。
-epic designer 的裁定以 proposal 文档 + issue/PR 评论传递，决定性表述
-原文引用（规范 §2）。orchestrator 只编排委派（机械例外除外）、任务用
-独立 branch/worktree；主 checkout 归 integrator（规范 §3–4）。
-
-命令速查见 `CLAUDE.md`（纯文件，任何平台可直接读取）。
+要点：任何变更未获独立 reviewer APPROVE（引用被审 exact head）不得合并；
+reviewed head 之后的 commit 需增量复审；epic designer 的裁定以 proposal
+文档 + issue/PR 评论传递（决定性表述原文引用）；orchestrator 只编排委派
+（机械例外除外）；任务在独立 branch/worktree 上工作，主 checkout 归
+integrator。完整条款见规范本体。
 
 ## 工作原则
 
@@ -35,14 +33,19 @@ epic designer 的裁定以 proposal 文档 + issue/PR 评论传递，决定性�
 
 ## 跨分支 / Worktree Intake
 
-当用户要求审查、迁入、合并其他分支、worktree、commit 或刚拉取的远端改动时，按 review intake 工作流处理，而不是直接 `git merge`。
+当用户要求审查、迁入、合并其他分支、worktree、commit 或刚拉取的远端改动时，先运行 review intake 获取只读报告，再决定落地方式，而不是直接 `git merge`。
 
-- 优先使用已安装的 `noos-review-intake` skill。
-- 在确认 refs 新鲜度和当前工作区状态后，先运行 `npm run review:intake -- --source <source> --base main` 获取只读报告。
-- 审查报告里的 relation、source status、merge feasibility、risk flags、changed files 和 suggested checks，再决定落地方式。
-- source 落后 main 或不能 fast-forward 时，不要直接把整个分支 merge 进 main；优先对已审查的具体提交 cherry-pick 或手工迁移。
-- 如果 main/source dirty、包含 transfer-only handoff、生成物、签名材料或无关 active handoff，先停止并说明，不要顺手带入。
+- 优先使用已安装的 `noos-review-intake` skill；未安装时运行
+  `npm run review:intake -- --source <source> --base main`。
+- 审查报告里的 relation、source status、merge feasibility、risk flags、
+  changed files 和 suggested checks，再决定落地方式。
+- source 落后 main 或不能 fast-forward 时，不要把整个分支 merge 进
+  main；优先对已审查的具体提交 cherry-pick 或手工迁移。
+- 如果 main/source dirty、包含 transfer-only handoff、生成物、签名材料
+  或无关 active handoff，先停止并说明，不要顺手带入。
 - push 只在用户明确要求 push、publish、发布或更新远端时执行。
+- 该 intake 报告同时满足统一工作流规范 §1.3 的 review 证据要求
+  （报告链接 + 被审 exact head）。
 
 ## NOOS 实现相关规则
 
