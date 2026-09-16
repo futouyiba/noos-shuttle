@@ -29,7 +29,8 @@ jobs:
       - name: Verify UI impact classifier
         run: |
           node --check scripts/ui-impact.mjs
-          npx vitest run tests/ui-impact.test.mjs
+          npm run typecheck
+          npx vitest run tests/ui-impact.test.ts
 
       - name: Detect NOOS Hub UI impact
         id: impact
