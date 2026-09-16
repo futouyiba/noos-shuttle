@@ -12,10 +12,10 @@ export function renderHelp(health: HubHealth): string {
       <div>
         <p class="eyebrow">帮助</p>
         <h2>把对话变成可交接的本机资料</h2>
-        <p>NOOS Hub 负责连接浏览器、Vault、Git 和下游 Agent。你可以先看首页建议操作，确认连接器状态，再到 Vault 打开最近的 Handoff 或 Crystal。</p>
+        <p>NOOS Hub 负责连接浏览器、Vault、Git 和下游 Agent。你可以先看 Work 里需要处理的事项，确认 System 连接状态，再到 Vault 打开最近的 Handoff 或 Crystal。</p>
       </div>
       <div class="help-quick-actions">
-        <button type="button" data-section="home">回到首页</button>
+        <button type="button" data-section="work">回到 Work</button>
         <button type="button" data-run="doctor">运行 Doctor</button>
       </div>
     </section>
@@ -25,7 +25,7 @@ export function renderHelp(health: HubHealth): string {
         <h3>第一次使用</h3>
         <div class="help-steps">
           ${step("1", "连接浏览器插件", "在 ChatGPT 页面用 Shuttle 捕获对话，Hub 会接收 Handoff、Crystal 或浏览器镜像文件。")}
-          ${step("2", "检查首页建议", "首页会把异常、未安装、待导入这类状态收敛成一个下一步动作。优先处理这里的按钮。")}
+          ${step("2", "查看 Work 页面", "Work 会把需要你处理的事项放在最前面，运行中的任务和最近变化排在下面。")}
           ${step("3", "从 Vault 交给 Agent", "Vault 保存本机资料。打开 Handoff 后，可以把任务交给 Codex、Claude Code 或你配置的默认 Agent。")}
         </div>
       </article>

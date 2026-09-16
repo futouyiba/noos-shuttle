@@ -1,41 +1,78 @@
 import { describe, expect, it } from "vitest";
+import { parseSectionId } from "../apps/noos-hub/src/routes";
 import { renderConfig } from "../apps/noos-hub/src/pages/config";
-import { renderDashboard } from "../apps/noos-hub/src/pages/dashboard";
 import { renderHelp } from "../apps/noos-hub/src/pages/help";
 import { renderLogs } from "../apps/noos-hub/src/pages/logs";
+import { renderSystem } from "../apps/noos-hub/src/pages/system";
 import { renderVault } from "../apps/noos-hub/src/pages/vault";
+import { renderWorkDetail, renderWorkOverview } from "../apps/noos-hub/src/pages/work";
 import type { AdapterHealth, HubHealth } from "../apps/noos-hub/src/types";
 
+describe("NOOS Hub hash routing", () => {
+  it("normalizes legacy deep links onto the new primary sections", () => {
+    expect(parseSectionId("home")).toBe("work");
+    expect(parseSectionId("adapters")).toBe("system");
+    expect(parseSectionId("config")).toBe("system");
+  });
+
+  it("keeps harness as a diagnostic deep link and defaults unknown hashes to work", () => {
+    expect(parseSectionId("harness")).toBe("harness");
+    expect(parseSectionId("vault")).toBe("vault");
+    expect(parseSectionId("work-detail")).toBe("work-detail");
+    expect(parseSectionId("nonsense")).toBe("work");
+    expect(parseSectionId(undefined)).toBe("work");
+  });
+});
+
+describe("NOOS Hub Work pages (presentation fixtures)", () => {
+  it("renders Work Overview with the approved hierarchy and no mutation hooks", () => {
+    const html = renderWorkOverview(healthFixture());
+
+    expect(html).toContain("Needs your attention");
+    expect(html).toContain("In progress");
+    expect(html).toContain("Recently changed");
+    expect(html).toContain("UI fixture");
+    expect(html).toContain('href="#work-detail"');
+    expect(html).toContain('href="#vault"');
+    expect(html).toContain('href="#system"');
+    expect(html).not.toContain("data-run");
+    expect(html).not.toContain("data-hc-");
+  });
+
+  it("renders Work Detail human-first with read-only adjudication intent", () => {
+    const html = renderWorkDetail();
+
+    expect(html).toContain("Needs your decision");
+    expect(html).toContain("Current state");
+    expect(html).toContain("Review findings");
+    expect(html).toContain("Recent progress");
+    expect(html).toContain("Artifacts");
+    expect(html).toContain("Who is involved");
+    expect(html).toContain("What happens next");
+    expect(html).toContain("Start adjudication");
+    expect(html).toContain("no backend mutation");
+    expect(html).toContain('href="#harness"');
+    expect(html).not.toContain("data-run");
+  });
+});
+
+describe("NOOS Hub System page", () => {
+  it("absorbs connections, configuration, diagnostics and advanced runtime surfaces", () => {
+    const html = renderSystem(healthFixture(), null);
+
+    expect(html).toContain("Connections");
+    expect(html).toContain("Configuration");
+    expect(html).toContain("Diagnostics");
+    expect(html).toContain("Advanced");
+    expect(html).toContain("Sleep recovery");
+    expect(html).toContain('data-run="doctor"');
+    expect(html).toContain("data-config-key");
+    expect(html).toContain('href="#harness"');
+    expect(html).toContain("recovery-pill");
+  });
+});
+
 describe("NOOS Hub page renderers", () => {
-  it("renders dashboard with status cards, not old card-grid layout", () => {
-    const html = renderDashboard(
-      healthFixture({
-        adapters: [
-          readyAdapter("Browser Shuttle"),
-          { ...readyAdapter("NOOS Vault"), kind: "transport" }
-        ]
-      })
-    );
-
-    expect(html).toContain("一切就绪");
-    expect(html).toContain("个连接器就绪");
-    expect(html).toContain("db-card");
-    expect(html).not.toContain('class="card"');
-    expect(html).not.toContain("card-grid");
-  });
-
-  it("does not call partial adapters fully ready on the dashboard", () => {
-    const html = renderDashboard(
-      healthFixture({
-        adapters: [{ ...readyAdapter("Codex"), status: "partial", summary: "Skill installed, manual setup remains" }]
-      })
-    );
-
-    expect(html).toContain("1 项待处理");
-    expect(html).toContain("Codex");
-    expect(html).not.toContain("一切就绪");
-  });
-
   it("shows a first-use Vault state when all Vault and Mirror counts are zero", () => {
     const html = renderVault(
       healthFixture({
