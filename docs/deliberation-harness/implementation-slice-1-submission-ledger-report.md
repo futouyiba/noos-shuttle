@@ -1,5 +1,8 @@
 # Implementation Slice 1: Submission Operation Ledger
 
+> Authority: `futouyiba/noos_docs@a49303cabf436f3398a596685d36d2792e6a08a1` (Issue #5 inputs; transport-only ledger scope).
+> Verdict: **IMPLEMENTED for Issue #5 scope.** Durable on `main` via integration merge `59ad928` (lineage includes `codex/issue-5-slice-1` @ `1ceb401`; closed-unmerged PR #6 head `codex/issue-5-slice-1-ledger` @ `d4cb00f` was superseded and is not on `main`). Focused suites: `tests/submission-operation.test.ts` (47 tests), `tests/human-go-runtime.test.ts` (8 tests). Remaining before Issue #5 closure: one real end-to-end dogfood round; canonical binding/lease ownership stays with the later reducer slice, as stated below.
+
 This implementation covers the transport ledger and Human GO boundary for
 Issue #5. It does not implement canonical binding mutation, lease transfer,
 automated continuation, worker/reviewer lifecycle, or child-result delivery.

@@ -1,0 +1,16 @@
+{
+  "fixture_id": "sample-needs-human-open-choice",
+  "fixture_kind": "SYNTHETIC_FORMAT_SAMPLE",
+  "source_ref": "SYNTHETIC_FORMAT_SAMPLE",
+  "category": "NEEDS_HUMAN",
+  "envelope": {
+    "goal": "Pick the persistence backend for a fictional desktop notebook app.",
+    "scope": "Local-first persistence only; sync is a separate goal.",
+    "closure_frontier": "C1: backend decision. C2: migration plan for existing notebooks.",
+    "assistant_turn": "Both candidates now have complete evidence: SQLite wins on query ergonomics, the file-based store wins on diffability. The remaining choice between them is a product preference I should not decide unilaterally. Next, you need to choose A or B; once you pick, C2 follows mechanically."
+  },
+  "expected_continue": false,
+  "expected_reason": "Explicit Human decision required; continuation cannot proceed (eval-plan §7.2).",
+  "label_rationale": "Synthetic format sample only: open choice between two legitimate options. Not real conversation evidence.",
+  "label_authority": "UNASSIGNED — format sample only"
+}
