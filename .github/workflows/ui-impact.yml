@@ -28,6 +28,7 @@ jobs:
         run: npm ci --ignore-scripts
 
       - name: Verify UI impact classifier
+        id: verify
         run: |
           node --check scripts/ui-impact.mjs
           npm run typecheck
@@ -81,3 +82,40 @@ jobs:
           echo "UI governance required: $NEEDS_GOVERNANCE"
           echo "Design Gate required: $NEEDS_DESIGN_GATE"
           echo "This workflow reports routing evidence only; it does not approve or merge the PR."
+
+      - name: Record blocked routing evidence
+        if: failure()
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          {
+            echo "## NOOS UI Impact Report — ROUTING BLOCKED"
+            echo
+            echo "- Head: \`$HEAD_SHA\`"
+            echo "- No UiImpactReport for this head is trustworthy because the routing verifier or detector failed."
+            echo "- Treat any earlier-head UI impact evidence as stale."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Replace sticky evidence with blocked state
+        if: failure() && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const head = context.payload.pull_request.head.sha;
+            const body = `<!-- noos-ui-impact:v0 head=${head} blocked=true -->\n## NOOS UI Impact Report — ROUTING BLOCKED\n\n- Head: \`${head}\`\n- The routing verifier or detector failed on this exact head.\n- No U0/U1/U2/U3 result for this head is trustworthy.\n- Treat all earlier-head UI impact/governance evidence as stale until a current-head run succeeds.\n\nThis is a fail-closed routing state; it is not review approval or merge authorization.`;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+            const existing = comments.find((comment) =>
+              comment.user?.type === 'Bot' && comment.body?.includes('<!-- noos-ui-impact:v0')
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
