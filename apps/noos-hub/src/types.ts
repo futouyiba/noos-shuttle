@@ -77,4 +77,5 @@ export interface VaultFileSummary {
   title?: string;
   key?: string;
   source_url?: string;
+  source_app?: string;
 }

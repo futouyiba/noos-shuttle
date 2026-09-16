@@ -28,6 +28,14 @@ export interface CarrierFocusRequest {
   enqueuedAt: number;
 }
 
+/** Wire shape (snake_case) of one Hub focus request, per the /v1 HTTP conventions of this repo. */
+interface CarrierFocusRequestWire {
+  request_id?: unknown;
+  conversation_ref?: unknown;
+  conversation_url?: unknown;
+  enqueued_at?: unknown;
+}
+
 export interface CarrierTabCandidate {
   tabId: number;
   windowId: number;
@@ -58,23 +66,27 @@ function isNonEmptyString(value: unknown): value is string {
  */
 function parseFocusRequest(value: unknown): CarrierFocusRequest | undefined {
   if (!value || typeof value !== "object") return undefined;
-  const request = value as Partial<CarrierFocusRequest>;
-  if (!isNonEmptyString(request.requestId) || !isNonEmptyString(request.conversationRef) ||
-    !isNonEmptyString(request.conversationUrl) || !isFiniteInteger(request.enqueuedAt)) {
+  const wire = value as CarrierFocusRequestWire;
+  const requestId = wire.request_id;
+  const conversationRef = wire.conversation_ref;
+  const conversationUrl = wire.conversation_url;
+  const enqueuedAt = wire.enqueued_at;
+  if (!isNonEmptyString(requestId) || !isNonEmptyString(conversationRef) ||
+    !isNonEmptyString(conversationUrl) || !isFiniteInteger(enqueuedAt)) {
     return undefined;
   }
   let url: URL;
   try {
-    url = new URL(request.conversationUrl);
+    url = new URL(conversationUrl);
   } catch {
     return undefined;
   }
   if (url.protocol !== "https:" || !isSupportedProviderHost(url.hostname)) return undefined;
   return {
-    requestId: request.requestId,
-    conversationRef: request.conversationRef,
-    conversationUrl: request.conversationUrl,
-    enqueuedAt: request.enqueuedAt
+    requestId,
+    conversationRef,
+    conversationUrl,
+    enqueuedAt
   };
 }
 

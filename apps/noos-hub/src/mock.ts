@@ -21,7 +21,17 @@ export function mockHealth(): HubHealth {
           path: "/Users/you/.noos/vault/handoffs/active/2026-05-20-noos-hub-vault.md",
           modified_epoch: 1779290000,
           title: "NOOS Hub Vault 改版",
-          key: "noos-hub-vault"
+          key: "noos-hub-vault",
+          source_url: "https://chatgpt.com/c/mock-chatgpt-thread",
+          source_app: "browser-shuttle"
+        },
+        {
+          name: "2026-06-02-renderer-summary.md",
+          path: "/Users/you/.noos/vault/handoffs/active/2026-06-02-renderer-summary.md",
+          modified_epoch: 1779300000,
+          title: "Renderer 摘要更新",
+          key: "renderer-summary",
+          source_app: "codex"
         }
       ],
       crystals: [

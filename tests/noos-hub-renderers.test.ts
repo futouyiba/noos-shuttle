@@ -118,6 +118,86 @@ describe("NOOS Hub Work pages (presentation fixtures, zh-CN default)", () => {
   });
 });
 
+describe("NOOS Hub Work conversation to-dos (live Vault handoffs)", () => {
+  it("renders 查看对话 for handoffs with a provider source_url", () => {
+    const html = renderWorkOverview(
+      healthFixture({
+        recent_files: {
+          handoffs: [
+            {
+              name: "2026-09-17-thread.md",
+              path: "/Users/you/.noos/vault/handoffs/active/2026-09-17-thread.md",
+              modified_epoch: 1_000,
+              title: "裁决线程",
+              key: "thread-key",
+              source_url: "https://chatgpt.com/c/conv-a",
+              source_app: "browser-shuttle"
+            }
+          ],
+          crystals: []
+        }
+      })
+    );
+
+    expect(html).toContain("对话待办");
+    expect(html).toContain("真实数据");
+    expect(html).toContain("查看对话");
+    expect(html).toContain('data-focus-source="https://chatgpt.com/c/conv-a"');
+    expect(html).toContain('data-focus-key="thread-key"');
+  });
+
+  it("shows the source session and wake hint instead of a focus button for non-browser sources", () => {
+    const html = renderWorkOverview(
+      healthFixture({
+        recent_files: {
+          handoffs: [
+            {
+              name: "2026-09-17-cc.md",
+              path: "/Users/you/.noos/vault/handoffs/active/2026-09-17-cc.md",
+              modified_epoch: 1_000,
+              title: "CC 任务",
+              key: "cc-key",
+              source_app: "codex"
+            }
+          ],
+          crystals: []
+        }
+      })
+    );
+
+    expect(html).toContain("来源会话：codex");
+    expect(html).toContain("触发暗号");
+    expect(html).not.toContain("data-focus-source");
+  });
+
+  it("renders an empty state when no active handoffs exist", () => {
+    const html = renderWorkOverview(healthFixture());
+    expect(html).toContain("当前没有活跃 handoff 对象。");
+  });
+
+  it("keeps the fixture sections free of mutation hooks", () => {
+    const html = renderWorkOverview(
+      healthFixture({
+        recent_files: {
+          handoffs: [
+            {
+              name: "2026-09-17-thread.md",
+              path: "/x/2026-09-17-thread.md",
+              modified_epoch: 1_000,
+              title: "裁决线程",
+              key: "thread-key",
+              source_url: "https://chatgpt.com/c/conv-a"
+            }
+          ],
+          crystals: []
+        }
+      })
+    );
+    expect(html).not.toContain("data-run");
+    expect(html).not.toContain("data-hc-");
+  });
+});
+
 describe("NOOS Hub System page", () => {
   it("absorbs connections, configuration, diagnostics and advanced runtime surfaces", () => {
     const html = renderSystem(healthFixture(), null);

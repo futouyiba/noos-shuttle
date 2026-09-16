@@ -26,6 +26,13 @@ const en = {
   },
   work: {
     fixtureNote: "UI fixture · Illustrative examples, not live work or canonical state · Read-only",
+    conversations: {
+      title: "Conversation to-dos",
+      liveNote: "Live data · most recent active handoffs in the local Vault",
+      focusAction: "View conversation →",
+      wakeHint: "Source session: {app} · open that CC/Codex session and wake it with its trigger keyword",
+      empty: "No active handoff objects right now."
+    },
     needsAttention: "Needs your attention",
     inProgress: "In progress",
     recentlyChanged: "Recently changed",
@@ -167,6 +174,13 @@ const zhCN: typeof en = {
   },
   work: {
     fixtureNote: "UI fixture · 示例数据，不是正式工作项或 canonical 状态 · 只读",
+    conversations: {
+      title: "对话待办",
+      liveNote: "真实数据 · 本地 Vault 最近活跃的 handoff 对象",
+      focusAction: "查看对话 →",
+      wakeHint: "来源会话：{app} · 请回到对应 CC/Codex 会话，用触发暗号唤醒",
+      empty: "当前没有活跃 handoff 对象。"
+    },
     needsAttention: "需要你注意",
     inProgress: "进行中",
     recentlyChanged: "最近变化",

@@ -203,6 +203,40 @@ function bindRetryButton(root: ParentNode): void {
   });
 }
 
+/**
+ * 查看对话 buttons on the Work overview: enqueue a carrier focus request
+ * via the Hub backend; the browser extension polls the queue and focuses
+ * (or opens) the conversation tab. The Rust side is the whitelist
+ * authority — an unsupported source surfaces its error as a toast.
+ */
+function bindConversationFocusButtons(root: ParentNode): void {
+  root.querySelectorAll<HTMLButtonElement>("[data-focus-source]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const sourceUrl = button.dataset.focusSource;
+      if (!sourceUrl) return;
+      const originalLabel = button.textContent ?? "";
+      button.disabled = true;
+      button.textContent = "⏳ …";
+      try {
+        const payload = await invoke<{ ok: boolean; message?: string }>("enqueue_carrier_focus", {
+          sourceUrl,
+          lookupKey: button.dataset.focusKey || null
+        });
+        showToast(payload?.message || "已请求浏览器聚焦对应对话。", "success");
+      } catch (error) {
+        if (!isTauriRuntime()) {
+          showToast("浏览器预览模式不会执行本机动作。", "info");
+        } else {
+          showToast(String(error), "error");
+        }
+      } finally {
+        button.disabled = false;
+        button.textContent = originalLabel;
+      }
+    });
+  });
+}
+
 async function loadVaultBrowse(): Promise<void> {
   try {
     const payload = await invoke<{
@@ -577,6 +611,7 @@ function renderCurrentSection(): void {
     { id: "crystals", files: currentHealth.recent_files.crystals }
   ]);
   bindSectionButtons(content);
+  bindConversationFocusButtons(content);
   bindContentActions(content, {
     run: (action, sourceButton) => {
       void runAction(action, sourceButton);

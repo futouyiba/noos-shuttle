@@ -16,9 +16,9 @@ function makeDeps(log: DepLog, options: { tabs?: Array<{ tabId: number; url: str
     fetchRequests: async () => ({
       ok: true,
       requests: [
-        { requestId: "focus-1", conversationRef: "conv-a", conversationUrl: "https://chatgpt.com/c/conv-a", enqueuedAt: 1_000 },
-        { requestId: "focus-2", conversationRef: "conv-b", conversationUrl: "https://github.com/evil", enqueuedAt: 1_100 },
-        { requestId: "focus-3", conversationRef: "conv-c", conversationUrl: "https://chatgpt.com/c/conv-c", enqueuedAt: 1_200 }
+        { request_id: "focus-1", conversation_ref: "conv-a", conversation_url: "https://chatgpt.com/c/conv-a", enqueued_at: 1_000 },
+        { request_id: "focus-2", conversation_ref: "conv-b", conversation_url: "https://github.com/evil", enqueued_at: 1_100 },
+        { request_id: "focus-3", conversation_ref: "conv-c", conversation_url: "https://chatgpt.com/c/conv-c", enqueued_at: 1_200 }
       ]
     }),
     postAck: async (requestId) => {

@@ -42,7 +42,7 @@ describe("parseCarrierFocusRequestsPayload", () => {
   it("accepts a well-formed {ok, requests} body", () => {
     const parsed = parseCarrierFocusRequestsPayload({
       ok: true,
-      requests: [{ requestId: "focus-1", conversationRef: "conv-a", conversationUrl: "https://chatgpt.com/c/conv-a", enqueuedAt: 1_000 }]
+      requests: [{ request_id: "focus-1", conversation_ref: "conv-a", conversation_url: "https://chatgpt.com/c/conv-a", enqueued_at: 1_000 }]
     });
     expect(parsed).toHaveLength(1);
     expect(parsed[0]).toMatchObject({ requestId: "focus-1", conversationRef: "conv-a" });
@@ -52,10 +52,10 @@ describe("parseCarrierFocusRequestsPayload", () => {
     const parsed = parseCarrierFocusRequestsPayload({
       ok: true,
       requests: [
-        { requestId: "", conversationRef: "conv-a", conversationUrl: "https://chatgpt.com/c/conv-a", enqueuedAt: 1 },
-        { requestId: "focus-2", conversationRef: " ", conversationUrl: "https://chatgpt.com/c/conv-a", enqueuedAt: 1 },
-        { requestId: "focus-3", conversationRef: "conv-a", conversationUrl: "not a url", enqueuedAt: 1 },
-        { requestId: "focus-4", conversationRef: "conv-a", conversationUrl: "https://chatgpt.com/c/conv-a", enqueuedAt: Number.NaN },
+        { request_id: "", conversation_ref: "conv-a", conversation_url: "https://chatgpt.com/c/conv-a", enqueued_at: 1 },
+        { request_id: "focus-2", conversation_ref: " ", conversation_url: "https://chatgpt.com/c/conv-a", enqueued_at: 1 },
+        { request_id: "focus-3", conversation_ref: "conv-a", conversation_url: "not a url", enqueued_at: 1 },
+        { request_id: "focus-4", conversation_ref: "conv-a", conversation_url: "https://chatgpt.com/c/conv-a", enqueued_at: Number.NaN },
         "nonsense"
       ]
     });
@@ -66,9 +66,9 @@ describe("parseCarrierFocusRequestsPayload", () => {
     const parsed = parseCarrierFocusRequestsPayload({
       ok: true,
       requests: [
-        { requestId: "focus-1", conversationRef: "conv-a", conversationUrl: "https://github.com/futouyiba/noos-shuttle", enqueuedAt: 1 },
-        { requestId: "focus-2", conversationRef: "conv-a", conversationUrl: "http://chatgpt.com/c/conv-a", enqueuedAt: 1 },
-        { requestId: "focus-3", conversationRef: "conv-a", conversationUrl: "https://evil-chatgpt.com/c/conv-a", enqueuedAt: 1 }
+        { request_id: "focus-1", conversation_ref: "conv-a", conversation_url: "https://github.com/futouyiba/noos-shuttle", enqueued_at: 1 },
+        { request_id: "focus-2", conversation_ref: "conv-a", conversation_url: "http://chatgpt.com/c/conv-a", enqueued_at: 1 },
+        { request_id: "focus-3", conversation_ref: "conv-a", conversation_url: "https://evil-chatgpt.com/c/conv-a", enqueued_at: 1 }
       ]
     });
     expect(parsed).toEqual([]);
@@ -78,8 +78,8 @@ describe("parseCarrierFocusRequestsPayload", () => {
     const parsed = parseCarrierFocusRequestsPayload({
       ok: true,
       requests: [
-        { requestId: "bad", conversationRef: "conv-a", conversationUrl: "https://example.com/c/conv-a", enqueuedAt: 1 },
-        { requestId: "good", conversationRef: "conv-b", conversationUrl: "https://chatgpt.com/c/conv-b", enqueuedAt: 2 }
+        { request_id: "bad", conversation_ref: "conv-a", conversation_url: "https://example.com/c/conv-a", enqueued_at: 1 },
+        { request_id: "good", conversation_ref: "conv-b", conversation_url: "https://chatgpt.com/c/conv-b", enqueued_at: 2 }
       ]
     });
     expect(parsed.map((entry) => entry.requestId)).toEqual(["good"]);
