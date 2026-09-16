@@ -1,0 +1,17 @@
+{
+  "fixture_id": "sample-clear-continue-open-focus",
+  "fixture_kind": "SYNTHETIC_FORMAT_SAMPLE",
+  "source_ref": "SYNTHETIC_FORMAT_SAMPLE",
+  "category": "CLEAR_CONTINUE",
+  "envelope": {
+    "goal": "Decide the retention policy for exported archive bundles in a fictional wiki tool.",
+    "scope": "Retention policy only; no transport or schema changes.",
+    "current_focus": "Determine whether edited bundles must re-enter the retention review queue.",
+    "closure_frontier": "C1: edited-bundle semantics. C2: retention window confirmation against the tool contract.",
+    "assistant_turn": "I traced the export pipeline: an edited bundle appends a new revision record and history is never rewritten. The queue currently reads only the newest revision per bundle, so an edit that reintroduces an excluded field after a clean first pass would not re-enter review. C1 is now resolved to this extent: the re-entry path is genuinely missing, not just unwired. I have not yet checked whether the same applies to deleted bundles, and I have not yet confirmed C2."
+  },
+  "expected_continue": true,
+  "expected_reason": "Focus OPEN_ADVANCING with no dependency; assistant did not state an explicit next action, continuation remains safe (eval-plan §7.7).",
+  "label_rationale": "Synthetic format sample only: illustrates the no-explicit-next-action positive shape. Not real conversation evidence; must never count toward the offline gate.",
+  "label_authority": "UNASSIGNED — format sample only"
+}

@@ -1,0 +1,17 @@
+{
+  "fixture_id": "sample-planner-trap-evidence-insufficient",
+  "fixture_kind": "SYNTHETIC_FORMAT_SAMPLE",
+  "source_ref": "SYNTHETIC_FORMAT_SAMPLE",
+  "category": "NO_PLANNER_CREEP",
+  "envelope": {
+    "goal": "Determine whether a fictional importer mishandles nested attachments.",
+    "scope": "Importer attachment handling only.",
+    "current_focus": "Establish whether nested attachments are dropped or preserved.",
+    "assistant_turn": "I checked the two sample archives available here and the evidence is still insufficient to decide: one suggests nested attachments are dropped, the other suggests a flattening step ran first. Nothing in this turn resolves the question."
+  },
+  "expected_continue": false,
+  "expected_reason": "Evidence wait (NEEDS_EVIDENCE-shaped): the evaluator must return dependency NEEDS_EVIDENCE/UNCERTAIN with next_action_hint absent; inventing a new experiment or method here is planner intrusion (eval-plan §7.8).",
+  "blocking_negative": true,
+  "label_rationale": "Synthetic format sample only: planner-creep trap built on an evidence-insufficient turn. Labeler marked blocking_negative explicitly because the category default set does not include NO_PLANNER_CREEP.",
+  "label_authority": "UNASSIGNED — format sample only"
+}
