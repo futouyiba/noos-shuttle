@@ -193,6 +193,7 @@ let shuttlePosition = getStoredPosition();
 let suppressNextFabClick = false;
 let vaultFeedTarget: VaultFeedTarget = "chat";
 let preferredVaultAttachRoot: HTMLElement | null = null;
+let projectImportAnchor: HTMLElement | null = null;
 const runtimeObservationLedger = new RuntimeObservationLedger();
 let observationRoute = "";
 let observationRouteSince = 0;
@@ -2127,11 +2128,23 @@ function installProjectImportBridge(app: HTMLElement): void {
 }
 
 function upsertProjectImportButton(app: HTMLElement): void {
-  const existing = document.querySelector<HTMLButtonElement>(".noos-project-import-button");
-  const existingExport = document.querySelector<HTMLButtonElement>(".noos-project-export-sources-button");
+  // The provider re-renders and clones regions freely; a foreign button
+  // injected into managed content can end up duplicated. Always collapse back
+  // to a single instance per class (#25).
+  const staleImportButtons = document.querySelectorAll<HTMLButtonElement>(".noos-project-import-button");
+  const existing = staleImportButtons[0] ?? null;
+  for (let index = 1; index < staleImportButtons.length; index += 1) {
+    staleImportButtons[index].remove();
+  }
+  const staleExportButtons = document.querySelectorAll<HTMLButtonElement>(".noos-project-export-sources-button");
+  const existingExport = staleExportButtons[0] ?? null;
+  for (let index = 1; index < staleExportButtons.length; index += 1) {
+    staleExportButtons[index].remove();
+  }
   if (!isChatGptProjectLikePage()) {
     existing?.remove();
     existingExport?.remove();
+    projectImportAnchor = null;
     return;
   }
 
@@ -2139,6 +2152,7 @@ function upsertProjectImportButton(app: HTMLElement): void {
   if (!anchor) {
     existing?.remove();
     existingExport?.remove();
+    projectImportAnchor = null;
     return;
   }
 
@@ -2170,7 +2184,12 @@ function upsertProjectImportButton(app: HTMLElement): void {
     void refreshVaultObjects(app);
   };
 
-  if (!existing || button.previousElementSibling !== anchor) {
+  // Reposition only when the anchor element identity changed; the provider
+  // inserting siblings between the anchor and the button is benign and must
+  // not churn the transcript layout every refresh (#25).
+  const repositionedImport = !existing || projectImportAnchor !== anchor;
+  if (repositionedImport) {
+    projectImportAnchor = anchor;
     anchor.insertAdjacentElement("afterend", button);
   }
 
@@ -2196,7 +2215,7 @@ function upsertProjectImportButton(app: HTMLElement): void {
     void exportProjectSourcesToNoos(app, findProjectSourceRoot(anchor));
   };
 
-  if (!existingExport || exportButton.previousElementSibling !== button) {
+  if (!existingExport || repositionedImport) {
     button.insertAdjacentElement("afterend", exportButton);
   }
 }
@@ -2246,6 +2265,13 @@ function isProjectSourceAnchorCandidate(element: HTMLElement): boolean {
     return false;
   }
 
+  // Conversation content is never the project sources UI: a heading or label
+  // inside a message (e.g. a written prompt mentioning "来源") must not anchor
+  // injected buttons into the transcript (#25).
+  if (element.closest("[data-message-author-role],[data-testid^='conversation-turn']")) {
+    return false;
+  }
+
   if (!isDocumentElementVisible(element)) {
     return false;
   }
@@ -2264,6 +2290,10 @@ function isProjectSourceAnchorCandidate(element: HTMLElement): boolean {
 
 function isProjectSourceContainerCandidate(element: HTMLElement): boolean {
   if (element.closest("#noos-shuttle-root") || element.closest(".noos-project-import-button,.noos-project-export-sources-button")) {
+    return false;
+  }
+
+  if (element.closest("[data-message-author-role],[data-testid^='conversation-turn']")) {
     return false;
   }
 
