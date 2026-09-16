@@ -37,6 +37,25 @@ describe("NOOS Hub UI impact classifier", () => {
     expect(report.surfaces).toEqual(["Page:work"]);
   });
 
+  it("classifies Hub document shell and update renderer as UI instead of U0", () => {
+    const indexFile = "apps/noos-hub/index.html";
+    const indexReport = classify([indexFile], {
+      [indexFile]: "@@\n-<title>NOOS Hub</title>\n+<title>NOOS Work Hub</title>\n",
+    });
+    expect(indexReport.level).toBe("U2");
+    expect(indexReport.ui_files).toEqual([indexFile]);
+    expect(indexReport.surfaces).toEqual(["Document shell"]);
+
+    const updateFile = "apps/noos-hub/src/update/render.ts";
+    const updateReport = classify([updateFile], {
+      [updateFile]: '@@\n+<button type="button" data-action="install-update">Install</button>\n',
+    });
+    expect(updateReport.level).toBe("U2");
+    expect(updateReport.ui_files).toEqual([updateFile]);
+    expect(updateReport.surfaces).toEqual(["Update:render"]);
+    expect(updateReport.risk_flags.user_action_surface_changed).toBe(true);
+  });
+
   it("keeps local page copy edits at U2 rather than inventing a structural gate", () => {
     const file = "apps/noos-hub/src/pages/system.ts";
     const report = classify([file], {
