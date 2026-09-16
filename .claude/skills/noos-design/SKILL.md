@@ -17,10 +17,11 @@ description: Route or perform an epic-designer review or adjudication on a PR or
 
 **designer 会话（ChatGPT，GitHub connector + 附录 B 已置入其上下文）
 收到 design**：按 connector 读取 ref 的 diff 与 proposal / 契约文件，
-结论评论到 PR，首行 `DESIGN: <verdict>`，正文注明
-`（epic designer via connector）`；决定性表述原文引用（§2.3）；对
-reviewer 技术异议的重裁（§2.5）同此。人转达结论时注明
-`（relayed by <交付来源>）`。
+结论评论到 PR，首行 `DESIGN: APPROVE|REQUEST_CHANGES|REJECTED`
+（`REJECTED` 同时关闭 proposal issue）、次行 provenance——经
+connector 发出写 `（des: via connector, 委派: <来源>）`，经人中继
+写 `（des: relayed by <交付来源>）`；决定性表述原文引用（§2.3）；
+对 reviewer 技术异议的重裁（§2.5）同此。
 
 已合并 PR 上的 DESIGN findings 不要求原 PR 改动：由 orchestrator 以
 新 `dispatch` 接续（follow-up issue 引用该评论）。

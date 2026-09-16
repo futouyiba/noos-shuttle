@@ -1,6 +1,6 @@
 ---
 name: noos-dispatch
-description: Orchestrate a new implementation task per the agent-workflow spec (write the task issue, split slices, hand implement #N to a worker session). Use when the user says a dispatch trigger keyword (e.g. "dispatch 修复X", "派单 修复X") or invokes /noos-dispatch.
+description: 'Orchestrate a new implementation task per the agent-workflow spec (write the task issue, split slices, hand implement #N to a worker session). Use when the user says a dispatch trigger keyword (e.g. "dispatch 修复X", "派单 修复X") or invokes /noos-dispatch.'
 ---
 
 # noos-dispatch

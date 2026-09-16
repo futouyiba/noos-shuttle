@@ -20,8 +20,9 @@ description: Independently review a pull request per the agent-workflow spec (re
    复审（基线＝上次 reviewed head，审其后的全部 commit，内容不
    限，§1.3）。
 4. 按触及路径分级（§1.4）：源码、脚本、CI workflow、构建配置、
-   lockfile 一律 §1.2 全项——在本地 checkout 该 PR 亲跑关键命令并
-   引用实际输出，核心不变量做变异验证；不采信实现者转述。
+   lockfile、生成代码一律 §1.2 全项——在本地 checkout 该 PR 亲跑
+   关键命令并引用实际输出，核心不变量做变异验证；不采信实现者
+   转述。
 5. 不改被审代码；技术异议按 §2.5 回流 designer 重裁，不当场僵持。
 6. 结论评论到 PR，首行严格标记 `REVIEW: APPROVE @ <head-sha>` 或
    `REVIEW: REQUEST_CHANGES @ <head-sha>`，第二行 provenance（如

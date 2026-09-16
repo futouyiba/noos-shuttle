@@ -1,6 +1,6 @@
 ---
 name: noos-implement
-description: Start an implementation task from a task issue per the agent-workflow spec (read the issue, work on an isolated branch, implement, verify, get independent review, open a draft PR citing review evidence). Use when the user says an implement trigger keyword (e.g. "implement #41", "接单 #41") or invokes /noos-implement.
+description: 'Start an implementation task from a task issue per the agent-workflow spec (read the issue, work on an isolated branch, implement, verify, get independent review, open a draft PR citing review evidence). Use when the user says an implement trigger keyword (e.g. "implement #41", "接单 #41") or invokes /noos-implement.'
 ---
 
 # noos-implement
@@ -11,9 +11,10 @@ noos_docs `docs/agent-workflow.md` 附录 B（v0.3.0+）；冲突时以附录 B
 
 ## 步骤
 
-1. 解析 issue 指针（宽松归一：`#41` / `41` / `＃41`）；歧义时向用户
-   确认，不猜。`gh issue view <N> --comments` 读任务书全部评论（含
-   裁定引用与 DESIGN / REVIEW 线索）。
+1. 解析 issue 指针（宽松归一：`#41` / `＃41`；裸数字仅按规范 B.2
+   双条件——消息中再无其它数字、任务线上恰有唯一活跃对象——识别）；
+   歧义时向用户确认，不猜。`gh issue view <N> --comments` 读任务书
+   全部评论（含裁定引用与 DESIGN / REVIEW 线索）。
 2. 在独立 branch / worktree 工作（主 checkout 归 integrator，§3.4），
    遵循本仓库 AGENTS.md 工作原则。
 3. 触及语义或契约、须裁定的先走规范 §2：proposal 文档入 docs/，以
@@ -29,4 +30,5 @@ noos_docs `docs/agent-workflow.md` 附录 B（v0.3.0+）；冲突时以附录 B
    REQUEST_CHANGES 修复后重审直至 APPROVE。
 7. APPROVE 后补 PR body：review 证据链接（指向该 REVIEW 标记评论）
    + 被审 exact head SHA（§1.3）。
-8. 任务 issue 回帖，首行标记 `IMPLEMENTED: PR#M`。
+8. 任务 issue 回帖，首行标记 `IMPLEMENTED: PR#M`、次行 provenance
+   （如 `（impl: 直评）`）。
