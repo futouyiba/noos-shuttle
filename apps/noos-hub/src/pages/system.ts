@@ -22,7 +22,9 @@ export function renderSystem(health: HubHealth, config: ConfigData | null): stri
   ).length;
   const healthy = broken === 0 && incomplete === 0;
 
-  const summaryTitle = healthy ? c.system.summaryHealthy : `${broken + incomplete} 个连接需要处理`;
+  const summaryTitle = healthy
+    ? c.system.summaryHealthy
+    : c.system.summaryUnhealthy.replace("{n}", String(broken + incomplete));
   const summaryPill = healthy
     ? `<span class="pill pill--ready">${e(c.system.operational)}</span>`
     : `<span class="pill pill--${broken > 0 ? "error" : "partial"}">${e(broken > 0 ? c.system.needsAttention : c.system.partial)}</span>`;

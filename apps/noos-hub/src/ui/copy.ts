@@ -16,6 +16,14 @@ const en = {
     brandSubtitle: "Work continuity",
     versionNote: "v0.2 exploration"
   },
+  sections: {
+    work: { title: "Work", summary: "Pick up where NOOS needs you, or see what is moving." },
+    workDetail: { title: "FCF · DSL R3", summary: "Review returned · 2 blocking issues require adjudication" },
+    vault: { title: "Vault", summary: "收进来、放稳、交出去。" },
+    harness: { title: "Harness Inspector", summary: "Advanced runtime diagnostic surface · fixture data." },
+    system: { title: "System", summary: "Connections, configuration and diagnostics." },
+    help: { label: "Help", title: "NOOS Hub Help", summary: "Handoff, Crystal, Vault, connectors and local sync boundaries at a glance." }
+  },
   work: {
     fixtureNote: "UI fixture · Illustrative examples, not live work or canonical state · Read-only",
     needsAttention: "Needs your attention",
@@ -118,6 +126,7 @@ const en = {
   },
   system: {
     summaryHealthy: "Everything needed for normal work is available.",
+    summaryUnhealthy: "{n} connections need attention",
     summarySub: "System details stay out of the way unless they affect work.",
     operational: "Operational",
     partial: "Partial",
@@ -146,6 +155,14 @@ const zhCN: typeof en = {
   shell: {
     brandSubtitle: "工作连续性",
     versionNote: "v0.2 探索"
+  },
+  sections: {
+    work: { title: "Work", summary: "在需要你的地方接续，或看看什么正在推进。" },
+    workDetail: { title: "FCF · DSL R3", summary: "评审返回 · 2 个阻塞问题等待裁定" },
+    vault: { title: "Vault", summary: "收进来、放稳、交出去。" },
+    harness: { title: "Harness Inspector", summary: "高级运行时诊断面 · fixture 数据。" },
+    system: { title: "System", summary: "连接、配置与诊断。" },
+    help: { label: "帮助", title: "NOOS Hub 帮助", summary: "快速理解 Handoff、Crystal、Vault、连接器和本机同步边界。" }
   },
   work: {
     fixtureNote: "UI fixture · 示例数据，不是正式工作项或 canonical 状态 · 只读",
@@ -247,6 +264,7 @@ const zhCN: typeof en = {
   },
   system: {
     summaryHealthy: "正常工作所需的一切均可用。",
+    summaryUnhealthy: "{n} 个连接需要处理",
     summarySub: "系统细节保持安静，只在影响工作时出现。",
     operational: "运行正常",
     partial: "部分可用",

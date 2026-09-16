@@ -17,6 +17,7 @@ import { sleepRecoveryDisplay } from "./status";
 import "./styles.css";
 import type { HubHealth, SleepRecoveryStatus, UpdateCheckMode, UpdateStatus } from "./types";
 import { renderUpdateBannerHtml, renderUpdateDialogHtml } from "./update/render";
+import { bindContentActions } from "./ui/content-actions";
 import { copy as c } from "./ui/copy";
 import { escapeHtml } from "./ui/html";
 import { setVaultFileActionDataRuns } from "./vault-file-actions";
@@ -30,12 +31,12 @@ interface SectionMeta {
 }
 
 const sectionMeta: Record<SectionId, SectionMeta> = {
-  work: { id: "work", label: "Work", title: "Work", summary: "Pick up where NOOS needs you, or see what is moving." },
-  "work-detail": { id: "work-detail", label: "Work detail", title: "FCF · DSL R3", summary: "Review returned · 2 blocking issues require adjudication" },
-  vault: { id: "vault", label: "Vault", title: "Vault", summary: "收进来、放稳、交出去。" },
-  harness: { id: "harness", label: "Harness", title: "Harness Inspector", summary: "Advanced runtime diagnostic surface · fixture data." },
-  system: { id: "system", label: "System", title: "System", summary: "Connections, configuration and diagnostics." },
-  help: { id: "help", label: "帮助", title: "NOOS Hub 帮助", summary: "快速理解 Handoff、Crystal、Vault、连接器和本机同步边界。" }
+  work: { id: "work", label: "Work", title: c.sections.work.title, summary: c.sections.work.summary },
+  "work-detail": { id: "work-detail", label: "Work detail", title: c.sections.workDetail.title, summary: c.sections.workDetail.summary },
+  vault: { id: "vault", label: "Vault", title: c.sections.vault.title, summary: c.sections.vault.summary },
+  harness: { id: "harness", label: "Harness", title: c.sections.harness.title, summary: c.sections.harness.summary },
+  system: { id: "system", label: "System", title: c.sections.system.title, summary: c.sections.system.summary },
+  help: { id: "help", label: c.sections.help.label, title: c.sections.help.title, summary: c.sections.help.summary }
 };
 
 const navItems: SectionMeta[] = [sectionMeta.work, sectionMeta.vault, sectionMeta.system];
@@ -101,7 +102,7 @@ function renderShell(): void {
           <p class="topbar-summary" id="section-summary">${escapeHtml(shellItem.summary)}</p>
         </div>
         <div class="topbar-actions">
-          <button type="button" data-section="help" class="topbar-link">帮助</button>
+          <button type="button" data-section="help" class="topbar-link">${escapeHtml(c.sections.help.label)}</button>
         </div>
       </header>
       <section class="update-banner" id="update-banner" hidden></section>
@@ -573,18 +574,17 @@ function renderCurrentSection(): void {
     { id: "crystals", files: currentHealth.recent_files.crystals }
   ]);
   bindSectionButtons(content);
-
-  content.querySelectorAll<HTMLButtonElement>("[data-run]").forEach((button) => {
-    button.addEventListener("click", (event) => {
-      void runAction(button.dataset.run ?? "", event.currentTarget as HTMLButtonElement);
-    });
-  });
-  content.querySelectorAll<HTMLButtonElement>('[data-action="refresh"]').forEach((button) => {
-    button.addEventListener("click", () => {
+  bindContentActions(content, {
+    run: (action, sourceButton) => {
+      void runAction(action, sourceButton);
+    },
+    refresh: () => {
       void loadHealth({ force: true });
-    });
+    },
+    checkUpdate: () => {
+      void checkForHubUpdate({ mode: "manual" });
+    }
   });
-  bindContentActionButtons(content);
 
   if (activeSection === "system") {
     bindConfigEditEvents(content);
@@ -861,8 +861,17 @@ async function loadConfig(): Promise<void> {
   if (activeSection === "system") {
     content.innerHTML = renderSystem(currentHealth, currentConfig);
     bindConfigEditEvents(content);
-    bindRunButtons(content);
-    bindContentActionButtons(content);
+    bindContentActions(content, {
+      run: (action, sourceButton) => {
+        void runAction(action, sourceButton);
+      },
+      refresh: () => {
+        void loadHealth({ force: true });
+      },
+      checkUpdate: () => {
+        void checkForHubUpdate({ mode: "manual" });
+      }
+    });
     renderSleepRecoveryStatus();
   }
 }
@@ -934,22 +943,6 @@ async function saveConfigValue(key: string, value: string, row: HTMLElement): Pr
   } catch (error) {
     showToast(`保存失败：${String(error)}`, "error");
   }
-}
-
-function bindRunButtons(root: ParentNode): void {
-  root.querySelectorAll<HTMLButtonElement>("[data-run]").forEach((button) => {
-    button.addEventListener("click", (event) => {
-      void runAction(button.dataset.run ?? "", event.currentTarget as HTMLButtonElement);
-    });
-  });
-}
-
-function bindContentActionButtons(root: ParentNode): void {
-  root.querySelectorAll<HTMLButtonElement>('[data-action="check-update"]').forEach((button) => {
-    button.addEventListener("click", () => {
-      void checkForHubUpdate({ mode: "manual" });
-    });
-  });
 }
 
 function isTauriRuntime(): boolean {

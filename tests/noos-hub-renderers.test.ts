@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { JSDOM } from "jsdom";
 import { parseSectionId, navSectionFor } from "../apps/noos-hub/src/routes";
 import { renderConfig } from "../apps/noos-hub/src/pages/config";
 import { renderHelp } from "../apps/noos-hub/src/pages/help";
@@ -6,8 +7,43 @@ import { renderLogs } from "../apps/noos-hub/src/pages/logs";
 import { renderSystem } from "../apps/noos-hub/src/pages/system";
 import { renderVault } from "../apps/noos-hub/src/pages/vault";
 import { renderWorkDetail, renderWorkOverview } from "../apps/noos-hub/src/pages/work";
+import { bindContentActions } from "../apps/noos-hub/src/ui/content-actions";
 import { copyLocales } from "../apps/noos-hub/src/ui/copy";
 import type { AdapterHealth, HubHealth } from "../apps/noos-hub/src/types";
+
+describe("NOOS Hub content action binding", () => {
+  it("restores refresh/run/check-update handlers after an innerHTML redraw", () => {
+    const dom = new JSDOM(`
+      <div id="content">
+        <button type="button" data-run="doctor">doctor</button>
+        <button type="button" data-action="refresh">refresh</button>
+        <button type="button" data-action="check-update">check</button>
+      </div>
+    `);
+    const calls: string[] = [];
+    const handlers = {
+      run: (action: string) => calls.push(`run:${action}`),
+      refresh: () => calls.push("refresh"),
+      checkUpdate: () => calls.push("check-update")
+    };
+    const content = dom.window.document.querySelector("#content")!;
+    const markup = content.innerHTML;
+
+    bindContentActions(content, handlers);
+    (content.querySelector('[data-action="refresh"]') as HTMLButtonElement).click();
+    expect(calls).toEqual(["refresh"]);
+
+    // The async config redraw replaces innerHTML, dropping all listeners.
+    // Re-running the same binder must bring every hook back — this is the
+    // regression guard for the dead System Refresh button (PR #34).
+    content.innerHTML = markup;
+    bindContentActions(content, handlers);
+    (content.querySelector('[data-action="refresh"]') as HTMLButtonElement).click();
+    (content.querySelector("[data-run]") as HTMLButtonElement).click();
+    (content.querySelector('[data-action="check-update"]') as HTMLButtonElement).click();
+    expect(calls).toEqual(["refresh", "refresh", "run:doctor", "check-update"]);
+  });
+});
 
 describe("NOOS Hub hash routing", () => {
   it("normalizes legacy deep links onto the new primary sections", () => {
