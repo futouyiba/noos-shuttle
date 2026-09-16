@@ -186,6 +186,13 @@ follow-up on top of merge `f6b7b39`:
   surfaces in discovery as a malformed marker instead of being silently neutralized. Honest markers with
   canonical values round-trip unchanged.
 
+A second hygiene pass closes the two residuals recorded by the `9dddf6a` focused review: the HOLD gate in
+both `observe` and `discover` now also consults the discover-time live marker-integrity flags
+(packet/escalation content-vs-ledger, claim self-consistency, same-revision divergences) in addition to
+durable `PENDING_TRIAGE` anomalies/conflicts, so a clean result sitting beside a tampered live packet or
+escalation copy is held for Human triage rather than offered as a resume basis (reviewer counterexample
+covered by a regression test).
+
 ## Known limits
 
 - Single-writer ledger: the CLI store is revision-checked read-then-atomic-rename for one process; the

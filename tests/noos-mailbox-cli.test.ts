@@ -278,5 +278,62 @@ describe("cli mailbox flow with a fake gh", () => {
     expect(afterDiscover.status).toBe(0);
     expect(afterDiscover.stdout).toContain("INTEGRITY ANOMALY [RESULT_FINGERPRINT_CLAIM_MISMATCH]");
     expect(afterDiscover.stdout).toContain("PENDING CONFLICT");
+    // Discover-side gate: the conflicted tampered variant is not observed (P3b),
+    // so nothing is offered as a resume basis — the fail-closed waiting variant prints.
+    expect(afterDiscover.stdout).toContain("NOT yet observed");
+    expect(afterDiscover.stdout).not.toContain("SAME source operation");
+  });
+
+  it("holds resume when a clean result sits beside a tampered live packet copy (reviewer counterexample)", () => {
+    const ledger2 = path.join(workDir, "ledger-hg.json");
+    const openArgs2 = openArgs.map((arg) => (arg === ledger ? ledger2 : arg)).map((arg, index) =>
+      openArgs[index - 1] === "--escalation-id" ? "esc-hg-1" : arg
+    );
+    const init = runCli(["init", "--ledger", ledger2]);
+    expect(init.status).toBe(0);
+    const opened = runCli(openArgs2);
+    expect(opened.status).toBe(0);
+    const markerBody = opened.stdout.split("--- marker body ---\n")[1];
+    const wire = JSON.parse(markerBody.slice(markerBody.indexOf("{"), markerBody.lastIndexOf("}") + 1));
+    wire.escalation.question = "TAMPERED question?";
+    const tamperedPacketBody = "```noos-mailbox\n" + JSON.stringify(wire, null, 2) + "\n```";
+
+    const result = runCli([
+      "render-result",
+      "--escalation",
+      "esc-hg-1",
+      "--packet",
+      "esc-hg-1/packet/r1",
+      "--result-id",
+      "res-hg-1",
+      "--source-role",
+      "PRIMARY_DESIGN",
+      "--authority-role",
+      "PRIMARY_DESIGN",
+      "--status",
+      "COMPLETE",
+      "--summary",
+      "Clean adjudication.",
+      "--next-action",
+      "Continue the same operation."
+    ]);
+    expect(result.status).toBe(0);
+    const resultBody = result.stdout.split("--- result marker body ---\n")[1];
+
+    setFakeComments([
+      [
+        { id: 50, user: { login: "impl-agent" }, updated_at: "2026-09-16T00:00:00Z", body: tamperedPacketBody },
+        { id: 100, user: { login: "impl-agent" }, updated_at: "2026-09-16T00:00:00Z", body: markerBody },
+        { id: 101, user: { login: "design-agent" }, updated_at: "2026-09-16T01:00:00Z", body: resultBody }
+      ]
+    ]);
+    const observed = runCli(["observe", "--issue", "futouyiba/noos-shuttle#10", "--ledger", ledger2]);
+    expect(observed.status).toBe(0);
+    expect(observed.stdout).toContain("HOLD —");
+    expect(observed.stdout).not.toContain("SAME source operation");
+    const discovered = runCli(["discover", "--issue", "futouyiba/noos-shuttle#10", "--ledger", ledger2]);
+    expect(discovered.status).toBe(0);
+    expect(discovered.stdout).toContain("HOLD —");
+    expect(discovered.stdout).not.toContain("SAME source operation");
   });
 });
