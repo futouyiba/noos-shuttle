@@ -102,13 +102,16 @@ Hub release/bundle 必须内置已 build 的浏览器扩展；用户安装 Hub �
   `/Applications/NOOS Hub.app` → 启动 → 校验 `/health` 的 `build_commit` 等于本次
   checkout 的 HEAD 且 `started_at` 新鲜 → 重新装 watchdog。Spotlight/Dock 打开的
   永远是最新 dogfood 构建；不要手工下载 release 包覆盖它。
-- **"哪个 Hub 在跑"的唯一事实来源是本地写端口（默认 17642）的占用者**，
-  `hub:stop` 按 `lsof` 端口 owner 终止进程并等待端口释放，不依赖路径或 pid 文件。
+- **"哪个 Hub 在跑"的唯一事实来源是本地写端口（默认 17642）的占用者**：
+  `hub:stop` 优先按端口 owner 终止并等待端口释放；端口无人监听时回退 pid
+  文件/已知路径模式清理残留实例（如已打开窗口但服务线程已死的进程）。
 - **数据不隔离**：dogfood 通道共享 `~/.noos`（vault、shuttle-token），配对与数据
-  延续性是测试目标的一部分。每次部署前 `~/.noos/runtime/*.json` 会被快照轮换
-  （保留最近 20 份）用于回滚。
-- **worktree / 实验实例必须隔离**：启动前设置 `NOOS_HOME=<实例私有目录>` 与
-  `NOOS_HUB_PORT=<非 17642 端口>`（Hub 与 launcher 均读取该变量），不得占用
-  17642；vite dev 端口 1430 冲突时需与其它 dev 实例串行。
+  延续性是测试目标的一部分。每次部署后（进程退出、文件静止时）`~/.noos/runtime/*.json`
+  会被快照轮换（保留最近 20 份）用于回滚。
+- **worktree / 实验实例必须三件套隔离**，缺一不可：`NOOS_HOME=<实例私有目录>` +
+  `NOOS_HUB_PORT=<非 17642 端口>` + `NOOS_HUB_INSTALL_APP=<非 /Applications 路径>`
+  （Hub 与 launcher 均读取前两个变量）。watchdog label 按 `NOOS_HOME` 区分，
+  实例间不得互清 launchd job；vite dev 端口 1430 冲突时需与其它 dev 实例串行。
+  隔离实例的 `NOOS_HUB_PORT` 配置非法时 Hub 直接拒绝启动（fail-closed）。
 - **更新横幅注意**：dogfood 构建与 GitHub release 是两条通道。dogfood 部署期间
   Hub 出现 release 更新提示时不要点击安装；确认要切换通道时再操作。

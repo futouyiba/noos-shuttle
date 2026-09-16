@@ -20,15 +20,20 @@ const DEFAULT_LOCAL_WRITE_PORT: u16 = 17642;
 
 /// The local write port is configurable so worktree/dev instances can run
 /// beside the dogfood channel instead of fighting over the default port.
+/// An explicit but invalid port is a configuration error: exiting beats
+/// silently falling back to 17642, which would fight the dogfood channel.
 fn local_write_port() -> u16 {
     static PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
     *PORT.get_or_init(|| match std::env::var("NOOS_HUB_PORT") {
-        Ok(raw) => raw
-            .trim()
-            .parse::<u16>()
-            .ok()
-            .filter(|port| *port != 0)
-            .unwrap_or(DEFAULT_LOCAL_WRITE_PORT),
+        Ok(raw) => match raw.trim().parse::<u16>() {
+            Ok(port) if port != 0 => port,
+            _ => {
+                eprintln!(
+                    "NOOS_HUB_PORT must be a port number in 1..=65535, got '{raw}'; refusing to start."
+                );
+                std::process::exit(1);
+            }
+        },
         Err(_) => DEFAULT_LOCAL_WRITE_PORT,
     })
 }

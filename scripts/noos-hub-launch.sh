@@ -10,11 +10,20 @@ PID_FILE="$RUN_DIR/noos-hub.pid"
 WATCHDOG_PID_FILE="$RUN_DIR/noos-hub-watchdog.pid"
 WATCHDOG_PLIST="$RUN_DIR/com.noos.hub.watchdog.plist"
 WATCHDOG_RUNNER="$RUN_DIR/noos-hub-watchdog-runner.sh"
+# One watchdog per NOOS_HOME: an isolated instance must not boot out the
+# dogfood channel's watchdog (or vice versa).
 WATCHDOG_LABEL="com.noos.hub.watchdog"
+if [[ "$NOOS_HOME" != "$HOME/.noos" ]]; then
+  WATCHDOG_LABEL="com.noos.hub.watchdog.$(printf '%s' "$NOOS_HOME" | sed -E 's/[^A-Za-z0-9]+/-/g; s/^-+//; s/-+$//; s/^(.{40}).*/\1/')"
+fi
 LOG_FILE="$LOG_DIR/noos-hub.log"
 HUB_DIR="$ROOT_DIR/apps/noos-hub"
 APP_PATH="$ROOT_DIR/apps/noos-hub/src-tauri/target/release/bundle/macos/NOOS Hub.app"
 APP_BINARY="$APP_PATH/Contents/MacOS/noos-hub"
+# Records the commit the current bundle attests; a stamp mismatch forces a
+# rebuild even when mtimes look fresh (cargo's rerun-if rules alone would let
+# the binary keep attesting a stale commit).
+BUNDLE_COMMIT_STAMP="$HUB_DIR/src-tauri/target/noos-hub-bundle-commit"
 # The local write port is the single source of truth for "which Hub is
 # serving"; kill/health/verify below all key off port ownership.
 HUB_PORT="${NOOS_HUB_PORT:-17642}"
@@ -91,6 +100,15 @@ hub_bundle_needs_rebuild() {
   if [[ ! -x "$APP_BINARY" ]]; then
     return 0
   fi
+  # The bundle must attest the commit this checkout is at; a stale stamp
+  # (any new commit, including docs/scripts-only ones) forces a rebuild.
+  local expected stamped
+  expected="$(expected_build_commit)"
+  stamped=""
+  [[ -f "$BUNDLE_COMMIT_STAMP" ]] && stamped="$(tr -d '[:space:]' < "$BUNDLE_COMMIT_STAMP")"
+  if [[ -n "$expected" && "$stamped" != "$expected" ]]; then
+    return 0
+  fi
 
   local newer
   newer="$(find \
@@ -155,13 +173,19 @@ port_is_free() {
   [[ -z "$(port_owner_pids)" ]]
 }
 
+# Remove only launchd app-job entries for this bundle identifier whose PID is
+# already dead (stale) or belongs to the pids we just killed — never a live
+# instance owned by another channel (e.g. an isolated worktree instance).
 launchctl_cleanup() {
   command -v launchctl >/dev/null 2>&1 || return 0
-  local label
+  local killed=" $* " label
   while IFS= read -r label; do
     [[ -n "$label" ]] || continue
     launchctl remove "$label" >/dev/null 2>&1 || true
-  done < <(launchctl list 2>/dev/null | awk '/application\.app\.noos\.shuttle\.hub/ {print $NF}')
+  done < <(launchctl list 2>/dev/null | awk -v killed="$killed" '
+    $3 ~ /^application\.app\.noos\.shuttle\.hub/ {
+      if ($1 == "-" || index(killed, " " $1 " ") > 0) print $3
+    }')
 }
 
 health_json() {
@@ -199,9 +223,13 @@ wait_health() {
 
 # Fail-closed deploy verification: a healthy old instance must never pass as a
 # fresh deploy. The served build_commit must equal this checkout's HEAD and
-# started_at must be recent.
+# started_at must be a recent, sane timestamp.
 verify_deploy() {
   local expected payload commit started now
+  command -v python3 >/dev/null 2>&1 || {
+    echo "Deploy verification FAILED: python3 is required to parse $HEALTH_URL." >&2
+    return 1
+  }
   expected="$(expected_build_commit)"
   payload="$(health_json)"
   commit="$(health_field "$payload" build_commit || true)"
@@ -216,8 +244,16 @@ verify_deploy() {
     echo "Deploy verification FAILED: served build_commit='${commit:-<none>}' != HEAD '${expected}'." >&2
     return 1
   fi
-  if [[ -z "$started" ]] || (( now - started > 180 )); then
-    echo "Deploy verification FAILED: started_at='${started:-<none>}' missing or stale (now=${now})." >&2
+  if [[ ! "$started" =~ ^[0-9]+$ ]]; then
+    echo "Deploy verification FAILED: started_at='${started:-<none>}' is missing or non-numeric." >&2
+    return 1
+  fi
+  if (( started > now + 5 )); then
+    echo "Deploy verification FAILED: started_at=${started} is in the future (now=${now})." >&2
+    return 1
+  fi
+  if (( now - started > 180 )); then
+    echo "Deploy verification FAILED: started_at=${started} is stale (now=${now})." >&2
     return 1
   fi
   echo "Deploy verified: commit=${commit:0:12} version=$(health_field "$payload" version || echo "?") started_at=${started}"
@@ -252,6 +288,10 @@ install_bundle() {
   ditto "$APP_PATH" "$INSTALL_APP"
 }
 
+xml_escape() {
+  printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
 start_watchdog() {
   local watchdog_pid
   watchdog_pid="$(read_watchdog_pid)"
@@ -262,7 +302,7 @@ start_watchdog() {
   clear_stale_watchdog_pid
 
   if [[ "$(uname -s)" == "Darwin" ]] && command -v launchctl >/dev/null 2>&1; then
-    local root_dir_q install_app_q health_url_q pid_file_q watchdog_pid_file_q log_file_q interval_q high_cpu_q failure_limit_q
+    local root_dir_q install_app_q health_url_q pid_file_q watchdog_pid_file_q log_file_q interval_q high_cpu_q failure_limit_q noos_home_q hub_port_q
     printf -v root_dir_q "%q" "$ROOT_DIR"
     printf -v install_app_q "%q" "$INSTALL_APP"
     printf -v health_url_q "%q" "$HEALTH_URL"
@@ -272,6 +312,8 @@ start_watchdog() {
     printf -v interval_q "%q" "$WATCHDOG_INTERVAL_SECONDS"
     printf -v high_cpu_q "%q" "$WATCHDOG_HIGH_CPU_PERCENT"
     printf -v failure_limit_q "%q" "$WATCHDOG_FAILURE_LIMIT"
+    printf -v noos_home_q "%q" "$NOOS_HOME"
+    printf -v hub_port_q "%q" "$HUB_PORT"
 
     cat > "$WATCHDOG_RUNNER" <<EOF
 #!/usr/bin/env bash
@@ -286,6 +328,11 @@ LOG_FILE=$log_file_q
 WATCHDOG_INTERVAL_SECONDS=$interval_q
 WATCHDOG_HIGH_CPU_PERCENT=$high_cpu_q
 WATCHDOG_FAILURE_LIMIT=$failure_limit_q
+# Keep the channel identity of the instance this watchdog guards: a relaunch
+# must bind the same isolated NOOS_HOME/port, not fall back to the dogfood
+# channel defaults.
+export NOOS_HOME=$noos_home_q
+export NOOS_HUB_PORT=$hub_port_q
 
 cd "\$ROOT_DIR" 2>/dev/null || cd /
 
@@ -382,6 +429,9 @@ done
 EOF
     chmod +x "$WATCHDOG_RUNNER"
 
+    local log_file_x runner_x
+    log_file_x="$(xml_escape "$LOG_FILE")"
+    runner_x="$(xml_escape "$WATCHDOG_RUNNER")"
     cat > "$WATCHDOG_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -391,14 +441,14 @@ EOF
   <string>$WATCHDOG_LABEL</string>
   <key>ProgramArguments</key>
   <array>
-    <string>$WATCHDOG_RUNNER</string>
+    <string>$runner_x</string>
   </array>
   <key>WorkingDirectory</key>
   <string>/</string>
   <key>StandardOutPath</key>
-  <string>$LOG_FILE</string>
+  <string>$log_file_x</string>
   <key>StandardErrorPath</key>
-  <string>$LOG_FILE</string>
+  <string>$log_file_x</string>
 </dict>
 </plist>
 EOF
@@ -472,15 +522,25 @@ start() {
 
   # start means "make the latest build serve": always redeploy, never reuse
   # an already-running instance (its build identity may be stale).
-  snapshot_runtime_state
   stop
+  # Snapshot after stop: the old process is gone, so runtime state files are
+  # quiescent and cannot tear mid-copy.
+  snapshot_runtime_state
 
+  local expected_commit
+  expected_commit="$(expected_build_commit)"
   if hub_bundle_needs_rebuild; then
     echo "Building NOOS Hub app bundle..."
-    npm run hub:bundle || {
+    # Force the binary to attest THIS commit: cargo's rerun-if rules alone
+    # would let build.rs keep a stale cached commit (it does not rerun on
+    # ordinary source changes, and never for docs/scripts-only commits).
+    NOOS_HUB_BUILD_COMMIT="$expected_commit" npm run hub:bundle || {
       echo "hub:bundle failed; aborting start." >&2
       exit 1
     }
+  fi
+  if [[ -n "$expected_commit" ]]; then
+    printf '%s\n' "$expected_commit" > "$BUNDLE_COMMIT_STAMP"
   fi
 
   echo "Installing NOOS Hub bundle to: $INSTALL_APP"
@@ -539,7 +599,7 @@ stop() {
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     if port_is_free && ! any_pid_running $pids; then
       rm -f "$PID_FILE"
-      launchctl_cleanup
+      launchctl_cleanup $pids
       echo "NOOS Hub stopped."
       return 0
     fi
@@ -559,7 +619,7 @@ stop() {
   for _ in 1 2 3 4 5; do
     if port_is_free; then
       rm -f "$PID_FILE"
-      launchctl_cleanup
+      launchctl_cleanup $pids
       echo "NOOS Hub stopped (SIGKILL)."
       return 0
     fi
