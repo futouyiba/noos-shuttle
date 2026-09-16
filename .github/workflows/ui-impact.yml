@@ -11,6 +11,7 @@ permissions:
 jobs:
   ui-impact:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout candidate history
         uses: actions/checkout@v4
