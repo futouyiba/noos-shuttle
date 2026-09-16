@@ -126,6 +126,8 @@ scripts/noos-doctor.sh
 npm run hub:launch
 ```
 
+`hub:launch` 是完整部署：它会先停掉当前占用本地端口 17642 的 Hub（无论装在哪里）、在 checkout 有更新时重建 bundle、安装到 `/Applications/NOOS Hub.app`、启动并校验运行实例的构建 commit 与本仓库一致，最后重新装上 watchdog。隔离的开发/测试实例需同时设置 `NOOS_HOME`、`NOOS_HUB_PORT`、`NOOS_HUB_INSTALL_APP`（见仓库 AGENTS.md）。
+
 常用命令：
 
 ```sh

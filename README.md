@@ -59,6 +59,8 @@ npm run hub:stop
 
 NOOS Hub is a Tauri desktop app. Its interface is built with web technologies, while system-level actions are handled by a Rust backend that calls local scripts and checks machine state.
 
+Note: `npm run hub:launch` is a **deploy**, not just a start — it stops whatever Hub currently owns local port 17642, rebuilds the bundle when the checkout has moved ahead, installs the bundle to `/Applications/NOOS Hub.app`, launches it, and verifies the served build commit matches this checkout before re-arming the watchdog. Isolated dev/test instances must set `NOOS_HOME`, `NOOS_HUB_PORT`, and `NOOS_HUB_INSTALL_APP` (see AGENTS.md).
+
 ### Codex App Entry Point
 
 The Codex App can currently extend agent behavior through skills, plugins, and hooks, but it does not expose a public persistent top-right button registration API. NOOS Shuttle provides a stable launcher that can be used behind such an entry point:
