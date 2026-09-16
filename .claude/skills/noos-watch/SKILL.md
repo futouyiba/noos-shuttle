@@ -12,33 +12,44 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
 ## 硬边界
 
 - **永不**执行 merge / 部署 / 关闭 issue / push 等敏感动作；只投递
-  暗号与写状态文件。
-- 只认首行标记 + 次行 provenance 的评论；无效标记只记录不路由。
+  暗号与写状态文件。通知类动作（投递暗号、send_message 交接）
+  不是敏感动作，直接执行、无需向人请示。
+- 只认首行标记 + 次行 provenance 的评论（唤醒不校验委派记录；
+  接收方按 B.3 推导规则核对后才行动）；无效标记只记录不路由。
 - 幂等：每个 comment ID 只处理一次（状态文件去重）。
 - 无法解析目标会话时不投递，记入待办并在简报中汇报。
 
 ## 步骤
 
-1. 读状态文件 `/Volumes/Mac DS - Data/SharedProjects/noos-shuttle/.tmp/watcher-state.json`
-   （无则初始化 `{"watermark": "<now-15min ISO>", "processed": [],
-   "pending": []}`）。
+1. 读状态文件（主 checkout 下 `.tmp/watcher-state.json`，路径见
+   AGENTS.md 环境注记；主 checkout 根不可定位时立即报错退出，
+   不得静默重置。schema：`{"watermark","processed","pending",
+   "stages"}`，无则初始化 watermark=now-15min）。
 2. `gh api "repos/futouyiba/noos-shuttle/issues/comments?since=<watermark>&per_page=100"`
-   拉取新评论（该端点同时覆盖 issue 与 PR 评论）。
-3. 逐条分类（跳过已处理 ID 与无有效标记者），按 provenance 角色
-   路由：
-   - `REVIEW: REQUEST_CHANGES`（rev/des 发出）→ 向该 PR 的实现
-     会话投 `fix PR#N`
-   - `REVIEW: APPROVE` → 通知实现会话与 orchestrator（向人提示
-     可 merge）
-   - `DESIGN: <verdict>` → 同上；若 PR 已合并 → 提示 orchestrator
-     以新 dispatch 立 follow-up issue
+   拉取新评论（覆盖 issue 与 PR 评论）；返回满页时续页拉取
+   （page=2,3,…）至不满页。
+3. 逐条分类（跳过已处理 ID 与无有效标记者），按 verdict 分档路由：
+   - `REVIEW: REQUEST_CHANGES` → 向该 PR 的实现会话投 `fix PR#N`
+   - `REVIEW: APPROVE` → 通知实现会话与 orchestrator；向
+     integrator 会话投递合并交接（PR 链接、分支、exact head、
+     review 证据链接），并向人提示可 merge
+   - `DESIGN: REQUEST_CHANGES`（开放 PR）→ 向该 PR 的实现会话投
+     `fix PR#N`
+   - `DESIGN: APPROVE` → 通知实现会话与 orchestrator
+   - `DESIGN: REJECTED` → 通知 orchestrator（proposal issue 由
+     designer 侧关单流程处理）
+   - `DESIGN:` 任意 verdict 且 PR 已合并 → 提示 orchestrator 以新
+     dispatch 立 follow-up issue
    - `INTEGRATED:` → 记录并通知 orchestrator
 4. 会话寻址：`ccd_session_mgmt list_sessions` 按标题 / 分支匹配
-   该 PR 的实现会话；匹配不到则进 pending。投递用 send_message，
+   该 PR 的实现会话；匹配不到则进 pending（`{"type":"unrouted",
+   "comment":<id>, "action":<拟投暗号>}`）。投递用 send_message，
    消息含 PR 链接与评论链接。
-5. 写回状态：watermark = 本次见到的最大评论时间；processed 追加
-   并截断到最近 500 条；pending 中已人工处理的清除。
-6. 输出简报：处理条数、路由去向、未投递待办。
-
-多动词跨角色指令（如 fix 后 review）由本 watcher 负责分 stage：
-上一个 stage 的产出标记出现后，再派发下一个（见规范 B.2）。
+5. stage 链（B.2 多动词跨角色）：`stages` 数组记录
+   `{"pr":"PR#N","await":"REVIEW","next":"review PR#N"}` 形式的
+   待续条目；本次轮询见到 await 的标记出现即派发 next 并移除，
+   否则保留。
+6. 写回状态：watermark = 本次见到的最大评论时间；processed 追加
+   并截断到最近 500 条；写回前重新读取并按并集合并（防与手动
+   运行重叠丢更新）。pending 中已人工处理的清除。
+7. 输出简报：处理条数、路由去向、在途 stage、未投递待办。

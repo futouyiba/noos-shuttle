@@ -32,3 +32,7 @@ noos_docs `docs/agent-workflow.md` 附录 B（v0.3.0+）；冲突时以附录 B
    + 被审 exact head SHA（§1.3）。
 8. 任务 issue 回帖，首行标记 `IMPLEMENTED: PR#M`、次行 provenance
    （如 `（impl: 直评）`）。
+9. 自动通知（无需向人请示——通知类动作不是敏感动作）：send_message
+   给 integrator 会话投递合并交接（PR 链接、分支、被审 exact
+   head、review 证据链接、变更范围），并通知 orchestrator；
+   `ccd_session_mgmt list_sessions` 按标题/分支定位 integrator。
