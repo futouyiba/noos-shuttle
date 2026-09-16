@@ -2144,6 +2144,7 @@ function upsertProjectImportButton(app: HTMLElement): void {
   if (!isChatGptProjectLikePage()) {
     existing?.remove();
     existingExport?.remove();
+    projectImportAnchor = null;
     return;
   }
 
@@ -2151,6 +2152,7 @@ function upsertProjectImportButton(app: HTMLElement): void {
   if (!anchor) {
     existing?.remove();
     existingExport?.remove();
+    projectImportAnchor = null;
     return;
   }
 

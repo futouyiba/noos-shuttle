@@ -1076,6 +1076,7 @@ describe("content script smoke flow", () => {
     const page = await newMockProjectPage();
 
     await page.locator(".noos-project-import-button").waitFor();
+    await page.locator(".noos-project-import-button").waitFor();
     // A heading inside a message must never anchor the injected buttons, and
     // provider-side clones of a region containing them must not accumulate (#25).
     expect(await page.locator(".noos-project-import-button").count()).toBe(1);
@@ -1556,13 +1557,14 @@ async function newMockProjectPage(options: { withFileInput?: boolean } = {}): Pr
       contentType: "text/html",
       body: `<!doctype html>
 <html>
+  <head><meta charset="utf-8" /></head>
   <body>
     <nav aria-label="历史聊天记录">
       <a href="/c/file-sidebar">xlsb文件介绍</a>
     </nav>
     <main>
       <article data-message-author-role="assistant">
-        <div><h3>提示词与来源</h3><p>写在 canvas 里的提示词正文（decoy anchor）。</p></div>
+        <div><h3>来源</h3><p>写在 canvas 里的提示词正文（decoy anchor）。</p></div>
       </article>
       <section>
         <h2>Project sources</h2>
