@@ -20,8 +20,8 @@ https://raw.githubusercontent.com/futouyiba/noos_docs/main/docs/agent-workflow.m
 门禁摘要（完整条款见规范 §1）：任何 PR 未获独立 reviewer APPROVE（引用
 被审 exact head）不得合并；reviewed head 之后的 commit 需增量复审。
 epic designer 的裁定以 proposal 文档 + issue/PR 评论传递，决定性表述
-原文引用（规范 §2）。orchestrator 只编排委派、任务用独立
-branch/worktree；主 checkout 归 integrator（规范 §3–4）。
+原文引用（规范 §2）。orchestrator 只编排委派（机械例外除外）、任务用
+独立 branch/worktree；主 checkout 归 integrator（规范 §3–4）。
 
 命令速查见 `CLAUDE.md`（纯文件，任何平台可直接读取）。
 
