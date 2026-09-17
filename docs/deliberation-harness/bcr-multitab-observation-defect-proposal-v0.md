@@ -3,7 +3,7 @@
 Issue: futouyiba/noos-shuttle#56
 Branch: `futou-/sharp-leavitt-798409`
 Worktree: `.claude/worktrees/sharp-leavitt-798409`
-基线 revision: `5703312`（运行中的扩展 dist 亦构建自该 revision，故本文行号对运行代码具权威性）
+基线 revision: `5703312`（本文撰写时的 HEAD~1；运行中的扩展 dist 亦构建自该 revision，故本文行号对运行代码具权威性）
 上游 handoff: `.noos/handoffs/active/chatgpt-provider-recovery-go-n-handoff.md` @ `61d5d434ed0ab97449c3e8746b110bea64c4f411`
 上游 proposal: `docs/deliberation-harness/chatgpt-provider-recovery-go-n-proposal-v0.md` @ 同上 SHA
 上游 issue: #54（draft PR #55）
@@ -20,14 +20,14 @@ Worktree: `.claude/worktrees/sharp-leavitt-798409`
 
 | # | 根因 | 关键位置 | 等级 |
 | --- | --- | --- | --- |
-| **F1** | submission claim authority 是**单条全局记录**，且 `reconcile` **不回收** authority。两个会话各自持有在飞 operation 时，被抢走 authority 的一方**永久 `STILL_AMBIGUOUS`**，其 operation 永不完结 → Run 永久停在 `STABILIZING`。**静默、无日志、无候选记录。** | `src/core/submission-operation.ts:62, 272-284, 361-389, 394-405, 705-707`；`src/content/index.ts:3201-3202, 3310, 3343` | `CODE` + `STORE` + `INFER` |
-| **F3** | `bcrWatcherTick` **无任何 lease/fence 守卫**，却能对全局 run store 施加 `USER_INTERVENTION` / `CARRIER_FAILURE` / `CARRIER_PHASE`；`apply` 的 wire 不携带 provenance，reducer 无从拒绝。**与 #54「只有 canonical lease holder 可 actuate」直接冲突。** | `src/content/index.ts:1866-1899`；`src/background/service-worker.ts:246-249, 365-366` | `CODE` |
-| **F2** | Run 采纳**每个页面生命周期只发生一次**（仅在挂载时），且会话引用未解析即静默早退；1 Hz 轮询**不会重新采纳**。→「接不上」。 | `src/content/index.ts:327, 1614-1615, 2622-2633, 3134-3151` | `CODE` |
-| **F4** | 介入判定基于**每标签页、可陈旧、终局化**的计数差值（且 `?? 0` 会塌缩）。实测到**系统性误判签名**：两个不同会话的 Run 相隔 **11.4 s** 被先后判为「人为介入」；另一 Run 在**消耗 0 轮**时即被判介入。 | `src/content/index.ts:223, 1588, 1707, 1748, 1767, 1883` | `CODE` + `STORE` |
+| **F1** | submission claim authority 是**单条全局记录**，且 `reconcile` **不回收** authority。两个会话各自持有在飞 operation 时，被抢走 authority 的一方**反复 `STILL_AMBIGUOUS`**（`reconcile` 内无自愈出口）→ 其 operation 不 `COMPLETED` → Run 停在 `STABILIZING`。**静默、无日志、无候选记录。** 停滞时长 = 该页面持有 in-memory `activeSubmission` 的时长；页面重载或会话切换（`:3509` 置 `null`）可解除。 | `src/core/submission-operation.ts:62, 272-284, 361-389, 394-405, 705-707`；`src/content/index.ts:3201-3202, 3310, 3343, 3509` | `CODE` + `STORE` + `INFER` |
+| **F3** | `bcrWatcherTick` **无任何 lease/fence 守卫**，却能对全局 run store 施加 `USER_INTERVENTION` / `CARRIER_FAILURE` / `CARRIER_PHASE`；`apply` 的 wire 不携带 provenance，reducer 无从拒绝。**与 #54「只有 canonical lease holder 可 actuate」直接冲突**（重复标签页/同一会话的第二个标签页即可触发）。 | `src/content/index.ts:1866-1899`；`src/background/service-worker.ts:246-249, 365-366` | `CODE` |
+| **F2** | Run 采纳**只在挂载时发生一次**，且会话引用未解析即静默早退；1 Hz 轮询**不会周期性重新采纳**。另一处调用点仅在 `bcrRun` 已非空时可达，对未采纳的页面无帮助。→「接不上」。 | `src/content/index.ts:327, 1609, 1614-1615, 2622-2633, 3134-3151` | `CODE` |
+| **F4** | 介入判定基于**每标签页、可陈旧、终局化**的计数差值（且 `?? 0` 会塌缩）。实测到**系统性误判签名**：两个不同会话的 Run 相隔 **11.4 s** 被先后判为「人为介入」；另一 Run 在**消耗 0 轮**时即被判介入。**触发机制未定**（见 §3 H-C）。 | `src/content/index.ts:223, 1588, 1707, 1748, 1767, 1883` | `CODE` + `STORE`；机制 `PENDING_VALIDATION` |
 
 另两条次级/结构性缺陷：**F5** `issueRunGo` 失败即停泊且 AUTO 下无出口（被 1/min 节流直接放大）；**F5'** Page Lifecycle `freeze`/`resume` 完全未处理、`suspended` 语义混淆。
 
-**假设裁定**：H-A **证实**（实测塌到 1/min，但切回无 burst）；H-B **证伪**（普通切换只发 `visibilitychange`，持续隐藏也不发 `freeze`）；H-C **证实（结构性）**；H-D **证实**（即 F1/F3）；H-E **未复现**（`PENDING_VALIDATION`）。
+**假设裁定**：H-A **证实**（实测塌到 1/min，但切回无 burst）；H-B **证伪**（普通切换只发 `visibilitychange`，持续隐藏也不发 `freeze`）；H-C **证实（结构性）**，误判签名的**归因**为 `PENDING_VALIDATION`；H-D **证实（结构性）**，症状归因为 `INFER`（即 F1/F3）；H-E **未复现**（`PENDING_VALIDATION`）。
 
 **需要什么**：F1 与 F4 触及未裁定语义，需 Epic Designer 窄裁定（§6 `Q1`/`Q3`，另见 `Q2`/`Q4`/`Q5`）；F2、F3、F5、F5' 属**实现落后于已裁定边界**，可在裁定 `Q2` 后按实现任务推进。
 
@@ -142,13 +142,20 @@ Worktree: `.claude/worktrees/sharp-leavitt-798409`
 | `bcr-mu4xoqkr-p6jp9z` | `6aa9ffaa` | AUTO_X5 | **0** | USER_INTERVENTION | 04:06:52.520 |
 | `bcr-mu4mp3xh-2dr1o4` | `6aa9ffaa` | ASSISTED | 5 | USER_INTERVENTION | 02:27:01.753 |
 
-**系统性误判签名**：前两条属于**两个不同会话**，却被判定为「人为介入」的时刻仅相隔 **11.4 秒**。一个人类无法在 11 秒内先后在两种不同 provider 会话里各插入一条消息，因此这至少说明判定路径存在**非人类来源的计数跳变**。第三条在 **消耗 0 轮**时即被判定介入（`consumedContinuations = 0`），即该 Run **一轮都没走完**就被终止——这与「基线来自陈旧快照」的机制一致。
+**系统性误判签名**：前两条属于**两个不同会话**，却被判定为「人为介入」的时刻仅相隔 **11.4 秒**（算术：`06:05:04.868 − 06:04:53.432 = 11.436 s`）。一个人类无法在 11 秒内先后在两种不同 provider 会话里各插入一条消息，因此这至少说明判定路径存在**非人类来源的计数跳变**。第三条在 **消耗 0 轮**时即被判定介入（`consumedContinuations = 0`），即该 Run **一轮都没走完**就被终止——与该 Run 所属会话 `6aa9ffaa` 另有更早的 `USER_INTERVENTION` 记录（`bcr-mu4mp3xh-2dr1o4`，02:27）并存，符合「同会话再跑一轮时基线落后于实际计数」。
 
-`INFER`：多标签页下，标签页 B 以**自己的**陈旧基线（`:1588`）与标签页 A 已推进的会话计数比较，B 的 tick 即可对**全局共享的 run store** 施加 `USER_INTERVENTION`。**该因果链为推断，未受控复现**（复现需在两个会话里各发一次 go，超出本任务取证边界）。
+`INFER`（机制候选，**已收窄**）：可用的误判机制必须能在**单个标签页内**成立，因为每条 tick 只能作用于该标签页自己的会话的 Run：
 
-### H-D 多标签页 carrier / fence 失配 —— **证实，且是本次最强根因**（见 §4 F1、F3）
+- `bcrWatcherTick` 的计数全来自**本页 DOM**（`:1870`、`:3195` 的 `document.querySelectorAll(...)`），比较对象是本页模块级 `bcrExpectedUserCount`（`:223`）。
+- run store 按会话分槽（`src/core/continuation-run.ts:329/338` 的 `store.activeByConversation[run.providerConversationRef]`），`apply` 以 `mutationKey(store, mutation.runId)` 定位（`src/background/service-worker.ts:344`、`continuation-run.ts:391`）——而一个标签页只可能通过 `refreshActiveRun` 拿到**自己会话**的 run，故**跨会话施加 `USER_INTERVENTION` 在本实现中不可达**。
 
-见 §4。核心：submission claim authority 是**单条全局记录**，与「每个 Run 有自己的 canonical lease holder」冲突。
+因此在代码上可成立的候选是：(i) 同一标签页内**基线陈旧/塌缩**（`?? 0`，`:1707`/`:1748`）导致的同会话误判；(ii) **同一会话的第二个标签页**（重复标签页）以自己那份陈旧基线 tick，对**共享的那一个 Run** 施加终局事件——这正是 §4 F3 无 lease 守卫所允许的。
+
+**哪一种造成了上述 11.4 s 签名，本文未有受控复现，标 `PENDING_VALIDATION`**（复现需在同会话开两个标签页并各自持有陈旧基线，或制造基线塌缩，均超出本任务只读取证边界）。签名本身（两个不同会话的 Run 在 11.4 s 内先后被判介入、且其中一条消耗 0 轮）作为**误判存在的证据仍然成立**，但其**归因未定**。
+
+### H-D 多标签页 carrier / fence 失配 —— **证实（结构性）**；症状归因 `INFER`（见 §4 F1、F3）
+
+见 §4。核心：submission claim authority 是**单条全局记录**，与「每个 Run 有自己的 canonical lease holder」冲突。**「证实」限于结构性事实**——全局单槽 + `reconcile` 不回收 + watcher 无 lease 守卫，均在代码中确证（`CODE`）；**本文「多标签页切换 → Go × N 停住」这一症状由该结构导致，是推断**（`INFER`），因其受控复现需要两个会话各自持有在飞 operation，超出只读取证边界。现网停滞实例（§3 末表）为该推断提供了 `STORE` 侧支持，但不构成因果证明。
 
 ### H-E ChatGPT 在隐藏标签页暂停流式渲染 —— **未复现**，`PENDING_VALIDATION`
 
@@ -188,7 +195,7 @@ Worktree: `.claude/worktrees/sharp-leavitt-798409`
 
 ## 4. 当前实现差距报告
 
-### F1（最高严重度）submission claim authority 是全局单槽，reconcile 不回收 authority → 多会话下操作永久冻结
+### F1（最高严重度）submission claim authority 是全局单槽，reconcile 不回收 authority → 多会话下该页面的操作冻结，无页内自愈出口
 
 `CODE`：
 
@@ -203,7 +210,7 @@ Worktree: `.claude/worktrees/sharp-leavitt-798409`
     return { records, result: { outcome: "STILL_AMBIGUOUS", ... } };
   ```
 
-  **`authority.logicalThreadId !== operation.logicalThreadId` 即永久 `STILL_AMBIGUOUS`；`reconcile` 路径中没有任何 `ensureAuthority` 调用，即不会回收 authority。**
+  **`authority.logicalThreadId !== operation.logicalThreadId` 即 `STILL_AMBIGUOUS`；`reconcile` 路径中没有任何 `ensureAuthority` 调用，即不会回收 authority。故该 outcome 在该页面反复返回，无页内自愈出口。**
 - 而 `recover` **会**回收（chrome store 版 `:394-405`，并在 `:413` 用 context 覆写 `operation.dispatchFence`），但其准入要求 `isNewerOrSameAuthorityContext` + `sameRecoveryFence`（`:404-405`）。
 - 生产路径下 `reconcile` 走的确实是上面这条通用路径：SW 用 `createChromeSubmissionStore(storage, { claimViaCoordinator: false })`（`src/background/service-worker.ts:268`），该分支返回的 store **没有 `dispatch`**（`src/core/submission-operation.ts:391-393` 与 `:440-452` 是两个互斥返回），因此 `SubmissionOperationLedger.reconcile` 的 `if (this.store.dispatch)`（`:262`）不成立，落入 `:263` 的通用 `mutate`。
 - `recover` 的**唯一**调用来源是 `restoreActiveSubmission`（`src/content/index.ts:3343`，mutation `type: "recover"`），而它被 `if (activeSubmission || ...) return;`（`:3310`）挡住 —— **只有 `activeSubmission === null` 时才可能走到 recover**。
@@ -212,9 +219,10 @@ Worktree: `.claude/worktrees/sharp-leavitt-798409`
 
 1. 标签页 A 在会话 A 上 dispatch → `ensureAuthority(contextA)` → A 持有 authority。
 2. 标签页 B 在会话 B 上 dispatch → contextB 更新 → **authority 被 B 抢走**。
-3. A 的页面里 `activeSubmission` 非空 → A 只走 `reconcile`（`:3201-3202`）→ 因 `authority.logicalThreadId ≠ operation.logicalThreadId` → **永久 `STILL_AMBIGUOUS`**。
-4. A 走不到 `recover`（`activeSubmission` 非空），**因此永远无法回收 authority** → 该 operation 永不 `COMPLETED` → 该 Run 永久停在 `STABILIZING`。
-5. 该停滞**完全静默**：无错误、无 UI 文案、无候选记录（与 `bcr-mu5860hg-g61kyd` 候选数为 0 一致）。
+3. A 的页面里 `activeSubmission` 非空 → A 只走 `reconcile`（`:3201-3202`）→ 因 `authority.logicalThreadId ≠ operation.logicalThreadId` → **反复 `STILL_AMBIGUOUS`**。
+4. A 走不到 `recover`（`activeSubmission` 非空），**因此无法回收 authority** → 该 operation 不 `COMPLETED` → 该 Run 停在 `STABILIZING`。
+5. **该停滞的持续时间 = A 页面持有 in-memory `activeSubmission` 的时长。** 解除条件只有两个，且都不是「自愈」：页面重载，或 `resetForConversationChange`（`:3507-3512`，其 `:3509` 置 `activeSubmission = null`）——即**离开/更换该会话**。换句话说：**用户不重载、不切走，Run 就一直停住**；这与症状「进行了一轮，然后就停住了」一致。
+6. 该停滞**静默**：无错误、无 UI 文案、无候选记录（与 `bcr-mu5860hg-g61kyd` 候选数为 0 一致）。
 
 `STORE` 佐证：读取时 authority 全槽记录为 `logicalThreadId = thread:6aaa566f-…`、`targetCarrierRef = browser-tab:557761592`、`leaseOwnerRef` 尾 8 位 `66de631d`、`authorityGeneration = 15`、`authorityEstablishedAt = 15:04:20` —— 与停滞 Run 的会话 `6aab8aaa` / carrier `557761588` / lease `8490df36` **完全不同**。且会话 `6aaa566f` 的 AUTO_X5 Run 当时正在正常推进 `go:1→go:4`，即「**其中一个会话活着，另一个会话的 operation 被冻死**」——与报告症状「进行了一轮，然后就停住了」逐字吻合。
 
@@ -234,14 +242,18 @@ Worktree: `.claude/worktrees/sharp-leavitt-798409`
 
 **这与 #54 已裁定边界直接冲突**：「Duplicate tab 本身不结束 Run，只有 canonical lease holder 可 actuate」——当前实现里，**任何**投影到该 Run 的标签页都能 actuate。
 
-### F2 Run 采纳每个页面生命周期只发生一次，且依赖挂载瞬间已解析的会话引用
+### F2 Run 采纳只在挂载时发生一次（观测循环从不驱动采纳），且依赖挂载瞬间已解析的会话引用
 
 `CODE`：
 
-- `refreshActiveRun()` 全仓库**只有一个调用点**：`src/content/index.ts:327`（shuttle 挂载时）。
+- `refreshActiveRun()` 全仓库**有两个调用点**，但都在「已采纳」或「挂载时」语境：
+  1. `src/content/index.ts:327`（shuttle 挂载时）。
+  2. `src/content/index.ts:1609`：`applyContinuationRunEvent` 内 `if (!result.ok) await refreshActiveRun();`——该函数开头即 `if (!bcrRun) return;`（`:1606`），**故对「尚未采纳」的页面不可达**。
 - 它在会话引用未解析时**静默早退**：`const conversationRef = runtimeObservationLedger.value?.providerConversationRef || currentPageContext.conversationId; if (!conversationRef) return;`（`:1614-1615`）。
 - 1 Hz 轮询（`:2622-2633`）调用的是 `attachCarrier()` 与 `checkPageContext()`；`checkPageContext`（`:3134-3151`）只发布观测并在页面签名未变时直接 `return` —— **不会重新采纳 Run**。
 - `adoptRunState` 也只能经 `mutateContinuationRun` 到达；而 `mutateContinuationRun` 的调用方向只有 `refreshActiveRun` / `start` / `check_dispatch` / `applyContinuationRunEvent`（后者要求 `bcrRun` 已非空，`:1606`）。
+
+即：**周期性的观测循环从来不驱动采纳**；两个 `refreshActiveRun` 调用点都要求「已经在采纳语境里」或「恰好在挂载瞬间」。这是一条**循环依赖**——需要一个已采纳的 Run 才能触发重新采纳。
 
 后果：若页面在会话引用解析出来之前完成挂载（或挂载时正处于 `WEB:` 临时路由 —— `providerConversationRef` 被显式置 `undefined`，`:3186`），该标签页**永远不会采纳**该 Run，`bcrRun` 恒为 null，watcher 永不安装，且**没有任何重试路径**。`resetForConversationChange`（`:3507-3530`）在会话切换时清空 `bcrRun` 并停表，之后同样无人重新采纳。→ 对应「切回去也无法顺利接上」。
 
@@ -266,15 +278,15 @@ Worktree: `.claude/worktrees/sharp-leavitt-798409`
 
 ## 5. 候选修复提案
 
-以下均为候选，**不含运行时实现**。每条给出：改动对象、机制、以及必须同时回答的边界问题。
+以下均为**候选机制描述，不是实现指令**（本任务不实现运行时代码，亦不规定字段命名或 API 形态）。每条给出：改动对象、机制、以及必须同时回答的边界问题。措辞中的「应 / 让 / 改为」描述**期望达成的语义**，具体实现方式留有实现者空间；凡触及语义边界者，一律先经 §6 裁定再实现。
 
 ### C1 让 claim authority 的作用域与 Run 的 canonical lease 对齐（对应 F1）
 
 候选机制（择一，需裁定）：
 
 - **C1a 按 logical thread 分槽**：把 `SUBMISSION_AUTHORITY_KEY` 的单条记录改为以 `logicalThreadId`（或 `providerConversationRef`）为键的表，使会话之间互不驱逐。
-- **C1b 让 `reconcile` 具备回收语义**：在 `reconcile` 的准入失败处，若 `operation` 处于 execution-owning 状态且 `sameRecoveryFence(operation, observation 派生 context)` 成立，则允许以「同一 Run 的合法 lease 重获」语义回收 authority（与 `recover` 同规则），而不是永久 `STILL_AMBIGUOUS`。
-- **C1c 消除不对称**：既然 `restoreActiveSubmission` 只在 `activeSubmission === null` 时可达，应允许「持有 in-memory `activeSubmission` 但 authority 已被他人夺走」的页面走一次 authority 重获，而不是把重获唯一地绑在「页面重载」上。
+- **C1b 让 `reconcile` 具备回收语义**：在 `reconcile` 的准入失败处，若 `operation` 处于 execution-owning 状态且 `sameRecoveryFence(operation, observation 派生 context)` 成立，则允许以「同一 Run 的合法 lease 重获」语义回收 authority（与 `recover` 同规则），而不是反复 `STILL_AMBIGUOUS`。
+- **C1c 消除不对称**（机制描述，非实现指令）：既然 `restoreActiveSubmission` 只在 `activeSubmission === null` 时可达，期望的语义是「持有 in-memory `activeSubmission` 但 authority 已被他人夺走」的页面**不必靠页面重载才可能重获**——即重获的**可达性**不应唯一地绑在「页面重载/会话切换」上。具体以何条件、何种证据重获，属 `Q1` 裁决范围，本候选不预设。
 
 **必须回答的边界问题**：claim authority 究竟是「整个浏览器一个 actutation 权威」还是「每个 Run 一个 canonical lease」？若是前者，当前行为是设计而非缺陷，则 F1 不成立；若是后者，#54 的「只有 canonical lease holder 可 actuate」已蕴含后者，当前实现即为落后。→ 见 §6 `Q1`。
 
@@ -289,7 +301,7 @@ Worktree: `.claude/worktrees/sharp-leavitt-798409`
 
 ### C3 多标签页 carrier / lease 交接对齐「Browser Carrier identity 可以改变」（对应 F2、F3、F1）
 
-候选机制：
+候选机制（**机制描述，非实现指令**——交接判据本身即 `Q2` 的裁定对象，本候选不预设实现）：
 
 - 让 Run 采纳由**观测循环驱动**而非仅挂载驱动：在 `checkPageContext` 的 1 Hz 路径里，当页面签名稳定、会话引用已解析、且本标签页**尚未**采纳当前 active Run 时，触发一次采纳（即给 `refreshActiveRun()` 增加一个受节流保护的周期性重试入口，而非仅在 `:327`）。
 - 明确「采纳 ≠ 可 actuate」：采纳只建立投影；actuate 仍需通过 C2 的 lease 校验。
@@ -311,7 +323,7 @@ Worktree: `.claude/worktrees/sharp-leavitt-798409`
 
 ### C5 `issueRunGo` 失败不得停泊；停泊态必须有出口（对应 F5）
 
-候选机制：
+候选机制（**机制描述，非实现指令**；「自动重发 go 是否已获授权」是 `Q4` 的裁定对象，本候选不预设）：
 
 - `waitForReadyObservation()` 失败时，**先回滚可重入**：不要留下「`READY_TO_GO` 且无 pending op」的不可恢复态（例如把失败记录为一个可被 watcher 重新尝试的挂起意图）。
 - 让 watcher 在 `phase === "READY_TO_GO"` 且无 pending operation 时具备重试发 go 的能力（受恢复预算/节流约束），或在 AUTO 模式下提供显式的可见出口而不静默停泊。
@@ -344,6 +356,12 @@ Worktree: `.claude/worktrees/sharp-leavitt-798409`
 | F5'（`freeze`/`resume` 未处理、`suspended` 语义混淆） | 可实现任务，但需确认不冲突 | `Q5`。 |
 | F1（全局单槽 claim authority） | **需裁定（最高优先）** | 若「全局唯一 actuation 权威」是有意设计，F1 非缺陷；若「每 Run 一个 canonical lease」是意图，F1 是落后实现。二者语义后果差别很大，**不能由本文代为裁定**。`Q1`。 |
 
+**关于 F1 / F3 分类的不对称（须显式说明）**：F3 与 F1 出自同一结构（§3 H-D 将二者同列），却被分入不同类别——F3 记为「已裁定边界的实现落后」，F1 记为「需裁定」。理由如下，且该不对称本身是**待确认项**：
+
+- F3 的**方向**已由 #54 裁定唯一确定：「只有 canonical lease holder 可 actuate」意味着**非** lease holder 的 tick 不得 actuate。当前 `bcrWatcherTick` 无守卫、`apply` wire 无 provenance，属**与该裁定相反**，故判为落后实现。分歧点只在**实现形态**（canonical lease 的自然键、provenance 字段），归 `Q2`。
+- F1 则**未必**与既有裁定冲突：若「整个浏览器同一时刻仅一个 submission authority」是有意设计，则 `STILL_AMBIGUOUS` 是**该设计下的预期行为**，问题降级为「多会话并发时不应一方活、一方冻结」的**新语义问题**（`Q1`），而非实现落后。
+- **两者是否应合并为同一类，取决于 `Q1` 的答案**：若裁定「authority 按 logical thread / canonical lease 分槽」，则 F1 亦落入「#54 已蕴含」，与 F3 同类，本文的分类应随即修正。**该分类不对称属待确认项，不由本文单方收束。**
+
 ### 待 Epic Designer 裁定的问题（不自行裁定）
 
 - **Q1**：submission claim authority 的作用域应是「全局单槽（整个浏览器同一时刻只有一个 actuation 权威）」还是「按 logical thread / canonical lease 分槽」？若是前者，多会话并发时应如何不发生「一方活、一方冻死」？
@@ -358,6 +376,6 @@ Worktree: `.claude/worktrees/sharp-leavitt-798409`
 ## 7. Authority / Addressability
 
 - 本文所引 #54 handoff 落在**可寻址 revision** `61d5d434ed0ab97449c3e8746b110bea64c4f411`（该 revision 上 `.noos/handoffs/active/chatgpt-provider-recovery-go-n-handoff.md` 已被 track）。
-- 本文所引源码行号绑定 revision `5703312`（本 worktree HEAD，与运行中扩展 dist 同源）。
+- 本文所引源码行号绑定 revision `5703312`（**本文撰写时的 HEAD~1**；本文档所在 commit 为 `8e1bf41bc67714ac64b2052400f30fd297d64c53`。`5703312` 是运行中扩展 dist 的构建来源，故行号对运行代码具权威性）。
 - 本文对 #54 的引用仅用于**边界约束**，不替代 #54 的 proposal；本 proposal 的语义对象是观测层与 watcher 层。
 - 本 proposal **未**实现任何运行时代码，**未**自动发送「继续」/「go」、**未**点击 Retry、**未**刷新 provider 页面、**未**制造限流。
