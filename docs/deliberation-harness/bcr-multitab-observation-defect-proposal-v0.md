@@ -29,7 +29,7 @@ Worktree: `.claude/worktrees/sharp-leavitt-798409`
 
 **假设裁定**：H-A **证实**（实测塌到 1/min，但切回无 burst）；H-B **证伪**（普通切换只发 `visibilitychange`，持续隐藏也不发 `freeze`）；H-C **证实（结构性）**，误判签名的**归因**为 `PENDING_VALIDATION`；H-D **证实（结构性）**，症状归因为 `INFER`（即 F1/F3）；H-E **未复现**（`PENDING_VALIDATION`）。
 
-**需要什么**：F1 与 F4 触及未裁定语义，需 Epic Designer 窄裁定（§6 `Q1`/`Q3`，另见 `Q2`/`Q4`/`Q5`）；F2、F3、F5、F5' 属**实现落后于已裁定边界**，可在裁定 `Q2` 后按实现任务推进。
+**需要什么**：F1 与 F4 触及未裁定语义，需 Epic Designer 窄裁定（§6 `Q1`/`Q3`，另见 `Q2`/`Q4`/`Q5`）；**F3** 属**实现落后于已裁定边界**（修法形态待 `Q2`）；**F2 / F5 / F5'** 属**可实现任务**，各自需先经 `Q2`/`Q4`/`Q5` 确认不越界（见 §6 分类表与 F1/F3 不对称说明）。
 
 ---
 
@@ -147,7 +147,7 @@ Worktree: `.claude/worktrees/sharp-leavitt-798409`
 `INFER`（机制候选，**已收窄**）：可用的误判机制必须能在**单个标签页内**成立，因为每条 tick 只能作用于该标签页自己的会话的 Run：
 
 - `bcrWatcherTick` 的计数全来自**本页 DOM**（`:1870`、`:3195` 的 `document.querySelectorAll(...)`），比较对象是本页模块级 `bcrExpectedUserCount`（`:223`）。
-- run store 按会话分槽（`src/core/continuation-run.ts:329/338` 的 `store.activeByConversation[run.providerConversationRef]`），`apply` 以 `mutationKey(store, mutation.runId)` 定位（`src/background/service-worker.ts:344`、`continuation-run.ts:391`）——而一个标签页只可能通过 `refreshActiveRun` 拿到**自己会话**的 run，故**跨会话施加 `USER_INTERVENTION` 在本实现中不可达**。
+- run store 按会话分槽（`src/core/continuation-run.ts:329/338` 的 `store.activeByConversation[run.providerConversationRef]`），`apply` 以 `mutationKey(store, mutation.runId)` 定位（`src/core/continuation-run.ts:344`/`:357`/`:363`，`mutationKey` 定义于 `:391`）——而一个标签页只可能通过 `refreshActiveRun` 拿到**自己会话**的 run，故**跨会话施加 `USER_INTERVENTION` 在本实现中不可达**。
 
 因此在代码上可成立的候选是：(i) 同一标签页内**基线陈旧/塌缩**（`?? 0`，`:1707`/`:1748`）导致的同会话误判；(ii) **同一会话的第二个标签页**（重复标签页）以自己那份陈旧基线 tick，对**共享的那一个 Run** 施加终局事件——这正是 §4 F3 无 lease 守卫所允许的。
 
