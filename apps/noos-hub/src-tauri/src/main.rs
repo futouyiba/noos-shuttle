@@ -1258,6 +1258,7 @@ fn handle_local_write_request(mut stream: TcpStream) -> Result<(), String> {
             || path == "/v1/vault/object"
             || path == "/v1/vault/browse"
             || path == "/v1/focus/requests"
+            || path == "/v1/bcr/evaluator-config"
             || path == "/v1/wiki/default-target")
     {
         if !is_authorized_handoff_write(&headers) {
@@ -1281,6 +1282,10 @@ fn handle_local_write_request(mut stream: TcpStream) -> Result<(), String> {
                 200,
                 &json!({ "ok": true, "requests": pending_carrier_focus_requests() }),
             );
+        }
+
+        if path == "/v1/bcr/evaluator-config" {
+            return write_json_response(&mut stream, 200, &bcr_evaluator_config_payload());
         }
 
         if path == "/v1/wiki/default-target" {
@@ -1420,6 +1425,52 @@ fn wiki_target_payload() -> Value {
         "recent_category_paths": category_state.1,
         "message": if project_path.is_some() { "Default Wiki project loaded." } else { "No default Wiki project configured." },
     })
+}
+
+/// Host allowlist for the BCR continuation evaluator. Mirrors
+/// BCR_EVALUATOR_ALLOWED_HOST in the Shuttle extension
+/// (src/core/continuation-evaluator.ts); the extension re-validates the
+/// payload after sync, so this endpoint can only ever serve that host.
+const BCR_EVALUATOR_ALLOWED_HOST: &str = "api.deepseek.com";
+
+/// Pure projection of the user config's `bcrEvaluator` object into the
+/// pull payload served to the Shuttle extension. `configured` requires both
+/// fields; the key travels only over the paired, token-authorized localhost
+/// bridge and is re-validated extension-side before it is ever stored.
+fn bcr_evaluator_config_payload_from(config: &Value) -> Value {
+    let evaluator = config
+        .get("bcrEvaluator")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let api_key = evaluator
+        .get("apiKey")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let model = evaluator
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let configured = !api_key.is_empty() && !model.is_empty();
+    json!({
+        "ok": true,
+        "configured": configured,
+        "baseUrl": format!("https://{BCR_EVALUATOR_ALLOWED_HOST}"),
+        "apiKey": if configured { Value::String(api_key) } else { Value::Null },
+        "model": if configured { Value::String(model) } else { Value::Null },
+    })
+}
+
+fn bcr_evaluator_config_payload() -> Value {
+    let config_path = noos_home().join("config.json");
+    let config = fs::read_to_string(&config_path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .unwrap_or_else(|| json!({}));
+    bcr_evaluator_config_payload_from(&config)
 }
 
 fn run_browser_hub_action(request: HubActionRequest) -> HubActionResponse {
@@ -7272,6 +7323,28 @@ fn home_dir() -> PathBuf {
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    fn bcr_evaluator_config_payload_requires_both_fields_and_serves_allowlisted_host() {
+        let payload = bcr_evaluator_config_payload_from(&json!({}));
+        assert_eq!(payload["configured"], json!(false));
+        assert_eq!(payload["apiKey"], json!(null));
+        assert_eq!(payload["baseUrl"], json!("https://api.deepseek.com"));
+
+        let partial = bcr_evaluator_config_payload_from(&json!({
+            "bcrEvaluator": { "apiKey": "sk-abc" }
+        }));
+        assert_eq!(partial["configured"], json!(false));
+        assert_eq!(partial["model"], json!(null));
+
+        let complete = bcr_evaluator_config_payload_from(&json!({
+            "bcrEvaluator": { "apiKey": " sk-abc ", "model": " deepseek-chat " }
+        }));
+        assert_eq!(complete["configured"], json!(true));
+        assert_eq!(complete["apiKey"], json!("sk-abc"));
+        assert_eq!(complete["model"], json!("deepseek-chat"));
+        assert_eq!(complete["ok"], json!(true));
+    }
 
     #[test]
     fn carrier_focus_target_accepts_whitelisted_provider_conversation_urls() {

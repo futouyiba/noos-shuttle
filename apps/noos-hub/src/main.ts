@@ -5,7 +5,7 @@ import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updat
 import { createHarnessSnapshot, harnessScenarioIds } from "./harness/fixtures";
 import type { HarnessConsoleSnapshot, HarnessScenarioId } from "./harness/types";
 import { mockHealth, mockSleepRecoveryStatus } from "./mock";
-import type { ConfigData } from "./pages/config";
+import { maskSecret, type ConfigData } from "./pages/config";
 import { renderHarnessConsole, formatAge, projectionBuiltText } from "./pages/harness-console";
 import { renderHelp } from "./pages/help";
 import { renderVault } from "./pages/vault";
@@ -965,7 +965,7 @@ async function saveConfigValue(key: string, value: string, row: HTMLElement): Pr
 
     row.querySelector<HTMLElement>(".cfg-edit-form")!.hidden = true;
     const display = row.querySelector<HTMLElement>(".cfg-value-text")!;
-    display.textContent = value || "—";
+    display.textContent = key === "bcrEvaluator.apiKey" ? maskSecret(value) : (value || "—");
     display.hidden = false;
     row.querySelector<HTMLElement>(".cfg-edit-btn")!.hidden = false;
 
@@ -975,6 +975,8 @@ async function saveConfigValue(key: string, value: string, row: HTMLElement): Pr
         (currentConfig as Record<string, unknown>)[key] = value;
       } else if (parts.length === 2 && parts[0] === "github") {
         currentConfig.github = { ...currentConfig.github, [parts[1]]: value };
+      } else if (parts.length === 2 && parts[0] === "bcrEvaluator") {
+        currentConfig.bcrEvaluator = { ...currentConfig.bcrEvaluator, [parts[1]]: value };
       }
     }
     await loadHealth({ force: true });

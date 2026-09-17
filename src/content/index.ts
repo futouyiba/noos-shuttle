@@ -380,6 +380,7 @@ function render(app: HTMLElement): void {
                       <div class="settings-label">${copy.bcrSettingsTitle}</div>
                       <input class="bcr-eval-input" type="password" data-action="bcr-eval-key" placeholder="${escapeAttribute(copy.bcrSettingsKey)}" autocomplete="off" />
                       <input class="bcr-eval-input" type="text" data-action="bcr-eval-model" placeholder="${escapeAttribute(copy.bcrSettingsModel)}" value="${escapeAttribute(bcrEvalModel)}" />
+                      <button type="button" data-action="bcr-eval-sync">${escapeHtml(copy.bcrSyncFromHub)}</button>
                       <span class="bcr-note">${bcrAutoConfigured ? escapeHtml(copy.bcrAutoBadge) : escapeHtml(copy.bcrAssistedNote)}</span>
                     </div>`
                   : ""
@@ -1320,6 +1321,11 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
     return;
   }
 
+  if (action === "bcr-eval-sync") {
+    void syncBcrEvalConfigFromHub(app);
+    return;
+  }
+
   if (action.startsWith("bcr-start-")) {
     const budget = Number(action.replace("bcr-start-", ""));
     if (Number.isInteger(budget)) await runExclusiveBcrAction(() => startBoundedRun(app, budget));
@@ -1634,6 +1640,28 @@ async function saveBcrEvalConfig(app: HTMLElement, patch: { apiKey?: string; mod
     }
   } catch {
     viewState.message = copy.bcrStartFailed;
+  }
+  render(app);
+}
+
+async function syncBcrEvalConfigFromHub(app: HTMLElement): Promise<void> {
+  const copy = COPY[viewState.locale];
+  try {
+    const response = await sendExtensionMessage<
+      { type: "NOOS_CONTINUATION_EVAL_SYNC" },
+      { ok: boolean; synced?: boolean; reason?: string; model?: string; error?: string }
+    >({ type: "NOOS_CONTINUATION_EVAL_SYNC" });
+    if (response?.ok && response.synced === true) {
+      bcrAutoConfigured = true;
+      if (typeof response.model === "string" && response.model.trim() !== "") bcrEvalModel = response.model;
+      viewState.message = `${copy.bcrSynced} (${bcrEvalModel})`;
+    } else if (response?.ok && response.reason === "hub_not_configured") {
+      viewState.message = copy.bcrHubNotConfigured;
+    } else {
+      viewState.message = copy.bcrSyncFailed;
+    }
+  } catch {
+    viewState.message = copy.bcrSyncFailed;
   }
   render(app);
 }

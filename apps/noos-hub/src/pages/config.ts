@@ -5,6 +5,7 @@ export interface ConfigData {
   default_wiki_project?: string;
   default_agent?: string;
   github?: { default_account?: string | null; auth_provider?: string };
+  bcrEvaluator?: { apiKey?: string; model?: string };
   schema_version?: string;
 }
 
@@ -78,6 +79,33 @@ export function renderConfig(health: HubHealth, config: ConfigData | null): stri
     </section>
 
     <section class="cfg-section">
+      <p class="eyebrow">BCR 自动评估（Shuttle 扩展）</p>
+      <div class="cfg-list">
+        ${secretRow({
+          label: "DeepSeek API Key",
+          key: "bcrEvaluator.apiKey",
+          value: config?.bcrEvaluator?.apiKey ?? "",
+          placeholder: "sk-…",
+          hint: "供 Shuttle 扩展的 BCR 有界连续运行评估器使用",
+          loaded: configLoaded
+        })}
+        ${editableRow({
+          label: "评估模型",
+          key: "bcrEvaluator.model",
+          value: config?.bcrEvaluator?.model ?? "",
+          placeholder: "deepseek-chat",
+          hint: "OpenAI 兼容模型名",
+          loaded: configLoaded
+        })}
+        ${readonlyRow({
+          label: "生效方式",
+          value: "在 Shuttle 设置面板点「从 NOOS Hub 同步」",
+          hint: "同步后以 Hub 侧配置覆盖扩展本地配置（最后一次同步为准）"
+        })}
+      </div>
+    </section>
+
+    <section class="cfg-section">
       <p class="eyebrow">更新</p>
       <div class="cfg-list">
         ${readonlyRow({
@@ -125,6 +153,34 @@ interface EditableRowParams {
   placeholder: string;
   hint: string;
   loaded: boolean;
+}
+
+export function maskSecret(value: string): string {
+  if (!value) return "";
+  if (value.length <= 8) return "••••";
+  return `${value.slice(0, 5)}…${value.slice(-4)}`;
+}
+
+/** editableRow variant for credentials: masked display, password edit input. */
+function secretRow(p: EditableRowParams): string {
+  const display = maskSecret(p.value);
+  return `
+    <article class="cfg-row">
+      <div class="cfg-row-info">
+        <strong>${escapeHtml(p.label)}</strong>
+        <span>${escapeHtml(p.hint)}</span>
+      </div>
+      <div class="cfg-row-value" data-config-key="${escapeHtml(p.key)}">
+        <span class="cfg-value-text">${p.loaded ? escapeHtml(display || "—") : "加载中…"}</span>
+        <button type="button" class="cfg-edit-btn" data-config-edit="${escapeHtml(p.key)}" title="编辑">✎</button>
+        <div class="cfg-edit-form" hidden>
+          <input type="password" data-config-input="${escapeHtml(p.key)}" value="${escapeHtml(p.value)}" placeholder="${escapeHtml(p.placeholder)}" autocomplete="off" />
+          <button type="button" data-config-save="${escapeHtml(p.key)}">保存</button>
+          <button type="button" data-config-cancel="${escapeHtml(p.key)}">取消</button>
+        </div>
+      </div>
+    </article>
+  `;
 }
 
 function editableRow(p: EditableRowParams): string {
