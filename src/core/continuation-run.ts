@@ -88,10 +88,10 @@ export function startContinuationRun(input: StartContinuationRunInput): Continua
   if (input.maxContinuations > BCR_EXPERIMENTAL_MAX_BUDGET) throw new Error(`maxContinuations ${input.maxContinuations} exceeds experimental cap ${BCR_EXPERIMENTAL_MAX_BUDGET} (real-evidence gate not passed)`);
   if (!Number.isFinite(input.now)) throw new Error("now: number required");
   const mode = input.mode ?? "ASSISTED";
-  if (mode === "AUTO_X5") {
-    if (typeof input.goal !== "string" || input.goal.trim() === "") throw new Error("goal: non-empty string required for AUTO_X5 runs");
-    if (input.scope !== undefined && (typeof input.scope !== "string" || input.scope.trim() === "")) throw new Error("scope: non-empty string required when provided");
-  }
+  // AUTO_X5 runs need no user-authored goal: the evaluator's baseline is the
+  // built-in "continue the assistant's own stated next step" contract.
+  if (input.goal !== undefined && (typeof input.goal !== "string" || input.goal.trim() === "")) throw new Error("goal: non-empty string required when provided");
+  if (input.scope !== undefined && (typeof input.scope !== "string" || input.scope.trim() === "")) throw new Error("scope: non-empty string required when provided");
   return {
     runId: input.runId,
     workItemId: input.workItemId,

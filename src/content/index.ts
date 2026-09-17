@@ -574,11 +574,6 @@ function renderBcrSection(copy: (typeof COPY)[ShuttleLocale]): string {
   return `<div class="bcr-panel" data-bcr-state="${ended ? "ended" : "idle"}">
     <div class="bcr-title">${escapeHtml(copy.bcrSectionTitle)} <span class="bcr-note">${bcrAutoConfigured ? escapeHtml(copy.bcrAutoBadge) : escapeHtml(copy.bcrAssistedNote)}</span></div>
     ${
-      bcrAutoConfigured
-        ? `<input class="bcr-goal-input" type="text" data-bcr-goal placeholder="${escapeAttribute(copy.bcrGoalPlaceholder)}" />`
-        : ""
-    }
-    ${
       ended
         ? `<div class="bcr-ended">
             <strong>${escapeHtml(copy.bcrEndedLabel)} ${ended.consumedContinuations} / ${ended.maxContinuations}</strong>
@@ -1687,19 +1682,9 @@ async function startBoundedRun(app: HTMLElement, budget: number): Promise<void> 
     render(app);
     return;
   }
-  const auto = bcrAutoConfigured;
-  let goal: string | undefined;
-  let mode: "ASSISTED" | "AUTO_X5" = "ASSISTED";
-  if (auto) {
-    const input = app.querySelector<HTMLInputElement>("[data-bcr-goal]");
-    goal = (input?.value ?? "").trim();
-    if (goal === "") {
-      viewState.message = copy.bcrGoalRequired;
-      render(app);
-      return;
-    }
-    mode = "AUTO_X5";
-  }
+  // AUTO_X5 needs no user-authored goal: the evaluator's baseline is the
+  // built-in "continue its own stated next step" contract.
+  const mode: "ASSISTED" | "AUTO_X5" = bcrAutoConfigured ? "AUTO_X5" : "ASSISTED";
   const now = Date.now();
   const result = await mutateContinuationRun({
     type: "start",
@@ -1711,7 +1696,6 @@ async function startBoundedRun(app: HTMLElement, budget: number): Promise<void> 
       bindingEpoch: observation.sourceEpoch,
       maxContinuations: budget,
       mode,
-      goal,
       now
     }
   });
@@ -1797,11 +1781,12 @@ async function runExclusiveBcrAction(work: () => Promise<void>): Promise<void> {
 
 function buildContinuationPayload(run: ContinuationRun, reanchor: boolean): string {
   if (!reanchor) return "go";
+  const goalText = run.goal?.trim() || "继续执行你自己声明的下一步；不要展开可选支线";
   return [
     "go",
     "",
     "[NOOS Re-anchor]",
-    `Current Goal: ${run.goal ?? ""}`,
+    `Current Goal: ${goalText}`,
     "Keep current scope; do not expand optional follow-ups. Stop if completion or a Human/review/evidence boundary is reached.",
     "[/NOOS Re-anchor]"
   ].join("\n");

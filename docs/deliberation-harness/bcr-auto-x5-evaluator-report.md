@@ -57,6 +57,13 @@ Rounds 1–3 submit the plain `go`. Rounds 4–5 prepend a bounded `[NOOS Re-anc
 4. DeepSeek only in V0; Gemini Flash and Hub-proxy transport (option A) remain open follow-ups. `HUB_LIVE_PROJECTION_PENDING` unchanged.
 5. Veto list is code-configurable, not UI-configurable in V0 (deliberate: it is a safety tightening, not a user preference).
 
+## 7. Dogfood addendum (2026-09-17, live AUTO rounds)
+
+- **First fully automatic run succeeded**: storage evidence shows an AUTO_X5 run consumed its full 5/5 budget with zero per-round Human clicks (ops `go:2`–`go:4` COMPLETED, `go:5` OBSERVED_ACCEPTED), ended `USER_INTERVENTION` when the Human typed mid-run — the intervention invariant firing as designed.
+- **Wedge incident**: the interrupted round-5 op sat in `OBSERVED_ACCEPTED` after an extension reload and, being execution-owning, conservatively blocked every new GO claim for that conversation (Slice 1 by-design). Recovered by Human-authorized storage correction (the round's reply was verifiably complete). Follow-up proposal: a Human-authorized manual recovery command for reconcile-stuck accepted ops.
+- **Two hotfixes shipped via PR #49** (`0eff85c`): uncaught dispatch errors now surface in the panel (`BLOCKED` + ledger reason), and round operation ids carry a per-attempt nonce (retries inside an attempt still dedupe; a Human retry of a blocked round no longer trips id-reuse conflict).
+- **Default continuation contract (Human decision)**: AUTO runs no longer ask for a user-authored goal. The evaluator's baseline is the built-in contract — "continue the assistant's own stated next step; no scope expansion; stop at human/review/evidence boundaries" (`DEFAULT_CONTINUATION_GOAL`) — with the same conservative gate; re-anchor round 4+ uses the same wording when no goal was authored.
+
 ## 8. Deliverables
 
 - Branch `bcr/auto-x5-deepseek-evaluator` (from `origin/main` `990037c`); exact head recorded on the PR.

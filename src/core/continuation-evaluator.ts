@@ -35,10 +35,14 @@ const BCR_STOP_VETO_PATTERNS: readonly RegExp[] = [
 const VETO_TAIL_CHARS = 400;
 
 export interface EvaluatorInput {
-  goal: string;
-  scope: string;
+  /** Optional: when absent the built-in "continue its own stated next step" contract is the goal. */
+  goal?: string;
+  scope?: string;
   assistantTurnExcerpt: string;
 }
+
+/** The product-level continuation contract (Human decision, 2026-09-17): the harness exists to let the assistant execute its own declared next step, so this — not a user-authored goal — is the default evaluation basis. */
+export const DEFAULT_CONTINUATION_GOAL = "Continue the assistant's own stated next step: the harness sends a plain 'go' so the assistant executes its own declared direction. Do not expand scope. Report any human decision, review/evidence/external wait, completed work, or scope expansion faithfully as the matching stop condition.";
 
 export interface EvaluatorVerdict {
   decision: ContinuationDecision;
@@ -87,6 +91,8 @@ export function mapStopReason(assessment: ContinuationAssessment): ContinuationS
 }
 
 export function buildEvaluatorMessages(input: EvaluatorInput): ReadonlyArray<{ role: "system" | "user"; content: string }> {
+  const goal = input.goal?.trim() || DEFAULT_CONTINUATION_GOAL;
+  const scope = input.scope?.trim() || goal;
   const system = [
     "You are the NOOS Continuation Evaluator: an isolated classifier over a bounded design conversation.",
     "You classify ONLY the state of the deliberation relative to the frozen goal and scope below.",
@@ -97,8 +103,8 @@ export function buildEvaluatorMessages(input: EvaluatorInput): ReadonlyArray<{ r
     "Guidance: SATISFIED/UNCERTAIN goal, human choices, review/evidence/external waits, optional future work, scope drift, and stalls must all be reported faithfully — the harness stops on every one of them. A turn that advanced the current focus without stating an explicit next step is OPEN_ADVANCING, and that is a faithful report, not an invitation to invent one."
   ].join(" ");
   const user = [
-    `Current Goal (frozen for this run): ${input.goal}`,
-    `Current Scope: ${input.scope}`,
+    `Current Goal (frozen for this run): ${goal}`,
+    `Current Scope: ${scope}`,
     "Completed Assistant Turn (excerpt, tail):",
     input.assistantTurnExcerpt
   ].join("\n");

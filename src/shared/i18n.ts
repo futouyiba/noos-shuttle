@@ -22,8 +22,6 @@ export interface ShuttleCopy {
   bcrAutoBadge: string;
   bcrAutoNote: string;
   bcrAutoHint: string;
-  bcrGoalPlaceholder: string;
-  bcrGoalRequired: string;
   bcrPhaseEvaluating: string;
   bcrSettingsTitle: string;
   bcrSettingsKey: string;
@@ -227,9 +225,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     bcrAssistedNote: "assisted: each continuation asks you",
     bcrAutoBadge: "AUTO ×5",
     bcrAutoNote: "auto ×5: isolated evaluator gates each round",
-    bcrAutoHint: "AUTO: state the run goal above; the evaluator continues rounds while HIGH-confidence and stops on any uncertainty.",
-    bcrGoalPlaceholder: "Run goal: what should this run advance or answer?",
-    bcrGoalRequired: "AUTO mode requires a run goal.",
+    bcrAutoHint: "AUTO: the evaluator continues rounds while HIGH-confidence and stops on any uncertainty; rounds 4+ re-anchor to the assistant's own stated direction.",
     bcrPhaseEvaluating: "Evaluating",
     bcrSettingsTitle: "BCR auto evaluator (experimental)",
     bcrSettingsKey: "DeepSeek API Key",
@@ -425,9 +421,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     bcrAssistedNote: "assisted 模式：每轮继续都需要你确认",
     bcrAutoBadge: "AUTO ×5",
     bcrAutoNote: "auto ×5：隔离评估器逐轮把关",
-    bcrAutoHint: "AUTO：在上方填写本 Run 的目标；评估器仅在 HIGH 置信时继续，任何不确定即停。",
-    bcrGoalPlaceholder: "Run 目标：这一轮要推进/回答什么？",
-    bcrGoalRequired: "AUTO 模式需要填写 Run 目标。",
+    bcrAutoHint: "AUTO：评估器仅在 HIGH 置信时继续，任何不确定即停；第 4 轮起按 assistant 自述方向重新锚定。",
     bcrPhaseEvaluating: "评估中",
     bcrSettingsTitle: "BCR 自动评估（实验）",
     bcrSettingsKey: "DeepSeek API Key",
