@@ -229,7 +229,7 @@ RecoveryBudget exhausted
 ## 11. Authority / Contract references
 
 - Canonical workflow v0.3.1（`noos_docs` main，2026-09-17）：
-  [docs/agent-workflow.md](https://raw.githubusercontent.com/futouyiba/noos_docs/main/docs/agent-workflow.md)，特别是 §1.1–1.5（独立 review 与 exact head）、§2.1–2.5（proposal/designer/provenance）、§3.3–3.4（provenance/worktree）、§4.1–4.4（integrator/寻址）、附录 B.3（标记语法）。
+  [docs/agent-workflow.md](https://raw.githubusercontent.com/futouyiba/noos_docs/4ec76f6007d6e9974cb233c7ca0cc2a47815be27/docs/agent-workflow.md)（`noos_docs@4ec76f6007d6e9974cb233c7ca0cc2a47815be27`），特别是 §1.1–1.5（独立 review 与 exact head）、§2.1–2.5（proposal/designer/provenance）、§3.3–3.4（provenance/worktree）、§4.1–4.4（integrator/寻址）、附录 B.3（标记语法）。
 - BCR Authority/Contract：
   [bcr-default-go-stop-boundary-narrow-revision.md](https://github.com/futouyiba/noos_docs/blob/a538f0f90215abce7b205dc1668b8f1ef07822cd/docs/deliberation-harness/candidates/2026-09-17-bcr-default-go-stop-boundary-narrow-revision.md)，§5、§8、§9、§14、§15。
 - Conversation Continuity Authority/Contract：
