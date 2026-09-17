@@ -32,11 +32,11 @@
 
 | 场景 | 当前可确认的证据 | 尚不能确认的事实 | 安全结论 / 下一步证据 |
 | --- | --- | --- | --- |
-| 前端断联、reload | `RuntimeObservationLedger` 在 suspend/resume 后进入 `SUSPENDED`/`RECOVERING`；`normalizeObservation` 以 provider route + conversation ref 形成 `sourceEpoch`，quiet window 为 2 秒。[runtime-observer.ts](../../src/content/runtime-observer.ts#L24-L61) `reconcileActiveSubmission` 将 route、conversation ref、消息计数、fingerprints、generation、provider failure 与 dispatch fence 一起回送 ledger。[index.ts](../../src/content/index.ts#L3378-L3403) | ChatGPT 服务端是否继续执行、reload 后是否恢复同一 generation/结果、当前版本是否保持 conversation identity：`PENDING_VALIDATION`。DOM route 相同本身不证明服务端执行连续。 | `UNKNOWN/UNCERTAIN` 只允许 bounded wait/re-observe/reconcile。只有同一 provider conversation/binding、无 execution-owning ambiguity 且有 refresh-safe 证据时，才可候选 refresh；refresh 只恢复观察能力，不隐含重发。需后续 REAL_DOGFOOD 记录 reload 前后 identity、head 与 message fingerprints。 |
+| 前端断联、reload | `RuntimeObservationLedger.suspend()/resume()` 使 carrier 进入 `SUSPENDED`/`RECOVERING`。[runtime-observer.ts](../../src/content/runtime-observer.ts#L99-L109) `normalizeObservation` 以 provider route + conversation ref 形成 `sourceEpoch`，quiet window 为 2 秒。[runtime-observer.ts](../../src/content/runtime-observer.ts#L24-L61) `reconcileActiveSubmission` 将 route、conversation ref、消息计数、fingerprints、generation、provider failure 与 dispatch fence 一起回送 ledger。[index.ts](../../src/content/index.ts#L3378-L3403) | ChatGPT 服务端是否继续执行、reload 后是否恢复同一 generation/结果、当前版本是否保持 conversation identity：`PENDING_VALIDATION`。DOM route 相同本身不证明服务端执行连续。 | `UNKNOWN/UNCERTAIN` 只允许 bounded wait/re-observe/reconcile。只有同一 provider conversation/binding、无 execution-owning ambiguity 且有 refresh-safe 证据时，才可候选 refresh；refresh 只恢复观察能力，不隐含重发。需后续 REAL_DOGFOOD 记录 reload 前后 identity、head 与 message fingerprints。 |
 | provider 硬中断、assistant partial output | 当前 observer 仅有 `GENERATING`、quiet 后 `STABILIZING`、`BROKEN` 等 operational state；`lastAssistantExcerpt()` 可采集末尾最多 2,000 字符作为候选证据。[runtime-observer.ts](../../src/content/runtime-observer.ts#L6-L76) [index.ts](../../src/content/index.ts#L1928-L1935) | 部分输出是否已持久化、generation 是否“确定异常终止”而非 UI 暂停/完成显示异常：`PENDING_VALIDATION`。 | 已接受的 user turn 永远不能 Shuttle resend。只有 assistant partial output 可观察、generation definite interruption、same binding/head、无副作用歧义且无人介入，才可候选 `CONTINUE_PROVIDER_TURN`；否则 HUMAN_REQUIRED。 |
 | 发送失败、原生 Retry | `SubmissionOperation` 持久化 `PREPARED → DISPATCHING → OBSERVED_ACCEPTED/UNCERTAIN/FAILED_SAFE → COMPLETED`；reconcile 以 conversation、route、payload fingerprint、计数/fingerprint 变化、generation 和 fence 判断 acceptance。[submission-operation.ts](../../src/core/submission-operation.ts#L1-L20) [submission-operation.ts](../../src/core/submission-operation.ts#L300-L340) | ChatGPT Retry 的确切目标 turn、是否重新生成而非重新提交、是否重跑工具/外部副作用、provider/version 语义和可关联性：`PENDING_VALIDATION`。当前 generic ChatGPT 没有 adapter-specific evidence。 | `Shuttle retry` 只在 `PROVEN_NOT_ACCEPTED` 后允许；provider-native Retry 需独立 recovery attempt 和 provider/version evidence，不能因 DOM 存在 Retry 按钮自动执行。当前 generic ChatGPT 在证据缺失前为 HUMAN_REQUIRED。 |
 | Retry 与 Shuttle 竞态 | claim 只允许合法 authority/fence，且拒绝同一 execution target 的另一个 execution-owning operation；content dispatch 需 READY、当前 composer 与 observation/fence 一致。[submission-operation.ts](../../src/core/submission-operation.ts#L86-L106) [index.ts](../../src/content/index.ts#L1460-L1527) | provider 手动 Retry 与 extension ledger 是否能被完整关联：`PENDING_VALIDATION`。 | V0 中 Human 手点 provider Retry 视作 `USER_INTERVENTION`；未经显式可关联 `HumanRecoveryAction` 不得并入自动 recovery。 |
-| context limit / conversation rebase | ContinuationRun 已有 `CONVERSATION_REBASE_REQUIRED` stop reason，当前实现直接将 run 置为 `FAILED_SAFE/ENDED`。[continuation-run.ts](../../src/core/continuation-run.ts#L223-L234) | provider context-limit surface 的稳定 DOM/文案、是否可通过 reload 或继续恢复：`PENDING_VALIDATION`。 | context rebase 不是普通 reload 或 interrupted generation 的别名；需进入 Continuity workflow，以新 continuation authorization 建立新 Provider Conversation。不得刷新循环或原样发送“继续”。 |
+| context limit / conversation rebase | ContinuationRun 已有 `CONVERSATION_REBASE_REQUIRED` stop reason，当前实现直接将 run 置为 `FAILED_SAFE/ENDED`。[continuation-run.ts](../../src/core/continuation-run.ts#L229-L234) | provider context-limit surface 的稳定 DOM/文案、是否可通过 reload 或继续恢复：`PENDING_VALIDATION`。 | context rebase 不是普通 reload 或 interrupted generation 的别名；需进入 Continuity workflow，以新 continuation authorization 建立新 Provider Conversation。不得刷新循环或原样发送“继续”。 |
 
 ## 3. Current implementation gap analysis
 
@@ -44,7 +44,7 @@
 
 - **Exactly-once submission ledger**：operation 的 durable state、dispatch fence、authority、payload fingerprint 与 reconciliation 已存在；`OBSERVED_ACCEPTED` 是不可逆的接受证据，terminal operation 不允许普通 reconciliation 复活。[submission-operation.ts](../../src/core/submission-operation.ts#L64-L65) [submission-operation.ts](../../src/core/submission-operation.ts#L300-L340)
 - **Stable-turn gate**：content 侧先取得 READY/stable observation，再 claim/actuate composer；生成控件、composer 和 provider error surface 由 adapter observation 归一化。[index.ts](../../src/content/index.ts#L1469-L1506) [runtime-observer.ts](../../src/content/runtime-observer.ts#L41-L76)
-- **Carrier/fence 保护**：source epoch、execution instance、carrier ref 与 dispatch fence 用于拒绝 stale page/worker evidence；reload adoption 会先 recover/reconcile，不直接重发。[index.ts](../../src/content/index.ts#L3360-L3372)
+- **Carrier/fence 保护**：source epoch、execution instance、carrier ref 与 dispatch fence 用于拒绝 stale page/worker evidence；reload adoption 会先 `recover`/reconcile，不直接重发。[index.ts](../../src/content/index.ts#L3337-L3375)
 - **Go × N 基本预算**：正常 acceptance 或 stable `COMPLETED` 只消费一次 continuation slot；单一 pending operation 和 provider/binding 检查阻止并发正常 GO。[continuation-run.ts](../../src/core/continuation-run.ts#L113-L121) [continuation-run.ts](../../src/core/continuation-run.ts#L155-L181)
 - **用户介入与 Stop 的现有方向**：foreign user message 触发 `USER_INTERVENTION`；`HUMAN_STOP` 使 run 取消；现有测试覆盖这些状态转换。[continuation-run.ts](../../src/core/continuation-run.ts#L210-L221) [tests/continuation-run.test.ts](../../tests/continuation-run.test.ts#L150-L167)
 
@@ -100,7 +100,7 @@ original dispatch = original SubmissionOperation
 
 - Original dispatch 与 Shuttle retry 共享 logical operation identity，但每次 retry 必须有新的 dispatch attempt/fence/provenance；最终 acceptance 对同一 user turn 只计一次，不额外扣 Go slot。
 - provider-native Retry 不创建 user turn，不扣 Go slot，但消耗 recovery attempt，并必须记录 provider/version、目标 accepted turn、证据摘要、执行者和结果。
-- `CONTINUE_PROVIDER_TURN` 是新的 `SubmissionOperation`、新的 user turn；provider acceptance 时同时消耗一个 Go slot和一个 recovery attempt。它不得复用原 operation id 或 payload fingerprint 作为原始提交。
+- `CONTINUE_PROVIDER_TURN` 是新的 `SubmissionOperation`、新的 user turn；provider acceptance 时同时消耗一个 Go slot 和一个 recovery attempt。它不得复用原 operation id 或 payload fingerprint 作为原始提交。
 - Refresh、passive re-observation、reconciliation 不扣 Go slot；bounded refresh 若被允许，仍应记录 observation/recovery provenance。
 
 ### 5.2 RecoveryBudget
@@ -253,7 +253,7 @@ Designer 在 #54 裁定中把下列两份 Candidate 列为"可作约束引用（
 - **MAJOR-1（裁定保真 / canonical §2.3）**：CC 文档 §1 的 `Primary adjudication / PD-1 / ACCEPT OPTION A / READY_FOR_BOUNDED_VERTICAL_DOGFOOD` 块**没有任何交付来源**（无 issue、无 PR、无 URL、无 commit、无日期、无交付人）；`PRIMARY_ADJUDICATED`、`OWNER-DIRECTED`、`READY_FOR_BOUNDED_VERTICAL_DOGFOOD` 在 GitHub 检索零命中。该 review 指出：designer 的动作是把这两份文件**引用为约束**，不是批准；且被审 head（`07:34:33Z`）早于 #54 的 `DESIGN: NEEDS_REVISION`（`10:16:49Z`）约 2h42m，故该裁定块不可能转录自它。因此本 proposal 只把它们当作**受争议的引用材料**，不继承其 `PRIMARY_ADJUDICATED` 措辞的效力。
 - **MAJOR-2（接缝 fail-open）**：BCR §14 断言"新 `Go ×N` 时 Continuity Checkpoint + BOOTSTRAP + Resume Verification **已恢复当前工作位**，故不再问 Goal"，与 CC §11（bootstrap 失败时 C2 仍为 canonical current）、CC §14 的 `RESUME_ELIGIBLE`（bootstrap 完成 ∧ hard resume verification 通过 ∧ soft verification 无 mismatch）冲突，且 BCR §9 的 stop boundary 列表缺对应项；BCR §17-11 自身又要求 `RESUME_ELIGIBLE`，构成文档内自相矛盾。本 proposal 在 §6.2 按"`RESUME_ELIGIBLE` 是硬门"一侧处理（见下），不继承 BCR §14 的无条件断言。
 
-因此，§6 contexts rebase 与 continuity seam 只引用其**章节位置**作为讨论对象，不把它们当作已生效的契约文本。
+因此，本 proposal 只把它们当作**受争议的讨论对象与约束引用**，不当作已生效的契约文本；凡引用其具体论断之处（如 §6.2 采用 CC §11 的 bootstrap 失败路径与 CC §14 的 `RESUME_ELIGIBLE` 定义作为判据），均在该处显式标注分歧与判据来源，不继承其未验证的头部结论。
 
 ## 12. Addressability note
 
