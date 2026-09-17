@@ -81,6 +81,12 @@ describe("buildEvaluatorMessages", () => {
     expect(messages[1].content).toContain("Current Goal (frozen for this run): g");
     expect(messages[1].content).toContain("turn text");
   });
+
+  it("falls back to the built-in continue-its-own-direction contract without a goal", () => {
+    const messages = buildEvaluatorMessages({ assistantTurnExcerpt: "turn text" });
+    expect(messages[1].content).toContain("Continue the assistant's own stated next step");
+    expect(messages[1].content).not.toContain("undefined");
+  });
 });
 
 describe("evaluateContinuation", () => {

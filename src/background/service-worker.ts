@@ -172,13 +172,12 @@ async function handleContinuationEvaluate(message: { runId?: unknown; assistantT
     ? persisted[CONTINUATION_RUN_STORE_KEY]
     : emptyContinuationRunStore();
   const run = Object.values(store.activeByConversation).find(candidate => candidate.runId === runId);
-  if (!run || run.status !== "ACTIVE" || run.mode !== "AUTO_X5" || run.phase !== "EVALUATING" ||
-    typeof run.goal !== "string" || run.goal.trim() === "") {
+  if (!run || run.status !== "ACTIVE" || run.mode !== "AUTO_X5" || run.phase !== "EVALUATING") {
     return { ok: false, error: "no_active_auto_run" };
   }
   const verdict = await evaluateContinuation({
     goal: run.goal,
-    scope: typeof run.scope === "string" && run.scope.trim() !== "" ? run.scope : run.goal,
+    scope: run.scope ?? run.goal,
     assistantTurnExcerpt: excerpt
   }, config);
   return {

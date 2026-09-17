@@ -297,15 +297,16 @@ describe("AUTO_X5 mode", () => {
     return next;
   }
 
-  it("requires a goal for AUTO_X5 starts and rejects invalid scope", () => {
+  it("starts AUTO_X5 without a user goal (built-in continuation contract) and rejects invalid goal/scope", () => {
     const base = { runId: "bcr-a", workItemId: "w", logicalThreadId: "t", providerConversationRef: "conv-a", bindingEpoch: 1, maxContinuations: 5, mode: "AUTO_X5" as const, now: 1 };
-    expect(() => startContinuationRun(base)).toThrow(/goal/);
+    const started = startContinuationRun(base);
+    expect(started.goal).toBeUndefined();
+    expect(started.phase).toBe("READY_TO_GO");
     expect(() => startContinuationRun({ ...base, goal: "  " })).toThrow(/goal/);
     expect(() => startContinuationRun({ ...base, goal: "g", scope: " " })).toThrow(/scope/);
-    const started = startContinuationRun({ ...base, goal: "g" });
-    expect(started.goal).toBe("g");
-    expect(started.scope).toBeUndefined();
-    expect(started.phase).toBe("READY_TO_GO");
+    const withGoal = startContinuationRun({ ...base, goal: "g" });
+    expect(withGoal.goal).toBe("g");
+    expect(withGoal.scope).toBeUndefined();
   });
 
   it("routes COMPLETED into EVALUATING for AUTO runs and AWAITING_HUMAN_DECISION for ASSISTED", () => {
