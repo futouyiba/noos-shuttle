@@ -29,6 +29,10 @@ export interface ShuttleCopy {
   bcrSettingsKey: string;
   bcrSettingsModel: string;
   bcrSettingsSaved: string;
+  bcrSyncFromHub: string;
+  bcrSynced: string;
+  bcrHubNotConfigured: string;
+  bcrSyncFailed: string;
   bcrLockedReason: string;
   bcrRunningLabel: string;
   bcrPhaseReady: string;
@@ -231,6 +235,10 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     bcrSettingsKey: "DeepSeek API Key",
     bcrSettingsModel: "Model",
     bcrSettingsSaved: "BCR evaluator config saved.",
+    bcrSyncFromHub: "Sync from NOOS Hub",
+    bcrSynced: "Evaluator config synced from NOOS Hub",
+    bcrHubNotConfigured: "NOOS Hub has no evaluator config; set it in the Hub settings page first.",
+    bcrSyncFailed: "Could not reach NOOS Hub for evaluator sync.",
     bcrLockedReason: "Locked: experimental BCR is currently capped at ×5 until real evidence passes the gate",
     bcrRunningLabel: "Running",
     bcrPhaseReady: "Ready",
@@ -425,6 +433,10 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     bcrSettingsKey: "DeepSeek API Key",
     bcrSettingsModel: "模型",
     bcrSettingsSaved: "BCR 评估器配置已保存。",
+    bcrSyncFromHub: "从 NOOS Hub 同步",
+    bcrSynced: "已从 NOOS Hub 同步评估器配置",
+    bcrHubNotConfigured: "NOOS Hub 侧尚未配置评估器，请先在 Hub 设置页填写。",
+    bcrSyncFailed: "无法连接 NOOS Hub 进行评估器同步。",
     bcrLockedReason: "已锁定：实验性 BCR 当前上限 ×5，需真实证据通过 gate 后才开放",
     bcrRunningLabel: "运行中",
     bcrPhaseReady: "就绪",

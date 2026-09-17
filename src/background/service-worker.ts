@@ -119,6 +119,7 @@ const HUB_VAULT_BROWSE_URL = "http://127.0.0.1:17642/v1/vault/browse";
 const HUB_VAULT_OBJECT_URL = "http://127.0.0.1:17642/v1/vault/object";
 const HUB_WIKI_TARGET_URL = "http://127.0.0.1:17642/v1/wiki/default-target";
 const HUB_ACTION_URL = "http://127.0.0.1:17642/v1/actions";
+const HUB_BCR_EVALUATOR_CONFIG_URL = "http://127.0.0.1:17642/v1/bcr/evaluator-config";
 const HUB_TOKEN_STORAGE_KEY = "noosHubShuttleToken";
 const workItemStorage = {
   get: (key: string) => chrome.storage.local.get(key) as Promise<Record<string, unknown>>,
@@ -191,8 +192,7 @@ async function handleContinuationEvaluate(message: { runId?: unknown; assistantT
 }
 
 /** Evaluator config read/write. The key never echoes back to the content script; empty key input preserves the stored one. */
-async function handleContinuationEvalConfig(message: { config?: unknown }): Promise<Record<string, unknown>> {
-  const storage = chrome.storage?.local;
+async function handleContinuationEvalConfig(message: { config?: unknown }): Promise<Record<string, unknown>> {  const storage = chrome.storage?.local;
   if (!storage) return { ok: false, error: "storage_unavailable" };
   if (message.config !== undefined && message.config !== null) {
     const config = message.config as { apiKey?: unknown; model?: unknown };
@@ -205,6 +205,31 @@ async function handleContinuationEvalConfig(message: { config?: unknown }): Prom
   }
   const after = normalizeEvaluatorConfig((await storage.get(BCR_EVALUATOR_CONFIG_KEY))[BCR_EVALUATOR_CONFIG_KEY]);
   return { ok: true, evaluatorConfigured: Boolean(after), model: after?.model ?? BCR_EVALUATOR_DEFAULT_MODEL };
+}
+
+/** Explicit pull of the Hub-side evaluator config into the local store. Never automatic: the Hub sync always overrides the local key/model, so it only runs on the user's click. The payload is re-validated against the same allowlist the evaluator enforces. */
+async function handleContinuationEvalSync(): Promise<Record<string, unknown>> {
+  const storage = chrome.storage?.local;
+  if (!storage) return { ok: false, error: "storage_unavailable" };
+  let payload: unknown;
+  try {
+    payload = await fetchHubJsonWithRepair(HUB_BCR_EVALUATOR_CONFIG_URL);
+  } catch {
+    return { ok: false, error: "hub_unreachable" };
+  }
+  if (!payload || typeof payload !== "object") return { ok: false, error: "hub_unreachable" };
+  const body = payload as { ok?: unknown; errorCode?: unknown; configured?: unknown; baseUrl?: unknown; apiKey?: unknown; model?: unknown };
+  // The Hub helper family reports transport/pairing failures as error-shaped
+  // payloads ({ok:false, errorCode}) rather than throwing.
+  if (body.ok === false || typeof body.errorCode === "string") return { ok: false, error: "hub_unreachable" };
+  if (body.ok !== true || body.configured !== true || typeof body.baseUrl !== "string" ||
+    typeof body.apiKey !== "string" || body.apiKey === "" || typeof body.model !== "string" || body.model === "") {
+    return { ok: true, synced: false, reason: "hub_not_configured" };
+  }
+  const config = normalizeEvaluatorConfig({ baseUrl: body.baseUrl, apiKey: body.apiKey, model: body.model });
+  if (!config) return { ok: true, synced: false, reason: "hub_config_invalid" };
+  await storage.set({ [BCR_EVALUATOR_CONFIG_KEY]: config });
+  return { ok: true, synced: true, model: config.model };
 }
 
 function isKnownContinuationRunMutation(mutation: ContinuationRunMutation): boolean {  switch (mutation.type) {
@@ -321,6 +346,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
     }
     handleContinuationEvalConfig(message)
+      .then(result => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+    return true;
+  }
+
+  if (message?.type === "NOOS_CONTINUATION_EVAL_SYNC") {
+    if (sender.frameId !== 0 || !Number.isSafeInteger(sender.tab?.id) || !isAllowedProviderSender(sender)) {
+      sendResponse({ ok: false, error: "sender_not_allowed" });
+      return false;
+    }
+    handleContinuationEvalSync()
       .then(result => sendResponse(result))
       .catch((error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
     return true;
