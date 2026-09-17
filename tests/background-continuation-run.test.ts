@@ -105,9 +105,9 @@ describe("background continuation run coordinator", () => {
   it("rejects oversize budgets, duplicate runs, and non-provider senders", async () => {
     const { handler } = await loadHandler();
     const send_ = send.bind(null, handler);
-    const gated = await send_({ type: "start", input: { ...START_INPUT, maxContinuations: 20 } });
+    const gated = await send_({ type: "start", input: { ...START_INPUT, maxContinuations: 50 } });
     expect(gated.ok).toBe(false);
-    expect(gated.error).toMatch(/experimental cap/);
+    expect(gated.error).toMatch(/expected one of 1 \| 5 \| 10 \| 20/);
     await send_({ type: "start", input: START_INPUT });
     const duplicate = await send_({ type: "start", input: { ...START_INPUT, runId: "bcr-bg-2" } });
     expect(duplicate.ok).toBe(false);

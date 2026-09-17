@@ -17,7 +17,7 @@ Human starts Go ×5 (AUTO badge; no goal prompt — see the default continuation
 → WOULD_STOP: run ENDED with the faithfully mapped reason
 ```
 
-Everything already hardened in the ASSISTED loop is unchanged: single in-flight submission, budget consumed exactly once at proven acceptance, stable-turn gate, USER_INTERVENTION on any foreign user message, UNCERTAIN/carrier/authority fail-closed, ×10/×20 hard-locked at 5, Stop always available — including during an in-flight evaluation: a Stop pressed while the auto-advance lock is held is queued and consumed at the next auto-advance boundary (before any further dispatch), and a reducer test pins `HUMAN_STOP` applying from `EVALUATING`. Evidence candidates per round.
+Everything already hardened in the ASSISTED loop is unchanged: single in-flight submission, budget consumed exactly once at proven acceptance, stable-turn gate, USER_INTERVENTION on any foreign user message, UNCERTAIN/carrier/authority fail-closed, Stop always available — including during an in-flight evaluation: a Stop pressed while the auto-advance lock is held is queued and consumed at the next auto-advance boundary (before any further dispatch), and a reducer test pins `HUMAN_STOP` applying from `EVALUATING`. Evidence candidates per round. (Budget cap note: the ×5 experimental lock was opened to the full ×20 surface on 2026-09-17 by Human decision after the first automatic 5/5 run; gate/invariants are budget-independent.)
 
 ## 2. Evaluator boundary (task-contract conformance)
 
