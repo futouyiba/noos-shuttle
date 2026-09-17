@@ -22,8 +22,8 @@ export type ContinuationStopReason =
 
 /** Budgets surfaced in the UI; <= EXPERIMENTAL_MAX_BUDGET can actually start. */
 export const BCR_ALLOWED_BUDGETS = [1, 5, 10, 20] as const;
-/** Experimental gate: real-evidence budget cap for auto/assisted runs until the offline gate produces evidence. */
-export const BCR_EXPERIMENTAL_MAX_BUDGET = 5;
+/** Budget cap (Human decision, 2026-09-17: opened to the full ×20 surface after the first automatic 5/5 run; the conservative gate, single-in-flight, and stop invariants apply identically at every budget). */
+export const BCR_EXPERIMENTAL_MAX_BUDGET = 20;
 
 export interface ContinuationRun {
   runId: string;
@@ -85,7 +85,7 @@ export function startContinuationRun(input: StartContinuationRunInput): Continua
   }
   if (!Number.isFinite(input.bindingEpoch) || input.bindingEpoch < 0) throw new Error("bindingEpoch: non-negative number required");
   if (!(BCR_ALLOWED_BUDGETS as readonly number[]).includes(input.maxContinuations)) throw new Error(`maxContinuations: expected one of ${BCR_ALLOWED_BUDGETS.join(" | ")}`);
-  if (input.maxContinuations > BCR_EXPERIMENTAL_MAX_BUDGET) throw new Error(`maxContinuations ${input.maxContinuations} exceeds experimental cap ${BCR_EXPERIMENTAL_MAX_BUDGET} (real-evidence gate not passed)`);
+  if (input.maxContinuations > BCR_EXPERIMENTAL_MAX_BUDGET) throw new Error(`maxContinuations ${input.maxContinuations} exceeds cap ${BCR_EXPERIMENTAL_MAX_BUDGET}`);
   if (!Number.isFinite(input.now)) throw new Error("now: number required");
   const mode = input.mode ?? "ASSISTED";
   // AUTO_X5 runs need no user-authored goal: the evaluator's baseline is the

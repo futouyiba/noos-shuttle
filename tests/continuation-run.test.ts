@@ -54,11 +54,12 @@ describe("startContinuationRun", () => {
     const base = { runId: "bcr-1", workItemId: "w", logicalThreadId: "t", providerConversationRef: "conv-a", bindingEpoch: 1, now: 1 };
     expect(() => startContinuationRun({ ...base, maxContinuations: 3 })).toThrow(/maxContinuations/);
     expect(() => startContinuationRun({ ...base, maxContinuations: 0 })).toThrow(/maxContinuations/);
-    expect(() => startContinuationRun({ ...base, maxContinuations: 20 })).toThrow(/experimental cap/);
+    expect(() => startContinuationRun({ ...base, maxContinuations: 50 })).toThrow(/expected one of 1 \| 5 \| 10 \| 20/);
     expect(() => startContinuationRun({ ...base, maxContinuations: 5, runId: " " })).toThrow(/runId/);
     expect(() => startContinuationRun({ ...base, maxContinuations: 5, providerConversationRef: "" })).toThrow(/providerConversationRef/);
-    expect(BCR_EXPERIMENTAL_MAX_BUDGET).toBe(5);
+    expect(BCR_EXPERIMENTAL_MAX_BUDGET).toBe(20);
     expect(BCR_ALLOWED_BUDGETS).toEqual([1, 5, 10, 20]);
+    expect(startContinuationRun({ ...base, maxContinuations: 20 }).maxContinuations).toBe(20);
   });
 });
 
