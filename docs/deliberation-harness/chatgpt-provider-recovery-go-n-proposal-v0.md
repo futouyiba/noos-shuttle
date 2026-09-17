@@ -149,7 +149,11 @@ RecoveryBudget exhausted
 
 > **Context rebase is not authorized by ordinary Go × N authorization. It ends the current Run, preserves the same Logical Thread, establishes a new Provider Conversation through the Continuity workflow, and requires a new continuation authorization after `RESUME_ELIGIBLE`.**
 
-因此，carrier change、普通 reload、一次 interrupted generation 都不能直接触发 rebase；binding generation 改变时原 Run 的剩余 Go budget 不成为新 conversation 的 actuation authority。新 conversation 需完成 Continuity workflow 并在 `RESUME_ELIGIBLE` 后获得新的 continuation authorization。
+因此，carrier change、普通 reload、一次 interrupted generation 都不能直接触发 rebase；binding generation 改变时原 Run 的剩余 Go budget 不成为新 conversation 的 actuation authority。
+
+**硬门（本 proposal 的明确要求）**：新 Provider Conversation 上的任何 `Go × N` 资格，必须被判据显式门在 `RESUME_ELIGIBLE` 为真之上——即 Continuity `BOOTSTRAP` operation 已完成、hard resume verification 通过、soft verification 无 mismatch。在该门为真之前，即使 binding 已 commit、C2 已是 canonical current，也不得发起新 Run、不得发出 `go`、不得因“已恢复工作位”而跳过 Goal/授权询问。`RESUME_ELIGIBLE` 为假、resume 校验未过或校验结果缺失，都必须作为 stop boundary 处理并保持 pause 状态，不得 fail-open 继续。
+
+这一条与 §11.2 记录的 BCR §14 无条件断言**明确分歧**：本 proposal 不接受“Continuity Checkpoint + BOOTSTRAP + Resume Verification 已恢复当前工作位”作为无需验证的前提，采用 BCR §17-11 那样把 `RESUME_ELIGIBLE` 写入前置条件的一侧，并补上 BCR §9 stop boundary 列表缺失的对应项（`RESUME_ELIGIBLE` 为假 / resume 校验未通过）。判据是 CC §11 的 bootstrap 失败路径（binding 成功但 bootstrap 失败时 C2 仍为 canonical current）与 CC §14 的 `RESUME_ELIGIBLE` 定义；本 proposal 不继承未冻结文档的无条件断言。
 
 ## 7. Context Rebase
 
@@ -226,16 +230,30 @@ RecoveryBudget exhausted
 7. Continuity V0 的 `RESUME_ELIGIBLE` 如何与本仓库的新 continuation authorization 对接，而不携带跨 binding 的 Go budget？
 8. 现有 issue handoff 路径位于 `active/` 且此前未 tracked。是否由后续生命周期工具在完成后搬迁，还是保留原文以维持 issue 引用可寻址性？本 PR 只原样纳入 handoff，不改写、不移动。
 
-## 11. Authority / Contract references
+## 11. Authority / references
+
+### 11.1 Authority（SHA 锚定，可作约束）
 
 - Canonical workflow v0.3.1（`noos_docs` main，2026-09-17）：
   [docs/agent-workflow.md](https://raw.githubusercontent.com/futouyiba/noos_docs/4ec76f6007d6e9974cb233c7ca0cc2a47815be27/docs/agent-workflow.md)（`noos_docs@4ec76f6007d6e9974cb233c7ca0cc2a47815be27`），特别是 §1.1–1.5（独立 review 与 exact head）、§2.1–2.5（proposal/designer/provenance）、§3.3–3.4（provenance/worktree）、§4.1–4.4（integrator/寻址）、附录 B.3（标记语法）。
-- BCR Authority/Contract：
-  [bcr-default-go-stop-boundary-narrow-revision.md](https://github.com/futouyiba/noos_docs/blob/a538f0f90215abce7b205dc1668b8f1ef07822cd/docs/deliberation-harness/candidates/2026-09-17-bcr-default-go-stop-boundary-narrow-revision.md)，§5、§8、§9、§14、§15。
-- Conversation Continuity Authority/Contract：
-  [conversation-continuity-v0-primary-adjudicated.md](https://github.com/futouyiba/noos_docs/blob/a538f0f90215abce7b205dc1668b8f1ef07822cd/docs/deliberation-harness/candidates/2026-09-17-conversation-continuity-v0-primary-adjudicated.md)，§5、§7–10、§14、§17、§18。
 - Issue #54 原始 dispatch：[comment](https://github.com/futouyiba/noos-shuttle/issues/54#issuecomment-5711403452)。
 - Designer `DESIGN: NEEDS_REVISION` 原文与 provenance：[comment](https://github.com/futouyiba/noos-shuttle/issues/54#issuecomment-5712703481)。该 verdict 原文不改写；canonical B.3 的 `DESIGN:` 接受集记录为 `APPROVE|REQUEST_CHANGES|REJECTED`，不含 `NEEDS_REVISION`，此词汇差异属于规范后续修订项。
+
+### 11.2 受争议引用材料（provenance 未核实，非 Authority）
+
+Designer 在 #54 裁定中把下列两份 Candidate 列为"可作约束引用（不可替代 #54 proposal）"。它们**不是** Authority，不构成本 proposal 的批准或依据；引用它们必须连带记录其争议状态：
+
+- `noos_docs` PR #17 @ `a538f0f90215abce7b205dc1668b8f1ef07822cd`
+  - `docs/deliberation-harness/candidates/2026-09-17-bcr-default-go-stop-boundary-narrow-revision.md`（BCR）
+  - `docs/deliberation-harness/candidates/2026-09-17-conversation-continuity-v0-primary-adjudicated.md`（CC）
+
+该 exact head 的独立 review 结论为
+[`REVIEW: REQUEST_CHANGES @ a538f0f90215abce7b205dc1668b8f1ef07822cd`](https://github.com/futouyiba/noos_docs/pull/17#issuecomment-5716812552)，含 2 个 MAJOR 阻断项：
+
+- **MAJOR-1（裁定保真 / canonical §2.3）**：CC 文档 §1 的 `Primary adjudication / PD-1 / ACCEPT OPTION A / READY_FOR_BOUNDED_VERTICAL_DOGFOOD` 块**没有任何交付来源**（无 issue、无 PR、无 URL、无 commit、无日期、无交付人）；`PRIMARY_ADJUDICATED`、`OWNER-DIRECTED`、`READY_FOR_BOUNDED_VERTICAL_DOGFOOD` 在 GitHub 检索零命中。该 review 指出：designer 的动作是把这两份文件**引用为约束**，不是批准；且被审 head（`07:34:33Z`）早于 #54 的 `DESIGN: NEEDS_REVISION`（`10:16:49Z`）约 2h42m，故该裁定块不可能转录自它。因此本 proposal 只把它们当作**受争议的引用材料**，不继承其 `PRIMARY_ADJUDICATED` 措辞的效力。
+- **MAJOR-2（接缝 fail-open）**：BCR §14 断言"新 `Go ×N` 时 Continuity Checkpoint + BOOTSTRAP + Resume Verification **已恢复当前工作位**，故不再问 Goal"，与 CC §11（bootstrap 失败时 C2 仍为 canonical current）、CC §14 的 `RESUME_ELIGIBLE`（bootstrap 完成 ∧ hard resume verification 通过 ∧ soft verification 无 mismatch）冲突，且 BCR §9 的 stop boundary 列表缺对应项；BCR §17-11 自身又要求 `RESUME_ELIGIBLE`，构成文档内自相矛盾。本 proposal 在 §6.2 按"`RESUME_ELIGIBLE` 是硬门"一侧处理（见下），不继承 BCR §14 的无条件断言。
+
+因此，§6 contexts rebase 与 continuity seam 只引用其**章节位置**作为讨论对象，不把它们当作已生效的契约文本。
 
 ## 12. Addressability note
 
