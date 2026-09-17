@@ -9,9 +9,13 @@
 
 The reported symptom is **not** a Chrome timer-throttling problem, and the designer's leading hypothesis (a lost volatile continuation after `EVALUATION_PASSED`) is **not** what the live dogfood instance shows. The live instance is a **durable-strand caused by the single global submission authority**:
 
-> A run's in-flight `SubmissionOperation` is reconciled only while the holder of `noosSubmissionAuthority` has the *same* `logicalThreadId` as the operation. `reconcile` **never re-establishes authority**. As soon as another conversation's tab claims the authority (which the most recently active conversation does), the earlier run's `reconcile` returns `STILL_AMBIGUOUS` forever, the run stays `ACTIVE` in an intermediate phase with a pending operation, and **restoring visibility changes nothing** because the steady-state path that runs on a visible tab is `reconcile`, which is exactly the path that cannot re-claim.
+> A run's in-flight `SubmissionOperation` is reconciled only while the holder of `noosSubmissionAuthority` has the *same* `logicalThreadId` as the operation. `reconcile` **never re-establishes authority**. As soon as another conversation claims the authority, the earlier run's `reconcile` returns `STILL_AMBIGUOUS` forever, the run stays `ACTIVE` in an intermediate phase with a pending operation, and **restoring visibility changes nothing** because the steady-state path that runs on a visible tab is `reconcile`, which is exactly the path that cannot re-claim.
+
+Authority is not held by mere activity or visibility: takeover requires an *active* `ensureAuthority`/`recover` on the competing conversation — i.e. that conversation dispatching or recovering an operation. So the wedge needs a second conversation that actually claims, not merely one that is open.
 
 Measured directly: after the stranded run's tab was returned to the foreground and its observation cadence was fully restored to 1 Hz for 90 s, the ledger revision advanced **+1 per second** (one `reconcile` attempt per second) while phase, consumed count, operation state and authority generation **did not change at all**.
+
+**What is measured and what is inferred.** The *liveness* half is measured: on a run found already wedged, returning to the foreground and restoring the full observation cadence does not resume it (`LIVE`, §3 rows C and F). The *trigger* half — that switching tabs is what put the run into that state — is **not** reproduced; it is `CODE` + `INFER` + `STORE`, and §3 says so. M1 is therefore established as the mechanism that makes the wedge **permanent and invisible**; whether tab-switching is the only, or even the usual, way to reach it is `PENDING_VALIDATION`.
 
 Three strands are described below. Only **M1** is live-reproduced; **M2** and **M3** are code-level structural findings. A fourth, independent defect (**M4**, §7) was found while running the required verification commands: the test suite is **red at the base SHA** — 27 failed / 459 passed — because four test files never inject the Web Locks capability the authority lock requires. M4 is unrelated to the background-dependence failure but blocks regression protection for any fix in this area.
 
@@ -154,7 +158,7 @@ Constraint honoured throughout: **no provider message was sent, no `Retry` click
 
 ### Classification
 
-**Primary: `IMPLEMENTATION_BUG`.** Reconciliation of an in-flight `SubmissionOperation` is gated on the global submission authority holding an *identical* `logicalThreadId`, and `reconcile` has no path to re-establish authority. Whichever conversation most recently claimed authority therefore permanently blocks every other conversation's in-flight operations from being reconciled, while those operations remain non-terminal (`OBSERVED_ACCEPTED`) and their runs remain `ACTIVE` in an intermediate phase. Recovery exists (`recover`, which *does* take over by recency) but is reachable only when the content script's **volatile** `activeSubmission` is `null` — i.e. only after a reload/execution-context reconstruction — so a live tab cannot self-heal.
+**Primary: `IMPLEMENTATION_BUG`.** Reconciliation of an in-flight `SubmissionOperation` is gated on the global submission authority holding an *identical* `logicalThreadId`, and `reconcile` has no path to re-establish authority. Whichever conversation most recently claimed authority therefore permanently blocks every other conversation's in-flight operations from being reconciled, while those operations remain non-terminal (`OBSERVED_ACCEPTED`) and their runs remain `ACTIVE` in an intermediate phase. Recovery exists (`recover`, which *does* take over by recency) but is reachable only when the content script's **volatile** `activeSubmission` is `null` — i.e. only after a reload/execution-context reconstruction — so a live tab cannot self-heal. The reducer already carries the matching escalation event (`AUTHORITY_CHANGED`, M1b) but nothing emits it.
 
 **Secondary (structural, needs designer decision): the `READY_TO_GO`-has-no-driver gap** — `IMPLEMENTATION_DETAIL` layered on a contract question, not a standalone bug. It is not the cause of the observed symptom.
 
@@ -184,8 +188,11 @@ Constraint honoured throughout: **no provider message was sent, no `Retry` click
 
 ## 5. Mechanisms
 
-**M1 — authority contention strands the operation (live-reproduced; this is the reported symptom).**
-The global single-claim authority is held by whichever conversation claimed most recently (`ensureAuthority` replaces it when `sourceObservedAt` is newer — [submission-operation.ts:366-389](src/core/submission-operation.ts)). `reconcile` requires an exact match and never re-claims ([submission-operation.ts:272-284](src/core/submission-operation.ts)). `recover` *could* take over, but in the content script it is sent only from `restoreActiveSubmission`, which is skipped whenever `activeSubmission` is already set ([index.ts:3310](src/content/index.ts)) — and `reconcileActiveSubmission` never clears it on a `STILL_AMBIGUOUS` outcome ([index.ts:3378-3446](src/content/index.ts)). Net effect: a live tab whose run was reconciled by another conversation can never advance again, and switching back does not help. `LIVE` + `CODE` + `STORE`. **This is the same defect family as `futouyiba/noos-shuttle#56` / PR #57 (F1), now shown to be the cause of the background/foreground symptom as well.**
+**M1 — authority contention strands the operation (live-reproduced; the mechanism that makes the reported wedge permanent).**
+The global single-claim authority is held by whichever conversation claimed most recently (`ensureAuthority` replaces it when `sourceObservedAt` is newer — [submission-operation.ts:366-389](src/core/submission-operation.ts)). `reconcile` requires an exact match and never re-claims ([submission-operation.ts:272-284](src/core/submission-operation.ts)). `recover` *could* take over, but in the content script it is sent only from `restoreActiveSubmission`, which is skipped whenever `activeSubmission` is already set ([index.ts:3310](src/content/index.ts)) — and `reconcileActiveSubmission` never clears it on a `STILL_AMBIGUOUS` outcome ([index.ts:3378-3446](src/content/index.ts)). Net effect: a live tab whose run was reconciled by another conversation can never advance again, and switching back does not help. `LIVE` + `CODE` + `STORE`. **This is the same defect family as `futouyiba/noos-shuttle#56` / PR #57 (F1)**; this task adds that it also makes the run unrecoverable on return to the foreground, and that it is invisible to the Human rather than failing safe.
+
+**M1b — the escalation event for exactly this condition already exists and is never emitted.**
+The reducer defines `AUTHORITY_CHANGED` → `status = FAILED_SAFE`, `stopReason = "AUTHORITY_CHANGED"` ([continuation-run.ts:223-228](src/core/continuation-run.ts)), and it is unit-tested ([continuation-run.test.ts:162-163](tests/continuation-run.test.ts)). `grep -rn AUTHORITY_CHANGED src/` finds only the type union ([continuation-run.ts:17](src/core/continuation-run.ts)), the event type ([continuation-run.ts:63](src/core/continuation-run.ts)) and the reducer case — **no production path emits it**, and no path emits it for the authority-mismatch condition at all (`CODE`). So "the run has no escalation path" is imprecise: the contract already intends this escalation, and the gap is that nothing feeds it. This is the most contract-aligned minimal candidate fix, and it is why Phase B lists it first.
 
 **M2 — `COMPLETED` op with a lost run event has no reconciler (code-level; not observed).**
 If execution is interrupted between the durable op `COMPLETED` write ([index.ts:3418-3429](src/content/index.ts)) and the run `OPERATION_COMPLETED` apply ([index.ts:3434-3440](src/content/index.ts)), the run keeps `pendingSubmissionOperationId` pointing at an operation that is terminal, and `restoreActiveSubmission`'s state filter excludes `COMPLETED` ([index.ts:3323](src/content/index.ts)). No durable mapping from "op COMPLETED, run still pending" back to the run event exists. `CODE`. Its live manifestation was **not** verified.
@@ -197,14 +204,20 @@ If execution is interrupted between the durable op `COMPLETED` write ([index.ts:
 
 ## 6. Phase B — Fix: stop condition reached, proposal only
 
-**No extension code was modified in this task.** Two of the three candidate fixes change Authority/contract semantics, which the task brief puts behind an explicit stop condition; the third is partial. The decision belongs to the epic designer.
+**No extension code was modified in this task.** The candidate fixes change Authority/contract semantics or fail-safe policy, which the task brief puts behind an explicit stop condition; the remaining ones are partial or test-only. The decision belongs to the epic designer.
 
-### M1 — the real fix, but it changes Authority semantics → proposal
+### M1b — emit the escalation event the contract already defines (strongest candidate, but sets policy)
 
-1. **Re-claim on reconcile (restores liveness).** Let the steady-state path re-establish authority when reconcile reports an authority mismatch, reusing the existing `recover` semantics (recency-based takeover) rather than requiring an exact match. *Effect*: a run whose conversation is revisited resumes and completes its round. *Cost*: authority changes hands more often, which is precisely the single-claimant question the designer is already adjudicating as **Q1 of #56** — implementing it here would pre-empt that ruling.
-2. **Make the loss explicit instead of silent (`FAILED_SAFE`/`SUBMISSION_AUTHORITY_LOST`).** Conservative and contract-adjacent: the run stops visibly, the Human sees it, nothing resumes. *Effect*: fixes the "sits in an intermediate phase" complaint and the invisibility, not the liveness. *Cost*: changes fail-safe policy, and would need to not fire spuriously for legitimately-active conversations.
+1. **Emit `AUTHORITY_CHANGED` when reconcile is refused on a foreign authority.** The reducer already maps it to `FAILED_SAFE` with `stopReason = "AUTHORITY_CHANGED"` ([continuation-run.ts:223-228](src/core/continuation-run.ts)) and it is already unit-tested; nothing emits it today (M1b). This is the *least invented* option: it uses an existing, reviewed contract element rather than adding one, and it directly fixes the loudest part of the report — the run stops **visibly** instead of sitting in an intermediate phase forever. *Effect*: honest fail-safe. *Cost*: it does not restore liveness, and it makes a currently-silent state into a user-visible failure, so the threshold for "foreign authority" must be right or legitimately-active runs would fail safe spuriously.
+
+### M1 — restoring liveness, but it changes Authority semantics → proposal
+
+2. **Re-claim on reconcile (restores liveness).** Let the steady-state path re-establish authority when reconcile reports an authority mismatch, reusing the existing `recover` semantics (recency-based takeover) rather than requiring an exact match. *Effect*: a run whose conversation is revisited resumes and completes its round. *Cost*: authority changes hands more often, which is precisely the single-claimant question the designer is already adjudicating as **Q1 of #56** — implementing it here would pre-empt that ruling.
+3. **Make the loss explicit instead of silent (`FAILED_SAFE`).** Conservative: the run stops visibly, nothing resumes. *Effect*: fixes the invisibility, not the liveness. *Cost*: fail-safe policy. (M1b above is the same idea, done through the contract's own existing event, and is preferable to inventing a new stop reason.)
 
 Narrowest variant worth considering: clear the **volatile** `activeSubmission` when reconcile reports an authority mismatch, so the *existing, unchanged* `restoreActiveSubmission → recover` path can run on the next poll. It changes no stored semantics — but it changes *when* authority is taken over, so it is still a Q1/#56 dependency.
+
+1 and 2 are close to complementary: 2 restores liveness and 1 makes any residual loss honest. The designer may reasonably want both.
 
 ### M2 — minimal, semantics-preserving, but partial
 
@@ -214,7 +227,7 @@ Extend `restoreActiveSubmission` to also consider an operation in `COMPLETED` wh
 
 Making `READY_TO_GO` auto-dispatch changes what state represents automatic authorization. **Concrete counterexample.** Suppose `READY_TO_GO` acquires an auto-dispatch driver:
 
-- The run's **first** round is created in `READY_TO_GO` by `startBoundedRun` and is dispatched today by the Human's `[Send go]`. Auto-dispatch sends it with no human in the loop, silently converting every BCR run from human-gated to autonomous and consuming budget that the Human never authorized.
+- Round 1 is dispatched by `startBoundedRun`'s own async chain: it creates the run and then calls `await issueRunGo(app)` itself ([index.ts:1709](src/content/index.ts)). So round 1 is **not** Human-gated by a separate `[Send go]` click — it is gated by the Human pressing start and the chain reaching :1709. Today, if that chain is interrupted in that window, the run sits at `READY_TO_GO` and the Human can still see it and deliberately abandon it; `[Send go]` ([index.ts:1347](src/content/index.ts)) is the recovery. An auto-dispatch driver would instead **send** in that window — converting a silent, abandonable state into an unintended provider message and a consumed budget unit.
 - `HUMAN_CONTINUE` also lands in `READY_TO_GO` ([continuation-run.ts:191-197](src/core/continuation-run.ts)) — the ASSISTED surface. Auto-dispatch erases the ASSISTED/AUTO distinction at the durable layer.
 - A run interrupted between `EVALUATION_PASSED` and the dispatch claim would, on the next reconstruction, auto-send a second "go" for a round whose previous generation may still be streaming — a duplicate GO, violating single-in-flight, with the losing side consuming a budget unit it cannot refund.
 
@@ -227,7 +240,7 @@ Injecting a `lock` in the four stale test files (or adding one shared setup file
 ### Designer questions
 
 1. M1: may the steady-state reconcile path re-claim authority (recency takeover), or must a takeover remain exclusive to the dispatch/recovery paths? (Overlaps #56 Q1.)
-2. M1: if not, should authority loss become an explicit `FAILED_SAFE` reason?
+2. M1b: may the content script emit the contract's existing `AUTHORITY_CHANGED` when reconcile is refused on a foreign authority — i.e. is a foreign-authority refusal the condition that event was written for? If yes, what is the correct threshold, so a legitimately-active conversation does not fail safe spuriously?
 3. M2: is "op `COMPLETED` + run still pending" a case reconciliation must repair, or is it expected to be impossible by construction?
 4. M3: may `READY_TO_GO` carry a durable AUTO authorization marker (a new epoch), with auto-dispatch permitted only when that marker is present and unconsumed?
 
@@ -257,8 +270,11 @@ Reproduced twice, including with both files added by this task removed from the 
 | `tests/background-continuation-run.test.ts` | 0 | 5 failed |
 | `tests/submission-operation.test.ts` | 14 | pass |
 | `tests/goal-reanchor.test.ts` | 1 | pass |
+| `tests/goal-reanchor-runtime.test.ts` | 7 | pass |
 
-**Decisive confirmation.** Supplying a conforming `navigator.locks` from a temporary vitest setup file — no other change — takes the suite from 27 failed / 459 passed to **514 passed (39/39 files)**, and the dominant error signature (`submission_authority_unavailable`, 7 occurrences from `submission-operation.ts:465`) disappears entirely. The scratch probe config and setup file were deleted afterwards; the tree contains only the two files this task adds.
+The failing set is exactly the four zero-injection files.
+
+**Decisive confirmation.** Supplying a conforming `navigator.locks` from a temporary vitest setup file — no other change — removes all 27 failures; the dominant error signature (`submission_authority_unavailable`, from `submission-operation.ts:465`) disappears entirely, and the remaining 5 (`background-continuation-run.test.ts`) were an artifact of the probe's own `request` arity: with the two-argument call shape Chrome also accepts, **the whole suite passes**. Note the two runs are not the same test set: the base run used `--exclude tests/content-ui-smoke.test.ts` (38 files / 486 tests), while the confirmation run deliberately dropped the exclusion (39 files / 514 tests, 486 + 28 = 514). The scratch probe config and setup file were deleted afterwards; the tree contains only the two files this task adds.
 
 **Impact.** No live product impact is demonstrated: Chrome content scripts and MV3 service workers both have `navigator.locks`, and the live dogfood instance reconciles normally. The real cost is that **the release-parity test command fails on `main`**, so the authority/continuation subsystem currently has no green regression protection — which is exactly the subsystem M1 and M3 live in, and it means any future fix in this area has no working guard rail until M4 is repaired. Classified `IMPLEMENTATION_DETAIL` (test infrastructure), reported separately from the M1 defect; not part of the background-dependence failure.
 
@@ -273,18 +289,29 @@ The harness itself is a read-only Node script: it opens no new dependencies, sen
 1. **Exact base SHA**: `570331278f54d5c54d00771c03d5f1302aa6bb72`.
 2. **Reproduction result**: the *recovery* half is reproduced — `FAIL_REPRODUCED`. A live AUTO_X5 run stranded at `ACTIVE/STABILIZING` 1/5 did not advance after its tab was returned to the foreground and kept at a restored 1 Hz observation cadence for 90 s. The *trigger* half (switch-away causes the wedge) is not reproduced, because driving it requires sending the provider a "go" message (forbidden here); scenarios B, D, E, H are `NOT_VERIFIED`.
 3. **Failure edge**: `reconcile` of an in-flight `SubmissionOperation` when `noosSubmissionAuthority.logicalThreadId` differs from the operation's `logicalThreadId` — [submission-operation.ts:273](src/core/submission-operation.ts) — evaluated before any evidence, with no re-claim path in the content script while `activeSubmission` is set ([index.ts:3310](src/content/index.ts)).
-4. **Root cause**: single global submission authority + authority-gated reconciliation that never re-establishes authority + recovery reachable only through the volatile `activeSubmission`. A conversation that claims authority permanently blocks every other conversation's in-flight operation; the run then waits forever in an intermediate phase with no escalation path, because the watcher escalates only on `BROKEN`.
+4. **Root cause**: single global submission authority + authority-gated reconciliation that never re-establishes authority + recovery reachable only through the volatile `activeSubmission`. A conversation that claims authority permanently blocks every other conversation's in-flight operation; the run then waits forever in an intermediate phase. It never fails safe because the two escalation routes both miss it: the watcher escalates only on `BROKEN` ([continuation-run.ts:141-145](src/core/continuation-run.ts)), and the contract's own `AUTHORITY_CHANGED` event (M1b) is defined and tested but never emitted.
 5. **Classification**: primary `IMPLEMENTATION_BUG` (M1, same family as #56/PR #57 F1); secondary structural `IMPLEMENTATION_DETAIL` on a contract question (M3); M2 `IMPLEMENTATION_BUG`, minor. Explicitly not `PROVIDER_FACT`, not `PRODUCT_TRADEOFF`, and **not** a timer-throttling problem.
 6. **Instrumentation evidence**: [`scripts/bcr-bg-timeline.mjs`](scripts/bcr-bg-timeline.mjs) plus the captures in §2 — the durable transition that committed (`OPERATION_ACCEPTED`, op → `OBSERVED_ACCEPTED`, run → `STABILIZING`) and the one that never did (`OP_COMPLETED` → `OPERATION_COMPLETED` → `EVALUATING`), with `opsRev` +1/s proving a once-per-second reconcile attempt that changes nothing.
 7. **Code modified**: no. No extension source file was touched. One new read-only diagnostic script was added: `scripts/bcr-bg-timeline.mjs`.
 8. **If modified**: not applicable. Semantic diff: none. (`scripts/bcr-bg-timeline.mjs` is new, read-only, sends no provider message, and is the only file added.)
-9. **Tests**: `npm run typecheck` pass; `npm run build` pass; `npm test` **fails at the base SHA with 27 failed / 459 passed**, a pre-existing defect (M4: four test files do not inject the `lock` that `withSubmissionAuthorityLock` requires, and the node test environment has no `navigator.locks`). Supplying `navigator.locks` takes the suite to 514/514 passing, confirming M4 is the sole cause. M4 is reported separately and is not part of the background-dependence failure; it is worth fixing first, because it means this subsystem has no working regression protection today.
+9. **Tests**: `npm run typecheck` pass; `npm run build` pass; `npm test` **fails at the base SHA with 27 failed / 459 passed**, a pre-existing defect (M4: four test files do not inject the `lock` that `withSubmissionAuthorityLock` requires, and the node test environment has no `navigator.locks`). Supplying `navigator.locks` removes all 27 failures and makes the suite fully green (39 files / 514 tests — a different file set from the base run, which excluded `content-ui-smoke`), confirming M4 is the sole cause. M4 is reported separately and is not part of the background-dependence failure; it is worth fixing first, because it means this subsystem has no working regression protection today.
 10. **Designer needed**: **yes.** M1's fix changes Authority semantics (and overlaps #56 Q1); M3 hits the brief's explicit stop condition (it changes what `READY_TO_GO` represents and whether it may auto-dispatch). Four questions are put to the designer in §6.
 11. **Ready for independent review**: yes, as a diagnosis-and-proposal artifact — with the explicit caveat that scenarios B, D, E and H carry `NOT_VERIFIED` status and are not claimed as reproduced.
 
 ---
 
-## 9. Evidence index
+## 9. Review record
+
+| Round | Reviewer | Verdict | Head | Integrated |
+|---|---|---|---|---|
+| 1 | independent reviewer, read-only toolset, model `fable` | `REQUEST_CHANGES` (6 findings, all `NON_BLOCKING`) | `45d4ed04b0a15ff55f7a95b3db90ba90b15271d0` | §0/§5 causal claim tightened to match §3; **M1b added** (`AUTHORITY_CHANGED` is dead code, now the first Phase B candidate); §7 table corrected to three `lock`-injecting files and the two runs' differing file sets stated; M3 counterexample bullet (a) corrected against `index.ts:1709`; §9 content-disclosure scoped to the new harness and `state-dump.txt` disclosed; §0 refined so authority takeover requires an active claim, not activity |
+| 2 | same reviewer (incremental) | see PR thread | — | — |
+
+Round 1's own verified/unverified breakdown: the M1 code chain, M2, M3 (four `issueRunGo` sites, none durable-state-driven; only `EVALUATING` auto-resumes on load), the `LIVE` capture from the saved logs, the M4 counts and the typecheck result were independently re-derived and confirmed. The reviewer could not re-drive Chrome (no re-execution of the foreground experiment) and did not re-run the `navigator.locks` confirmation or the build.
+
+---
+
+## 10. Evidence index
 
 | Artifact | Path |
 |---|---|
@@ -295,4 +322,6 @@ The harness itself is a read-only Node script: it opens no new dependencies, sen
 | Visibility-transition driver (`Page.bringToFront` only) | `/tmp/bcr-cdp/bring-front.mjs` |
 | Earliest (stalled) captures, kept for contrast | `/tmp/bcr-cdp/timeline-1.log`, `timeline-2.log` |
 
-Captures are kept outside the repository: they contain live conversation reference prefixes from the dogfood browser. No conversation content, prompts or assistant messages are recorded anywhere by any script in this task.
+Captures are kept outside the repository: they contain live conversation reference prefixes from the dogfood browser.
+
+**Content-handling disclosure.** The scripts written for *this* task — `scripts/bcr-bg-timeline.mjs`, `sample-revision.mjs`, `dump-op-authority.mjs`, `bring-front.mjs` — record only counts, opaque ids, and refs sliced to 8 characters; none reads or stores prompt or assistant text. One earlier artifact from the same investigation, `/tmp/bcr-cdp/state-dump.txt` (16 KB, outside the repository), does contain **short excerpts of assistant messages** from the observed conversations, used to identify which conversation a stranded run belonged to. No complete conversation, and no user-authored prompt text, was captured anywhere; that file is not committed and is not an input to any claim in this report. It should be deleted when the investigation is closed.
