@@ -1511,24 +1511,36 @@ async function dispatchHumanGo(payload: string, context: PageContext, workItemId
       }
     }
   );
-  const result = await humanGo.execute({
-    operationId,
-    workItemId,
-    logicalThreadId: `thread:${observation.providerConversationRef}`,
-    payload,
-    payloadFingerprint: fingerprintText(payload),
-    preSubmitBaseline: baseline,
-    providerConversationRef: observation.providerConversationRef,
-    targetCarrierRef: observation.carrierRef,
-    bindingEpoch: observation.sourceEpoch,
-    leaseGeneration: observation.sourceEpoch,
-    leaseOwnerRef: observation.executionInstanceRef,
-    explicitGo: true,
-    sourceEpoch: observation.sourceEpoch,
-    sourceObservedAt: observation.observedAt,
-    now
-  });
+  let result: Awaited<ReturnType<typeof humanGo.execute>>;
+  try {
+    result = await humanGo.execute({
+      operationId,
+      workItemId,
+      logicalThreadId: `thread:${observation.providerConversationRef}`,
+      payload,
+      payloadFingerprint: fingerprintText(payload),
+      preSubmitBaseline: baseline,
+      providerConversationRef: observation.providerConversationRef,
+      targetCarrierRef: observation.carrierRef,
+      bindingEpoch: observation.sourceEpoch,
+      leaseGeneration: observation.sourceEpoch,
+      leaseOwnerRef: observation.executionInstanceRef,
+      explicitGo: true,
+      sourceEpoch: observation.sourceEpoch,
+      sourceObservedAt: observation.observedAt,
+      now
+    });
+  } catch (error) {
+    // Ledger throws (e.g. operation_id_reuse_conflict on a stale prepared op)
+    // must surface as a blocked attempt, never as an uncaught rejection that
+    // silently stalls a run at READY_TO_GO.
+    const message = error instanceof Error ? error.message : String(error);
+    viewState.message = `${COPY[viewState.locale].bcrStartFailed}: ${message}`;
+    options.onResult?.("BLOCKED");
+    return false;
+  }
   if (result.status === "BLOCKED") {
+    viewState.message = `${COPY[viewState.locale].bcrStartFailed}: ${result.reason}`;
     options.onResult?.("BLOCKED");
     return false;
   }
@@ -1744,7 +1756,11 @@ async function issueRunGo(app: HTMLElement): Promise<void> {
     return;
   }
   const round = gate.run ? gate.run.consumedContinuations + 1 : bcrRun.consumedContinuations + 1;
-  const operationId = `${bcrRun.runId}:go:${round}`;
+  // Per-attempt id: a stale PREPARED op from a blocked earlier attempt must
+  // never trip the ledger's operation-id reuse conflict on a Human retry,
+  // while retries inside one attempt still share the id for lost-response
+  // dedup.
+  const operationId = `${bcrRun.runId}:go:${round}-${Date.now().toString(36)}`;
   bcrExpectedUserCount = (observation.userMessageCount ?? 0) + 1;
   // Soft re-anchor V0: after three plain "go" rounds, later rounds restate the
   // frozen run goal so deep local reasoning does not drift from it.
