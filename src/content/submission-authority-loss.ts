@@ -8,10 +8,18 @@
  * the Run.
  *
  * Deliberately only "SUPERSEDED" fires. "ABSENT" means no authority entry
- * exists for the operation's thread; an operation that reached DISPATCHING
- * always had one and nothing in the extension deletes one, so an absent entry
- * is never evidence of loss. Firing on it would arm a fail-safe with no true
- * positive producer while risking a false one. It stays a diagnosis.
+ * exists for the operation's thread. Nothing in the extension deletes an
+ * entry, so for an operation dispatched under the per-thread model an absent
+ * entry is never evidence of loss: firing on it would arm a fail-safe with no
+ * true positive producer while risking a false one. It stays a diagnosis.
+ *
+ * One producer predates that model. The flat-to-map migration folds a legacy
+ * browser-global slot forward under its own thread alone, so an operation
+ * stranded by the old cross-Run contention reads ABSENT for its thread with no
+ * way to re-acquire. That case wedges identically before this change — it is
+ * migratory, not live — and it is recorded for the designer rather than wired
+ * to a trigger, because firing on ABSENT would change the semantics of a
+ * fail-safe that has already been ruled on once.
  *
  * The same reasoning excludes a foreign thread's authority: after the
  * per-thread keying there is no shared slot to be taken over, and even before
