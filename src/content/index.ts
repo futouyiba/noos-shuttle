@@ -3424,6 +3424,12 @@ async function reconcileActiveSubmission(observation: CarrierObservation): Promi
     if (authorityLoss.fire) {
       await captureBcrCandidate("RUN_ABORTED", "pending", "AUTHORITY_CHANGED");
       await applyContinuationRunEvent({ type: "AUTHORITY_CHANGED" });
+      // Hand the orphaned operation back to the generic recovery path. Leaving it
+      // active keeps reconciling a superseded slot that no Run owns any more, and
+      // every one of those attempts rewrites the ledger and bumps the revision.
+      if (activeSubmission?.operationId === active.operationId) {
+        activeSubmission = null;
+      }
       return;
     }
     if (result.outcome === "PROVEN_NOT_ACCEPTED") {
