@@ -51,8 +51,14 @@ export type SubmissionOperationMutation =
  * returned from the point the gate is evaluated, and absent on results that
  * return earlier (unknown operation; a state that no longer owns execution, so
  * the Run's fate is already decided). ABSENT is diagnostic only and must never
- * drive a fail-safe: an operation that reached DISPATCHING always had a slot and
- * nothing deletes one, so an absent slot carries no evidence of real loss.
+ * drive a fail-safe: under per-thread keying an operation that reached
+ * DISPATCHING has a slot for its own thread and nothing deletes one, so an
+ * absent slot carries no evidence of real loss. The one exception predates that
+ * keying — the flat-to-map migration folds a legacy global slot under its own
+ * thread alone, stranding an operation whose slot was taken before the upgrade
+ * on ABSENT with no re-acquisition path. That case wedges identically before
+ * the change, so it is recorded rather than wired to a trigger; the firing
+ * policy lives in content/submission-authority-loss.ts.
  */
 export type SubmissionReconcileResult = { outcome: "PROVEN_ACCEPTED" | "PROVEN_NOT_ACCEPTED" | "STILL_AMBIGUOUS"; authority?: "OK" | "ABSENT" | "SUPERSEDED"; operation?: SubmissionOperation };
 export interface SubmissionOperationStore {
