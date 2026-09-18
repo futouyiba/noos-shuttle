@@ -5,7 +5,7 @@ function baseline() { return { routeRef: "route:a", assistantMessageCount: 1, us
 function context(carrier = "browser-tab:1", conversation = "conversation:a", logicalThreadId = "t1", sourceEpoch = 0, sourceObservedAt = 1): SubmissionClaimContext { return { logicalThreadId, providerConversationRef: conversation, bindingEpoch: 1, leaseGeneration: 1, leaseOwnerRef: "owner-1", targetCarrierRef: carrier, carrierState: "READY", logicalControl: "CONTINUE", explicitGo: true, sourceEpoch, sourceObservedAt }; }
 function authority(value = context()) { return { ...value, authorityGeneration: 1, authorityEstablishedAt: value.sourceObservedAt }; }
 function input(operationId: string, carrier = "browser-tab:1", providerConversationRef = "conversation:a") { const fence = context(carrier, providerConversationRef); return { operationId, operationKind: "GO" as const, workItemId: "w1", logicalThreadId: "t1", targetCarrierRef: carrier, providerConversationRef, dispatchFence: fence, payloadFingerprint: "ce8", payload: "go", preSubmitBaseline: baseline() }; }
-function memoryStore(authorityValue = authority()) { let value: unknown; return { get: async (_key?: string) => value, set: async (next: Record<string, unknown>) => { value = next; }, getAuthority: async () => authorityValue, ensureAuthority: async () => undefined }; }
+function memoryStore(authorityValue = authority()) { let value: unknown; return { get: async (_key?: string) => value, set: async (next: Record<string, unknown>) => { value = next; }, getAuthority: async (logicalThreadId: string) => logicalThreadId === authorityValue.logicalThreadId ? authorityValue : undefined, ensureAuthority: async () => undefined }; }
 async function recordDispatchReceipt(ledger: SubmissionOperationLedger, operationId: string, fence = context(), claimedAt = 10): Promise<void> {
   await ledger.record(operationId, "DISPATCHING", {
     now: claimedAt + 1,
@@ -149,7 +149,7 @@ describe("SubmissionOperationLedger", () => {
       second.recover("concurrent-recovery", contextB, 21)
     ]);
     const finalOperation = await first.get("concurrent-recovery");
-    const finalAuthority = (backing.noosSubmissionAuthority ?? {}) as SubmissionAuthority;
+    const finalAuthority = ((backing.noosSubmissionAuthority ?? {}) as Record<string, SubmissionAuthority>)["t1"];
     expect(finalAuthority.leaseOwnerRef).toBe("owner-b");
     expect(finalAuthority.sourceObservedAt).toBe(21);
     expect(finalOperation?.dispatchFence?.leaseOwnerRef).toBe("owner-b");
@@ -622,7 +622,7 @@ describe("SubmissionOperationLedger", () => {
       lock: withSharedLock
     }));
     await reloaded.initializeAuthority(newContext);
-    const authority = (backing.noosSubmissionAuthority ?? {}) as Partial<SubmissionClaimContext> & { authorityGeneration?: number };
+    const authority = ((backing.noosSubmissionAuthority ?? {}) as Record<string, Partial<SubmissionClaimContext> & { authorityGeneration?: number }>)["t1"];
     expect(authority?.leaseOwnerRef).toBe("owner-2");
     expect(authority?.authorityGeneration).toBe(2);
 
@@ -850,7 +850,7 @@ describe("SubmissionOperationLedger", () => {
     let currentAuthority = authority(context());
     const store = {
       ...memoryStore(),
-      getAuthority: async () => currentAuthority
+      getAuthority: async (logicalThreadId: string) => logicalThreadId === currentAuthority.logicalThreadId ? currentAuthority : undefined
     };
     const ledger = new SubmissionOperationLedger(store);
     await ledger.prepare({ ...input("fs-1"), now: 10 });
@@ -910,7 +910,7 @@ describe("SubmissionOperationLedger", () => {
       { id: "st-cancelled", reach: async (ledger: SubmissionOperationLedger, id: string) => ledger.record(id, "CANCELLED", { now: 11 }) }
     ] as const) {
       let currentAuthority = authority(context());
-      const store = { ...memoryStore(), getAuthority: async () => currentAuthority };
+      const store = { ...memoryStore(), getAuthority: async (logicalThreadId: string) => logicalThreadId === currentAuthority.logicalThreadId ? currentAuthority : undefined };
       const ledger = new SubmissionOperationLedger(store);
       await ledger.prepare({ ...input(setup.id), now: 10 });
       await ledger.claim(setup.id, context(), 10);
@@ -937,5 +937,155 @@ describe("SubmissionOperationLedger", () => {
     await mismatchedBaseline.prepare({ ...input("rt-6"), now: 10 });
     expect(await mismatchedBaseline.retarget("rt-6", rolledOver, { ...baseline(), conversationRef: "conversation:old" }, 50)).toBeUndefined();
     expect((await mismatchedBaseline.retarget("rt-6", rolledOver, { ...baseline(), conversationRef: "conversation:b" }, 50))?.providerConversationRef).toBe("conversation:b");
+  });
+});
+
+describe("per-thread submission authority", () => {
+  function ledgers(backing: Record<string, unknown>): [SubmissionOperationLedger, SubmissionOperationLedger] {
+    const storage = {
+      get: async (key: string) => ({ [key]: backing[key] }),
+      set: async (value: Record<string, unknown>) => { Object.assign(backing, value); }
+    };
+    const make = () => new SubmissionOperationLedger(createChromeSubmissionStore(storage, { claimViaCoordinator: false, lock: withSharedLock }));
+    return [make(), make()];
+  }
+  function threadContext(carrier: string, conversation: string, logicalThreadId: string, leaseOwnerRef: string, sourceObservedAt: number): SubmissionClaimContext {
+    return { ...context(carrier, conversation, logicalThreadId, 0, sourceObservedAt), leaseOwnerRef };
+  }
+  function threadInput(operationId: string, ctx: SubmissionClaimContext) {
+    return { ...input(operationId, ctx.targetCarrierRef, ctx.providerConversationRef), logicalThreadId: ctx.logicalThreadId, dispatchFence: ctx };
+  }
+  function authorities(backing: Record<string, unknown>): Record<string, SubmissionAuthority> {
+    return (backing.noosSubmissionAuthority ?? {}) as Record<string, SubmissionAuthority>;
+  }
+  function acceptedObservation(ctx: SubmissionClaimContext, observedAt: number) {
+    return { ...baseline(), conversationRef: ctx.providerConversationRef, userMessageCount: 2, observedAt, sourceEpoch: 0, generationActive: true, dispatchFence: ctx };
+  }
+
+  it("lets two threads hold authority at once and still reconciles the first", async () => {
+    const backing: Record<string, unknown> = {};
+    const [ledgerA, ledgerB] = ledgers(backing);
+    const threadA = threadContext("browser-tab:1", "conversation:a", "tA", "owner-a", 10);
+    const threadB = threadContext("browser-tab:2", "conversation:b", "tB", "owner-b", 20);
+
+    await ledgerA.initializeAuthority(threadA);
+    await ledgerA.prepare(threadInput("go-a", threadA));
+    expect((await ledgerA.claim("go-a", threadA, 11))?.state).toBe("DISPATCHING");
+
+    // An unrelated conversation's GO must leave A's slot alone and still claim.
+    await ledgerB.initializeAuthority(threadB);
+    await ledgerB.prepare(threadInput("go-b", threadB));
+    expect((await ledgerB.claim("go-b", threadB, 12))?.state).toBe("DISPATCHING");
+
+    expect(authorities(backing).tA.leaseOwnerRef).toBe("owner-a");
+    expect(authorities(backing).tB.leaseOwnerRef).toBe("owner-b");
+
+    // The reported wedge: with one shared slot this stayed STILL_AMBIGUOUS forever.
+    const accepted = await ledgerA.reconcile("go-a", acceptedObservation(threadA, 30));
+    expect(accepted.authority).toBe("OK");
+    expect(accepted.outcome).toBe("PROVEN_ACCEPTED");
+  });
+
+  it("fences same-thread authority rotation without touching another thread", async () => {
+    const backing: Record<string, unknown> = {};
+    const [ledger] = ledgers(backing);
+    const threadA1 = threadContext("browser-tab:1", "conversation:a", "tA", "owner-a", 10);
+    const threadB = threadContext("browser-tab:2", "conversation:b", "tB", "owner-b", 15);
+    const threadA2 = { ...threadA1, leaseOwnerRef: "owner-a2", sourceObservedAt: 20 };
+
+    await ledger.initializeAuthority(threadA1);
+    await ledger.initializeAuthority(threadB);
+    await ledger.initializeAuthority(threadA2);
+
+    expect(Object.keys(authorities(backing)).sort()).toEqual(["tA", "tB"]);
+    expect(authorities(backing).tA.leaseOwnerRef).toBe("owner-a2");
+    expect(authorities(backing).tA.authorityGeneration).toBe(2);
+    expect(authorities(backing).tB.leaseOwnerRef).toBe("owner-b");
+    expect(authorities(backing).tB.authorityGeneration).toBe(1);
+
+    await ledger.prepare(threadInput("go-old", threadA1));
+    expect(await ledger.claim("go-old", threadA1, 21)).toBeUndefined();
+    await ledger.prepare(threadInput("go-new", threadA2));
+    expect((await ledger.claim("go-new", threadA2, 22))?.state).toBe("DISPATCHING");
+  });
+
+  it("drops a stored entry whose key is not its own thread", async () => {
+    const foreign = authority(threadContext("browser-tab:9", "conversation:z", "tZ", "owner-z", 5));
+    const backing: Record<string, unknown> = { noosSubmissionAuthority: { tNotZ: foreign } };
+    const [ledger] = ledgers(backing);
+
+    await ledger.initializeAuthority(threadContext("browser-tab:1", "conversation:a", "tA", "owner-a", 10));
+    expect(Object.keys(authorities(backing))).toEqual(["tA"]);
+  });
+
+  it("reads a legacy flat record as its own thread and folds it forward", async () => {
+    const threadA = threadContext("browser-tab:1", "conversation:a", "tA", "owner-a", 10);
+    const backing: Record<string, unknown> = { noosSubmissionAuthority: authority(threadA) };
+    const [ledger] = ledgers(backing);
+
+    await ledger.prepare(threadInput("go-legacy", threadA));
+    expect((await ledger.claim("go-legacy", threadA, 11))?.state).toBe("DISPATCHING");
+
+    await ledger.initializeAuthority({ ...threadA, leaseOwnerRef: "owner-a2", sourceObservedAt: 20 });
+    expect(Object.keys(authorities(backing))).toEqual(["tA"]);
+    expect(authorities(backing).tA.leaseOwnerRef).toBe("owner-a2");
+    // Continued from the folded legacy record rather than restarting at 1.
+    expect(authorities(backing).tA.authorityGeneration).toBe(2);
+  });
+
+  it("keeps another thread's entry intact when one thread recovers", async () => {
+    const backing: Record<string, unknown> = {};
+    const [ledger, other] = ledgers(backing);
+    const threadA = threadContext("browser-tab:1", "conversation:a", "tA", "owner-a", 10);
+    const threadB = threadContext("browser-tab:2", "conversation:b", "tB", "owner-b", 20);
+
+    await ledger.initializeAuthority(threadA);
+    await other.initializeAuthority(threadB);
+    await ledger.prepare(threadInput("go-a", threadA));
+    await ledger.claim("go-a", threadA, 11);
+
+    const recovered = await ledger.recover("go-a", { ...threadA, leaseOwnerRef: "owner-a2", sourceObservedAt: 30 }, 30);
+    expect(recovered?.dispatchFence?.leaseOwnerRef).toBe("owner-a2");
+    expect(authorities(backing).tA.leaseOwnerRef).toBe("owner-a2");
+    expect(authorities(backing).tB.leaseOwnerRef).toBe("owner-b");
+  });
+
+  it("diagnoses the authority gate as OK, SUPERSEDED or nothing at all", async () => {
+    const backing: Record<string, unknown> = {};
+    const [ledger] = ledgers(backing);
+    const threadA = threadContext("browser-tab:1", "conversation:a", "tA", "owner-a", 10);
+    await ledger.initializeAuthority(threadA);
+    await ledger.prepare(threadInput("go-a", threadA));
+    await ledger.claim("go-a", threadA, 11);
+    const observation = acceptedObservation(threadA, 12);
+
+    const ok = await ledger.reconcile("go-a", observation);
+    expect(ok.authority).toBe("OK");
+    expect(ok.outcome).toBe("PROVEN_ACCEPTED");
+
+    // Returns before the gate, so it carries no diagnosis at all.
+    expect((await ledger.reconcile("missing", observation)).authority).toBeUndefined();
+
+    await ledger.initializeAuthority({ ...threadA, leaseOwnerRef: "owner-a2", sourceObservedAt: 40 });
+    const superseded = await ledger.reconcile("go-a", { ...observation, observedAt: 50 });
+    expect(superseded.authority).toBe("SUPERSEDED");
+    expect(superseded.outcome).toBe("STILL_AMBIGUOUS");
+  });
+
+  it("reports ABSENT when the operation's own slot is gone", async () => {
+    const backing: Record<string, unknown> = {};
+    const [ledger] = ledgers(backing);
+    const threadA = threadContext("browser-tab:1", "conversation:a", "tA", "owner-a", 10);
+    await ledger.initializeAuthority(threadA);
+    await ledger.prepare(threadInput("go-a", threadA));
+    await ledger.claim("go-a", threadA, 11);
+
+    // Nothing in the extension deletes an authority entry, so ABSENT has no
+    // production producer; remove the slot by hand to pin the diagnosis itself.
+    delete (backing.noosSubmissionAuthority as Record<string, unknown>).tA;
+
+    const absent = await ledger.reconcile("go-a", acceptedObservation(threadA, 12));
+    expect(absent.authority).toBe("ABSENT");
+    expect(absent.outcome).toBe("STILL_AMBIGUOUS");
   });
 });

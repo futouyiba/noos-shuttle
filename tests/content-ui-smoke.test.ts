@@ -506,7 +506,7 @@ describe("content script smoke flow", () => {
     const recovery = await page.evaluate(async () => {
       const backing = (globalThis as unknown as { realLedgerBacking: Record<string, any> }).realLedgerBacking;
       const operation = backing.noosSubmissionOperations[0];
-      const existingAuthority = backing.noosSubmissionAuthority;
+      const existingAuthority = backing.noosSubmissionAuthority[operation.logicalThreadId];
       const oldContext = {
         ...existingAuthority,
         carrierState: "READY",
@@ -559,12 +559,31 @@ describe("content script smoke flow", () => {
         type: "NOOS_SUBMISSION_MUTATION",
         mutation: { type: "claim", operationId: "old-instance-attempt", context: oldContext, now: newContext.sourceObservedAt + 1 }
       });
+      // The authority diagnosis has to survive the worker round-trip; the value
+      // itself depends on the fence this stale observation carries.
+      const wired = await send({
+        type: "NOOS_SUBMISSION_MUTATION",
+        mutation: {
+          type: "reconcile",
+          operationId: operation.operationId,
+          observation: {
+            conversationRef: operation.providerConversationRef,
+            routeRef: operation.preSubmitBaseline.routeRef,
+            assistantMessageCount: operation.preSubmitBaseline.assistantMessageCount,
+            userMessageCount: operation.preSubmitBaseline.userMessageCount,
+            observedAt: operation.preSubmitBaseline.observedAt,
+            sourceEpoch: 0,
+            dispatchFence: operation.dispatchFence
+          }
+        }
+      });
       return {
         staleRecovery,
         wrongGeneration,
         recovered,
         oldPrepare,
         oldClaim,
+        wired,
         authority: backing.noosSubmissionAuthority,
         operation: backing.noosSubmissionOperations[0]
       };
@@ -577,6 +596,8 @@ describe("content script smoke flow", () => {
     expect(recovery.recovered.result.dispatchFence.leaseOwnerRef).toBe("observer-reloaded");
     expect(recovery.oldPrepare.ok).toBe(true);
     expect(recovery.oldClaim.ok).toBe(false);
+    expect(recovery.wired.ok).toBe(true);
+    expect(["OK", "ABSENT", "SUPERSEDED"]).toContain(recovery.wired.result.authority);
     expect(recovery.operation.dispatchFence.leaseOwnerRef).toBe("observer-reloaded");
     await page.close();
   }, 15_000);

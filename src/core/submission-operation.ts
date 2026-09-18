@@ -30,6 +30,12 @@ export interface SubmissionAuthority extends SubmissionClaimContext {
   authorityGeneration: number;
   authorityEstablishedAt: number;
 }
+/**
+ * Per-thread authority slots, keyed by logicalThreadId. One Run holds and renews
+ * only its own slot, so an unrelated conversation's GO can no longer supersede it.
+ * INVARIANT: every key equals its own value's logicalThreadId.
+ */
+export type SubmissionAuthorityMap = Record<string, SubmissionAuthority>;
 export type SubmissionOperationMutation =
   | { type: "list" }
   | { type: "initialize_authority"; context: SubmissionClaimContext }
@@ -40,11 +46,19 @@ export type SubmissionOperationMutation =
   | { type: "record"; operationId: string; state: SubmissionOperationState; details: { now?: number; error?: string; resultingTurnRef?: string; dispatchReceipt?: SubmissionDispatchReceipt } }
   | { type: "rearm"; operationId: string; baseline: SubmissionBaseline; fence: SubmissionDispatchFence; now: number }
   | { type: "reconcile"; operationId: string; observation: SubmissionObservation };
-export type SubmissionReconcileResult = { outcome: "PROVEN_ACCEPTED" | "PROVEN_NOT_ACCEPTED" | "STILL_AMBIGUOUS"; operation?: SubmissionOperation };
+/**
+ * `authority` is the authority gate's verdict. It is present on every result
+ * returned from the point the gate is evaluated, and absent on results that
+ * return earlier (unknown operation; a state that no longer owns execution, so
+ * the Run's fate is already decided). ABSENT is diagnostic only and must never
+ * drive a fail-safe: an operation that reached DISPATCHING always had a slot and
+ * nothing deletes one, so an absent slot carries no evidence of real loss.
+ */
+export type SubmissionReconcileResult = { outcome: "PROVEN_ACCEPTED" | "PROVEN_NOT_ACCEPTED" | "STILL_AMBIGUOUS"; authority?: "OK" | "ABSENT" | "SUPERSEDED"; operation?: SubmissionOperation };
 export interface SubmissionOperationStore {
   get(key?: string): Promise<unknown>;
   set(value: Record<string, unknown>): Promise<unknown>;
-  getAuthority?: () => Promise<SubmissionAuthority | undefined>;
+  getAuthority?: (logicalThreadId: string) => Promise<SubmissionAuthority | undefined>;
   ensureAuthority?: (context: SubmissionClaimContext) => Promise<void>;
   recover?: (operationId: string, context: SubmissionClaimContext, now: number) => Promise<SubmissionOperation | undefined>;
   dispatch?: (mutation: SubmissionOperationMutation) => Promise<unknown>;
@@ -95,8 +109,8 @@ export class SubmissionOperationLedger {
     if (!isValidClaimContext(context)) return undefined;
     if (this.store.dispatch) return this.store.dispatch({ type: "claim", operationId, context, now }) as Promise<SubmissionOperation | undefined>;
     return this.mutate(async records => {
-      const authority = this.store.getAuthority ? await this.store.getAuthority() : undefined;
       const operation = records.find(item => item.operationId === operationId);
+      const authority = operation && this.store.getAuthority ? await this.store.getAuthority(operation.logicalThreadId) : undefined;
       if (!operation || operation.state !== "PREPARED" || !isValidClaimContext(context) || !authority || !sameClaimAuthority(authority, context) || !matchesDispatchFence(operation, context)) return { records, result: undefined };
       const active = records.find(item => item.operationId !== operationId && sameExecutionTarget(item, context) && executionOwningStates.has(item.state));
       if (active) return { records, result: undefined };
@@ -125,8 +139,8 @@ export class SubmissionOperationLedger {
     if (baseline.conversationRef !== undefined && baseline.conversationRef !== context.providerConversationRef) return undefined;
     if (this.store.dispatch) return this.store.dispatch({ type: "retarget", operationId, context, baseline, now }) as Promise<SubmissionOperation | undefined>;
     return this.mutate(async records => {
-      const authority = this.store.getAuthority ? await this.store.getAuthority() : undefined;
       const operation = records.find(item => item.operationId === operationId);
+      const authority = operation && this.store.getAuthority ? await this.store.getAuthority(operation.logicalThreadId) : undefined;
       const retargetable = operation?.state === "PREPARED" || operation?.state === "FAILED_SAFE";
       if (!operation || !retargetable || !authority || !sameClaimAuthority(authority, context) ||
         // The operation never changes logical threads: a context from another
@@ -169,7 +183,7 @@ export class SubmissionOperationLedger {
     if (this.store.ensureAuthority) await this.store.ensureAuthority(context);
     return this.mutate(async records => {
       const operation = records.find(item => item.operationId === operationId);
-      const authority = this.store.getAuthority ? await this.store.getAuthority() : undefined;
+      const authority = operation && this.store.getAuthority ? await this.store.getAuthority(operation.logicalThreadId) : undefined;
       if (!operation || !authority || !executionOwningStates.has(operation.state) ||
         !sameClaimAuthority(authority, context) ||
         !sameRecoveryFence(operation, context)) {
@@ -229,7 +243,7 @@ export class SubmissionOperationLedger {
     if (this.store.dispatch) return this.store.dispatch({ type: "rearm", operationId, baseline, fence, now }) as Promise<SubmissionOperation | undefined>;
     return this.mutate(async records => {
       const operation = records.find(item => item.operationId === operationId);
-      const authority = this.store.getAuthority ? await this.store.getAuthority() : undefined;
+      const authority = operation && this.store.getAuthority ? await this.store.getAuthority(operation.logicalThreadId) : undefined;
       const evidence = operation?.lastReconciliationEvidence;
       if (!operation || operation.state !== "FAILED_SAFE" || !authority ||
         !sameClaimAuthority(authority, {
@@ -269,8 +283,15 @@ export class SubmissionOperationLedger {
       // observations from a page or worker that outlived the operation.
       if (!executionOwningStates.has(operation.state)) return { records, result: { outcome: "STILL_AMBIGUOUS" as const, operation: cloneOperation(operation) } };
 
-      const authority = this.store.getAuthority ? await this.store.getAuthority() : undefined;
-      if (!authority || authority.logicalThreadId !== operation.logicalThreadId || !observation.dispatchFence ||
+      // Split the gate's previously collapsed situations into a diagnosis the
+      // caller can act on. The predicate is unchanged; what moved is which slot
+      // is read — getAuthority is now keyed by the operation's own thread, so an
+      // unrelated conversation can no longer trip the thread clause.
+      const authority = this.store.getAuthority ? await this.store.getAuthority(operation.logicalThreadId) : undefined;
+      if (!authority) {
+        return { records, result: { outcome: "STILL_AMBIGUOUS" as const, authority: "ABSENT" as const, operation: cloneOperation(operation) } };
+      }
+      if (authority.logicalThreadId !== operation.logicalThreadId || !observation.dispatchFence ||
         !sameClaimAuthority(authority, {
           ...observation.dispatchFence,
           logicalThreadId: authority.logicalThreadId,
@@ -280,7 +301,10 @@ export class SubmissionOperationLedger {
           sourceEpoch: observation.sourceEpoch,
           sourceObservedAt: authority.sourceObservedAt
         })) {
-        return { records, result: { outcome: "STILL_AMBIGUOUS" as const, operation: cloneOperation(operation) } };
+        // The slot exists but no longer matches this operation's observation.
+        // Within one thread authority only ever moves forward (ensureAuthority
+        // refuses a non-newer context), so this cannot heal by waiting.
+        return { records, result: { outcome: "STILL_AMBIGUOUS" as const, authority: "SUPERSEDED" as const, operation: cloneOperation(operation) } };
       }
 
       const baseline = operation.preSubmitBaseline;
@@ -293,7 +317,7 @@ export class SubmissionOperationLedger {
         observationTime <= operation.lastObservedAt ||
         (lastEvidenceTime !== undefined && observationTime <= lastEvidenceTime) ||
         !sameFence) {
-        return { records, result: { outcome: "STILL_AMBIGUOUS" as const, operation: cloneOperation(operation) } };
+        return { records, result: { outcome: "STILL_AMBIGUOUS" as const, authority: "OK" as const, operation: cloneOperation(operation) } };
       }
       const sameConversation = typeof operation.providerConversationRef === "string" && typeof observation.conversationRef === "string" && operation.providerConversationRef === observation.conversationRef;
       const sameRoute = observation.routeRef === baseline.routeRef;
@@ -315,16 +339,16 @@ export class SubmissionOperationLedger {
           : "UNCERTAIN";
       if (operation.state === "OBSERVED_ACCEPTED") {
         if (!sameConversation || !sameRoute || !payloadMatched) {
-          return { records, result: { outcome: "STILL_AMBIGUOUS" as const, operation: cloneOperation(operation) } };
+          return { records, result: { outcome: "STILL_AMBIGUOUS" as const, authority: "OK" as const, operation: cloneOperation(operation) } };
         }
         operation.lastObservedAt = observationTime;
         operation.lastReconciliationEvidence = cloneObservation(observation);
         if (observation.lastUserMessageFingerprint === operation.payloadFingerprint) {
           operation.acceptedPayloadFingerprint = observation.lastUserMessageFingerprint;
         }
-        return { records, result: { outcome: "PROVEN_ACCEPTED" as const, operation: cloneOperation(operation) } };
+        return { records, result: { outcome: "PROVEN_ACCEPTED" as const, authority: "OK" as const, operation: cloneOperation(operation) } };
       }
-      if (!isAllowedTransition(operation.state, nextState)) return { records, result: { outcome: "STILL_AMBIGUOUS" as const, operation: cloneOperation(operation) } };
+      if (!isAllowedTransition(operation.state, nextState)) return { records, result: { outcome: "STILL_AMBIGUOUS" as const, authority: "OK" as const, operation: cloneOperation(operation) } };
       operation.lastObservedAt = observation.observedAt ?? Date.now();
       operation.lastReconciliationEvidence = cloneObservation(observation);
       operation.state = nextState;
@@ -337,6 +361,7 @@ export class SubmissionOperationLedger {
         records,
         result: {
           outcome: nextState === "OBSERVED_ACCEPTED" ? "PROVEN_ACCEPTED" as const : nextState === "FAILED_SAFE" ? "PROVEN_NOT_ACCEPTED" as const : "STILL_AMBIGUOUS" as const,
+          authority: "OK" as const,
           operation: cloneOperation(operation)
         }
       };
@@ -358,21 +383,22 @@ export function createChromeSubmissionStore(chromeStorage: { get(key: string): P
   const base: SubmissionOperationStore = {
     get: key => chromeStorage.get(key ?? SUBMISSION_OPERATIONS_KEY),
     set: value => chromeStorage.set(value),
-    getAuthority: async () => {
-      const raw = await chromeStorage.get(SUBMISSION_AUTHORITY_KEY);
-      const authority = raw && typeof raw === "object" ? (raw as Record<string, unknown>)[SUBMISSION_AUTHORITY_KEY] : undefined;
-      return isAuthorityValue(authority) ? authority : undefined;
-    },
+    getAuthority: async logicalThreadId => extractAuthorityMap(await chromeStorage.get(SUBMISSION_AUTHORITY_KEY))[logicalThreadId],
     ensureAuthority: async context => withSubmissionAuthorityLock(options.lock, async () => {
-      const raw = await chromeStorage.get(SUBMISSION_AUTHORITY_KEY);
-      const existing = raw && typeof raw === "object" ? (raw as Record<string, unknown>)[SUBMISSION_AUTHORITY_KEY] : undefined;
+      const authorities = extractAuthorityMap(await chromeStorage.get(SUBMISSION_AUTHORITY_KEY));
+      const existing = authorities[context.logicalThreadId];
       const now = context.sourceObservedAt;
-      if (!isAuthorityValue(existing)) {
+      // Only this thread's slot is judged and written. Every other thread's
+      // entry is rewritten verbatim, so a GO here cannot unseat a GO there.
+      if (!existing) {
         await chromeStorage.set({
           [SUBMISSION_AUTHORITY_KEY]: {
-            ...context,
-            authorityGeneration: 1,
-            authorityEstablishedAt: now
+            ...authorities,
+            [context.logicalThreadId]: {
+              ...context,
+              authorityGeneration: 1,
+              authorityEstablishedAt: now
+            }
           }
         });
         return;
@@ -381,9 +407,12 @@ export function createChromeSubmissionStore(chromeStorage: { get(key: string): P
       if (!isNewerAuthorityContext(context, existing)) throw new Error("submission_authority_stale");
       await chromeStorage.set({
         [SUBMISSION_AUTHORITY_KEY]: {
-          ...context,
-          authorityGeneration: existing.authorityGeneration + 1,
-          authorityEstablishedAt: now
+          ...authorities,
+          [context.logicalThreadId]: {
+            ...context,
+            authorityGeneration: existing.authorityGeneration + 1,
+            authorityEstablishedAt: now
+          }
         }
       });
     })
@@ -392,11 +421,12 @@ export function createChromeSubmissionStore(chromeStorage: { get(key: string): P
     return {
       ...base,
       recover: async (operationId, context, now) => withSubmissionAuthorityLock(options.lock, async () => {
-        const authorityRaw = await chromeStorage.get(SUBMISSION_AUTHORITY_KEY);
-        const authorityValue = authorityRaw && typeof authorityRaw === "object"
-          ? (authorityRaw as Record<string, unknown>)[SUBMISSION_AUTHORITY_KEY]
-          : undefined;
-        const existingAuthority = isAuthorityValue(authorityValue) ? authorityValue : undefined;
+        // Scoped to this context's own thread. Writing the whole map back with
+        // only this key replaced is what keeps every other thread's entry alive;
+        // writing nextAuthority wholesale would silently delete them and the map
+        // would un-fix itself on the first page reload.
+        const authorities = extractAuthorityMap(await chromeStorage.get(SUBMISSION_AUTHORITY_KEY));
+        const existingAuthority = authorities[context.logicalThreadId];
         const raw = await chromeStorage.get(SUBMISSION_OPERATIONS_KEY);
         const records = extractRecords(raw);
         const operation = records.find(item => item.operationId === operationId);
@@ -417,7 +447,7 @@ export function createChromeSubmissionStore(chromeStorage: { get(key: string): P
         if (now >= operation.lastObservedAt) operation.lastObservedAt = now;
         const revisionRaw = await chromeStorage.get(SUBMISSION_OPERATIONS_REVISION_KEY);
         await chromeStorage.set({
-          [SUBMISSION_AUTHORITY_KEY]: nextAuthority,
+          [SUBMISSION_AUTHORITY_KEY]: { ...authorities, [context.logicalThreadId]: nextAuthority },
           [SUBMISSION_OPERATIONS_KEY]: records,
           [SUBMISSION_OPERATIONS_REVISION_KEY]: extractNumber(revisionRaw) + 1
         });
@@ -523,6 +553,36 @@ function isAuthorityValue(value: unknown): value is SubmissionAuthority {
   const authority = value as SubmissionAuthority;
   return Number.isSafeInteger(authority.authorityGeneration) && authority.authorityGeneration > 0 &&
     Number.isSafeInteger(authority.authorityEstablishedAt) && authority.authorityEstablishedAt >= 0;
+}
+/**
+ * Normalizes the stored authority value into a per-thread map.
+ *
+ * A map is read per key, not all-or-nothing: one unrecognizable entry must not
+ * poison every other thread's slot. An entry whose key disagrees with its own
+ * logicalThreadId is dropped, so a corrupt or misplaced record can never answer
+ * for a thread it does not name.
+ *
+ * A legacy flat record (the pre-map shape, one browser-global slot) is folded
+ * forward under its own thread. Tolerating that shape is load-bearing: a strict
+ * read would leave an operation dispatched before this change unable to
+ * reconcile until the next GO re-ensured authority — the very wedge that
+ * per-thread scoping removes.
+ */
+function foldAuthorityMap(value: unknown): SubmissionAuthorityMap {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  // The flat shape is checked first. A map can never satisfy isAuthorityValue
+  // (it carries none of the claim context's typed fields), so the two branches
+  // cannot be confused.
+  if (isAuthorityValue(value)) return { [value.logicalThreadId]: value };
+  const folded: SubmissionAuthorityMap = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (isAuthorityValue(entry) && entry.logicalThreadId === key) folded[key] = entry;
+  }
+  return folded;
+}
+function extractAuthorityMap(raw: unknown): SubmissionAuthorityMap {
+  const value = raw && typeof raw === "object" ? (raw as Record<string, unknown>)[SUBMISSION_AUTHORITY_KEY] : undefined;
+  return foldAuthorityMap(value);
 }
 function isSubmissionOperationKind(value: unknown): value is SubmissionOperationKind { return value === "GO" || value === "REANCHOR_GOAL" || value === "BOOTSTRAP" || value === "REVIEW_DISPATCH" || value === "SEDIMENT" || value === "DELIVER_CHILD_RESULT"; }
 function isSubmissionOperationState(value: unknown): value is SubmissionOperationState { return value === "PREPARED" || value === "DISPATCHING" || value === "OBSERVED_ACCEPTED" || value === "COMPLETED" || value === "UNCERTAIN" || value === "FAILED_SAFE" || value === "CANCELLED"; }
