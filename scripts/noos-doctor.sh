@@ -71,7 +71,19 @@ done
 
 echo
 if command -v node >/dev/null 2>&1; then
-  ok "Node: $(node --version)"
+  node_version="$(node --version)"
+  ok "Node: $node_version"
+  expected_node_major=""
+  if [[ -f "$ROOT_DIR/.nvmrc" ]]; then
+    expected_node_major="$(tr -d 'v \t\r\n' <"$ROOT_DIR/.nvmrc")"
+  fi
+  if [[ "$expected_node_major" =~ ^[0-9]+$ ]]; then
+    actual_node_major="${node_version#v}"
+    actual_node_major="${actual_node_major%%.*}"
+    if [[ "$actual_node_major" =~ ^[0-9]+$ ]] && (( actual_node_major < expected_node_major )); then
+      warn "Node version drift: node is $node_version but .nvmrc pins $expected_node_major. Local results may diverge from CI; run 'nvm use' or 'fnm use' before verifying."
+    fi
+  fi
 else
   missing "Node"
 fi
