@@ -244,6 +244,8 @@ Injecting a `lock` in the four stale test files (or adding one shared setup file
 3. M2: is "op `COMPLETED` + run still pending" a case reconciliation must repair, or is it expected to be impossible by construction?
 4. M3: may `READY_TO_GO` carry a durable AUTO authorization marker (a new epoch), with auto-dispatch permitted only when that marker is present and unconsumed?
 
+**All four questions have been answered.** The disposition is recorded in [§11. Designer disposition (recorded)](#11-designer-disposition-recorded); this list is left in place as the original request, and is **not** reopened by §11.
+
 ---
 
 ## 7. Tests and verification
@@ -295,7 +297,7 @@ The harness itself is a read-only Node script: it opens no new dependencies, sen
 7. **Code modified**: no. No extension source file was touched. One new read-only diagnostic script was added: `scripts/bcr-bg-timeline.mjs`.
 8. **If modified**: not applicable. Semantic diff: none. (`scripts/bcr-bg-timeline.mjs` is new, read-only, sends no provider message, and is the only file added.)
 9. **Tests**: `npm run typecheck` pass; `npm run build` pass; `npm test` **fails at the base SHA with 27 failed / 459 passed**, a pre-existing defect (M4: four test files do not inject the `lock` that `withSubmissionAuthorityLock` requires, and the node test environment has no `navigator.locks`). Supplying `navigator.locks` removes all 27 failures and makes the suite fully green (39 files / 514 tests — a different file set from the base run, which excluded `content-ui-smoke`), confirming M4 is the sole cause. M4 is reported separately and is not part of the background-dependence failure; it is worth fixing first, because it means this subsystem has no working regression protection today.
-10. **Designer needed**: **yes.** M1's fix changes Authority semantics (and overlaps #56 Q1); M3 hits the brief's explicit stop condition (it changes what `READY_TO_GO` represents and whether it may auto-dispatch). Four questions are put to the designer in §6.
+10. **Designer needed**: **yes.** M1's fix changes Authority semantics (and overlaps #56 Q1); M3 hits the brief's explicit stop condition (it changes what `READY_TO_GO` represents and whether it may auto-dispatch). Four questions are put to the designer in §6. *(Answered — see [§11](#11-designer-disposition-recorded).)*
 11. **Ready for independent review**: yes, as a diagnosis-and-proposal artifact — with the explicit caveat that scenarios B, D, E and H carry `NOT_VERIFIED` status and are not claimed as reproduced.
 
 ---
@@ -325,3 +327,72 @@ Round 1's own verified/unverified breakdown: the M1 code chain, M2, M3 (four `is
 Captures are kept outside the repository: they contain live conversation reference prefixes from the dogfood browser.
 
 **Content-handling disclosure.** The scripts written for *this* task — `scripts/bcr-bg-timeline.mjs`, `sample-revision.mjs`, `dump-op-authority.mjs`, `bring-front.mjs` — record only counts, opaque ids, and refs sliced to 8 characters; none reads or stores prompt or assistant text. One earlier artifact from the same investigation, `/tmp/bcr-cdp/state-dump.txt` (16 KB, outside the repository), does contain **short excerpts of assistant messages** from the observed conversations, used to identify which conversation a stranded run belonged to. No complete conversation, and no user-authored prompt text, was captured anywhere; that file is not committed and is not an input to any claim in this report. It should be deleted when the investigation is closed.
+
+---
+
+## 11. Designer disposition (recorded)
+
+The four questions in §6 have been answered by the Epic Designer. This section **records** that disposition; it is a transcription, not a new round of deliberation. It **does not reopen** PR #57 / Issue #56 Q1–Q6, and it supersedes the "Designer needed: **yes**" line in §8 item 10.
+
+**Provenance.**
+
+| Field | Value |
+|---|---|
+| Author | Epic Designer (`futouyiba`), as `## Primary Design Disposition` |
+| Decision | **`PARTIAL_ACCEPT`** |
+| Exact target | `docs/deliberation-harness/bcr-background-dependence-defect-proposal-v0.md` @ `9548bacbada271b3c654358523c0f9cfa008517e` (PR #58 / Issue #59) |
+| Source | PR #58 comment `5717715062`, 2026-09-17T16:20:55Z |
+| Governor event | `event=pr58-design-questions-9548bacb head=9548bacbada271b3c654358523c0f9cfa008517e action=primary-design-partial-accept` |
+| Family record | Issue #56 comment `5718137417` (defect-family design path) |
+| Companion | PR #57 comment `5717432171` — the already-current disposition for the multitab/observation family |
+
+The designer's own framing, quoted: *"PR #58 adds useful live evidence, but it does not reopen the authority decision already made for #56/#57. Apply the existing disposition first, then classify the new M1b/M2/M3 questions narrowly."*
+
+### Answers to §6
+
+**1. M1 — may the steady-state reconcile path re-claim authority (recency takeover)?**
+
+**OBSOLETE AS AN OPEN DESIGN QUESTION.** #57 already decided that submission authority is scoped per logical thread / Run, not one browser-global slot. Steady-state `reconcile` therefore must not solve this symptom by letting an unrelated Run steal a global authority record by recency. The required delta is the one already authorized: remove the cross-Run global contention while preserving **one authorized actuator within a Run** and the existing lease/fence checks.
+
+**2. M1b — may the content script emit `AUTHORITY_CHANGED` when reconcile is refused on a foreign authority?**
+
+**REJECT** as the primary fix for foreign authority under the current global-slot implementation. **ACCEPT** `AUTHORITY_CHANGED` **only** for a real authority loss within the same Run / authorization scope. Emitting it merely because another unrelated Run won today's browser-global slot would convert an implementation artifact into a semantic fail-safe and terminate an otherwise valid Run. After authority is correctly scoped, the event may be emitted when the Run's own previously valid authority/lease/fence is actually superseded or lost and reconciliation cannot legally continue. Exact debounce and observation timeout are implementation-local; the *condition* must be same-Run authority loss, not unrelated activity.
+
+**3. M2 — is "op `COMPLETED` + run still pending" a case reconciliation must repair, or impossible by construction?**
+
+**ACCEPT, as reconciliation responsibility, with no new architecture.** A crash window between durable operation completion and Run-event application is a normal reducer/recovery case and may not be assumed impossible. When a durable `SubmissionOperation` for the Run is already `COMPLETED` with sufficient persisted acceptance evidence while the Run still records that operation as pending, recovery must converge the Run projection **exactly once**, reusing the existing operation identity and evidence. It must not send another provider message and must not consume the round twice.
+
+**4. M3 — may `READY_TO_GO` carry a durable AUTO authorization marker (a new epoch)?**
+
+**PARTIAL_ACCEPT, bounded by #57 Q4.** A durable AUTO continuation authorization may exist only as evidence that the existing continuation policy/evaluator/budget **already authorized a specific next round/epoch**. It must be round/epoch-bound, single-consumption (idempotent), and invalidated by Human intervention, scope/goal/authority change, stop, or a newer evaluation. `READY_TO_GO` alone remains insufficient to authorize a send. This is not permission to treat watcher presence as resend authority; ambiguous or failed dispatch recovery stays under #54 semantics.
+
+### Required delta
+
+1. Implement the already-authorized per-logical-thread / per-Run submission-authority model. Do **not** add recency-based cross-Run stealing to `reconcile` as the fix.
+2. Wire `AUTHORITY_CHANGED` only to genuine same-Run authority / lease / fence loss; unrelated Run activity must not fail-safe this Run.
+3. Add crash/restart reconciliation for "operation `COMPLETED` + Run still pending", applying the missing Run transition exactly once from durable evidence.
+4. If AUTO continuation needs restart-safe forward progress after a proven evaluation pass, persist a round/epoch-bound authorization/evidence record with deterministic single consumption. Do not infer authorization from `READY_TO_GO` alone.
+5. M4 is implementation-local test infrastructure and may land as a separate bounded slice **before** the runtime changes; it carries no semantic authority change.
+
+### Boundary / non-goals
+
+- Do not reopen PR #57 / Issue #56 Q1–Q6.
+- Do not make browser-global recency the canonical concurrency policy.
+- Do not treat foreground return, timer cadence, or unrelated authority ownership as either provider acceptance or same-Run authority loss.
+- Do not auto-resend an ambiguous provider submission.
+- Do not change #54 `RecoveryBudget` / Evidence Gate / provider Retry semantics in these slices.
+
+### Resume condition
+
+PR #58 may remain the approved research artifact, but it is not itself a runtime promotion candidate. Record this disposition in the defect-family design path, then create bounded implementation slices for **(a)** M4 test infrastructure, **(b)** per-Run authority + same-Run `AUTHORITY_CHANGED` convergence, and **(c)** M2 completion reconciliation; treat any M3 durable AUTO authorization mechanism as a separate bounded slice with explicit #54 compatibility. **Every runtime slice requires fresh independent review at its exact head before promotion.**
+
+### Post-disposition status of the mandated slices
+
+Recorded for accuracy; **not** part of the disposition text above. State as of 2026-09-19.
+
+| Slice | Status |
+|---|---|
+| (a) M4 test infrastructure | **Landed** — PR #64 merged `8bd9e2f`; `tests/setup-browser-locks.ts` now supplies `navigator.locks` to the root suite; Issue #62 closed. |
+| (b) per-Run authority + same-Run `AUTHORITY_CHANGED` convergence | **Landed** — PR #67 merged `d970727`; Issue #65 closed after accepting the two-Run split evidence. |
+| (c) M2 completion reconciliation | **Not started.** |
+| M3 durable AUTO authorization | **Not started**; must be a separate slice with explicit #54 compatibility. |
