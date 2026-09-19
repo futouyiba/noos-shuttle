@@ -45,7 +45,7 @@ function memoryStore() {
     get: async () => value,
     set: async (next: Record<string, unknown>) => { value = next; },
     ensureAuthority: async () => undefined,
-    getAuthority: async () => ({
+    getAuthority: async (logicalThreadId: string) => logicalThreadId !== "thread-1" ? undefined : ({
       logicalThreadId: "thread-1",
       providerConversationRef: authority.providerConversationRef,
       bindingEpoch: authority.bindingEpoch,
@@ -139,7 +139,7 @@ describe("HumanGoRuntime", () => {
     const coordinator = new SubmissionOperationLedger({
       get: async () => ({ noosSubmissionOperations: backing.operations }),
       set: async (value) => { backing.operations = value.noosSubmissionOperations; },
-      getAuthority: async () => ({
+      getAuthority: async (logicalThreadId: string) => logicalThreadId !== authority.logicalThreadId ? undefined : ({
         logicalThreadId: authority.logicalThreadId,
         providerConversationRef: authority.providerConversationRef,
         bindingEpoch: authority.bindingEpoch,
@@ -199,7 +199,7 @@ describe("HumanGoRuntime", () => {
         if (writes >= 3) throw new Error("storage_unavailable");
         value = next;
       },
-      getAuthority: async () => ({
+      getAuthority: async (logicalThreadId: string) => logicalThreadId !== authority.logicalThreadId ? undefined : ({
         ...authority,
         carrierState: "READY" as const,
         logicalControl: "CONTINUE" as const,
