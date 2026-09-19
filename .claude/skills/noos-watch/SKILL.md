@@ -12,8 +12,11 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
 ## 硬边界
 
 - **永不**执行 merge / 部署 / 关闭 issue / push 等敏感动作；只投递
-  暗号与写状态文件。通知类动作（投递暗号、send_message 交接）
-  不是敏感动作，直接执行、无需向人请示。
+  暗号与写状态文件。通知类动作（投递暗号、send_message 交接、
+  投递兜底评论）不是敏感动作，直接执行、无需向人请示。
+- **gh 写入仅限投递兜底**：本 skill 对 GitHub 只做只读拉取，唯一
+  例外是步骤 5 的兜底评论（`send_message` 不可用时，在对应线程留
+  一条只含暗号 + provenance 的评论）。不得用该通道写任何其他内容。
 - **单实例**：一轮运行必须先取得 `.tmp/noos-watch.lock`。取不到锁
   即**立即退出**，不拉评论、不路由、不写状态。同一时刻只允许一轮
   watcher 存在——这是「重复取件」的结构性防线。
@@ -111,9 +114,32 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
 
 5. **认领后路由**：对每一条将要投递的评论，先把
    `claims[<id>] = {state:"CLAIMED", action, claimedAt}` **写回并
-   确认落盘**，然后才 `send_message`。投递成功后改记
-   `{state:"ROUTED", routedAt}`。投递失败或本轮被中断时**保留
-   `CLAIMED`**——宁可下一轮报「未完成」交人判断，也不重发。
+   确认落盘**，然后才投递。投递成功后改记
+   `{state:"ROUTED", routedAt, deliveredVia}`。投递失败或本轮被中断时
+   **保留 `CLAIMED`**——宁可下一轮报「未完成」交人判断，也不重发。
+
+   **投递通道与兜底**（规范 §4.4 允许的兜底通道）：
+
+   - **首通道 `send_message`**：按步骤 4 解析到的会话直投。成功记
+     `deliveredVia: "session"`。
+   - **兜底（`send_message` 不可用或返回不可用）**：在**该标记所在的
+     线程**留一条评论，内容**只含** `role:` 前缀的暗号与 provenance 行：
+
+     ```
+     impl: fix PR#53
+     （watch: relay）
+     ```
+
+     - `role:` 用 `orch` / `impl` / `rev` / `des` / `intg`；**不用 `@role`**。
+     - 评论**不得**附带解释、总结、建议或任何自由文本——它不是分析，
+       只是把唤醒信号放进规范定义的持久邮箱，由人或其他会话转达。
+     - 成功记 `deliveredVia: "comment:<commentId>"`。
+   - **两条通道都不可用**：维持 `CLAIMED`，并在简报中明确写
+     「投递通道不可用」+ 逐条列出待投递项。**不得**因为送不出去就
+     把评论标记为已处理。
+
+   兜底评论本身也是投递，**同样先认领后写**：先落 `CLAIMED` 再发评论，
+   避免并发或重跑导致同一条唤醒被投递两次。
 
 6. stage 链（B.2 多动词跨角色）：`stages` 数组记录
    `{"pr":"PR#N","await":"REVIEW: APPROVE","next":"review PR#N"}`
@@ -149,7 +175,9 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
    | 本轮未完成（异常 / 被中断） | 明确写「本轮未完成」，附 `lastError` 与已认领未投递的评论 |
 
    另附：处理条数、路由去向、在途 stage、pending 积压总数、
-   `consecutiveInterruptions` 当前值（> 0 时提示需要人工查看）。
+   `consecutiveInterruptions` 当前值（> 0 时提示需要人工查看），
+   以及**本轮经兜底评论投递的条数**——大于 0 时提示「唤醒已进持久
+   邮箱，需人在线转达或由有会话通道的会话排空」。
 
 ## 健康信号（本 skill 必须如实产出）
 
