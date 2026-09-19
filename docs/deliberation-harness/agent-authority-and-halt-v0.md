@@ -1,8 +1,10 @@
 # Agent 授权边界与急停（v0）——提案
 
-> 提案，不是契约。本文件把 2026-09-19 讨论中人类已定的决定与随之而来的设计写下来，
-> 供 Epic Designer 裁定；裁定前不实施。涉及规范（noos_docs 附录 B / §4）的部分
-> 属规范级变更，须以规范本体为准。
+> 提案，不是契约。本文件把 2026-09-19 讨论中人类已定的决定与随之而来的设计写下来。
+> **Epic Designer 已裁定 `NEEDS_REVISION`**（记录见**附录 A**）；本版即其 7 项 required revision 的回应。
+> **下一步是同一 exact head 上的 narrow re-adjudication**；裁定通过前不实施。
+> 涉及规范（noos_docs 附录 B / §4）的部分属规范级变更，须以规范本体为准；
+> **在规范侧落地之前，本提案涉及的 canonical 级条款均无强制力。**
 
 ## 1. 背景
 
@@ -45,16 +47,30 @@
 **问题**：`AGENTS.md` 的「push 只在用户明确要求时执行」被普遍读成「每次推特性分支都要请示」，
 而它原本位于「跨分支 / Worktree Intake」一节，射程是**替别人迁入改动时别顺手推远端**。
 
-**决定（A1）**：澄清射程，不删规则。保留原句并明确它只管 intake/迁移；另加一句正面规则：
-**推送自己 worktree 的特性分支属机械例外，免请示。**
+**决定（A1）——经 designer 裁定修订**：
+
+> **canonical governance 不新增「feature-branch push」的正向豁免规则。**
+>
+> 仓库层**可以**澄清现有 intake 句子的**局部射程**（即：那句话管的是 intake/迁入场景）。
+> **离开 intake 之后的 push 是否执行，由 agent 根据当前 authority、风险与执行后果判断——
+> 不建立新的规范级 allowlist。**
+
+> **初稿错误**：初稿写「另加一句正面规则：推送自己 worktree 的特性分支属机械例外，免请示」，
+> 并把它列入 §8 的 `noos_docs` 规范级修改清单。**designer 不接受**，理由是该写法
+> **与 §3 已记录的人类决定直接冲突**——那里写着「push 的例外不写进治理，交给 agent 判断」。
+> 即：**本提案自己把一条人类已经否决过的规则又写了一遍。**
 
 **决定（A2）**：其余 push 情形（force-push、受保护分支、tag、他人分支）**不写进治理**，
-由 agent 判断。为使判断有据，把这些动作的**后果**写进相应 skill 的上下文，而不是写成禁令：
+由 agent 判断。为使判断有据，把这些动作的**后果**写进相应 skill 的**执行上下文**，而不是写成禁令：
 
 - force-push 已发布分支 → 作废已发生的复审依据（reviewed exact head 被孤立），
   而 B.3 整条链都建立在 head 不变之上；
 - push 到 main → 绕过合并门；
 - push tag → 可能触发不可逆的发布。
+
+（designer 原文认可这一区分：「后果可以进入 skill / execution context，**作为判断材料，而不是新的治理规则**」。）
+
+**建议一项机制（非治理条文）**：main 用分支保护直接禁掉直推。机制比纪律可靠，且不占篇幅。
 
 **建议一项机制（非治理条文）**：main 用分支保护直接禁掉直推。机制比纪律可靠，且不占篇幅。
 
@@ -63,19 +79,46 @@
 **决定**：合并由 integrator 执行；它拿到的是**裁量权**，不是清单。常规修复可自行判定并合入；
 它认为属于重大取舍、重大风险或显著副作用时，上报人类。
 
+> **designer 裁定的核心模型（原文）**：
+> 「Merge actuation remains exclusive to the Integrator, but ordinary eligible work **no longer requires a
+> per-merge Human click**. The Integrator may merge under **delegated policy authority** after all canonical
+> gates pass; material trade-offs, material risk, or significant side effects escalate to Human.」
+
+**这是一次 canonical 级的授权模型变更，仓库层不能自行解释出来（designer 明确）**：
+
+> 当前 canonical workflow 的 **B.0 明确把 merge 等敏感动作的授权保留给 Human**，因此
+> **必须由 `noos_docs` 的 canonical protocol 正式修改授权模型**；
+> **`AGENTS.md` 只能在 canonical 已授权之后，投影仓库细则。**
+
+并明确一条总则：
+
+> **Repository-local policy may parameterize an upstream-authorized merge lane;
+> it may not create that merge authority by itself.**
+>
+> （仓库层策略**可以为一个上游已授权的合并通道提供参数**；它**不能自行创造**那个合并授权。）
+
+> 这与**相邻 PR #77 的 Primary Design disposition 一致**：仓库层不能自行制造 canonical workflow
+> 尚未授权的新 merge gate / authority system。
+
 **取代人工点击的那些检查**（integrator 必须做，属其既有 §4.2 职责的延伸）：
+**`noos:auto-merge` label 只作为进入 delegated lane 的显式 eligibility signal，本身不得替代以下任一项**：
 
 1. review 结论带 provenance，且能对上**先于结论**的委派记录（B.3）；
 2. 三方 head 一致：review 指向的 head ＝ PR body 记录的 head ＝ 实际合并 head；
 3. **无生效中的 HOLD**（见 §6）；
-4. 交付物与 PR 声明一致（纯文档就不应包含构建产物或运行时改动）。
+4. 交付物与 PR 声明一致（纯文档就不应包含构建产物或运行时改动）；
+5. **integrator 对当前 PR 的风险裁量**（designer 列为 label 不得替代的第四项）。
 
-**因裁量权而必须补的一条（本提案新增，请 designer 一并裁定）**：
-既然分层由 integrator 判断而非机械判据，那么**判断本身必须可事后审计**。要求：
-**每次自动合并，integrator 在 `INTEGRATED` 标记中记一句「为何判为常规」**（例如
-「限 docs/tests 路径」「src 常规修复，无语义变更」）。理由：把「信任模型判断」变成
-「信任＋可回查」；成本一句话，收益是出问题时能看到当时依据。**没有它，裁量权在事后
-是不可复核的**，而你们的整套体系都建立在每步留痕之上。
+**「为何判为常规」——designer 裁定为强制项（MUST）**：
+
+> Every merge executed through delegated auto-merge authority **MUST** leave an auditable classification
+> basis in `INTEGRATED`: at minimum, one concise statement of why the Integrator classified this PR as
+> routine rather than escalation-required.
+
+理由（designer 原文的要点）：**不是为了把「常规 / 重大」重新机械化，而恰恰因为该分类被有意交给 integrator 裁量。**
+若没有 durable rationale，则「integrator 裁量」只剩结果、看不到当时为何认为无需升级 Human，**事后无法复盘裁量是否失准**。
+
+**适用范围**：**只约束 delegated auto-merge lane**；**不需要**给所有人类显式合并增加同样的负担。
 
 **决定（B4）**：**投递链修复是自动合并的前置条件**。自动合并要求 integrator 先被告知
 「门过了」，而那条链今天才修一半（PR #70 未合并）。可靠性上限＝投递链上限。
@@ -88,19 +131,67 @@
 
 ### 6.1 形态
 
-**标记 + label，两者都要。** 标记负责留痕与 provenance；label 负责可见与可查——
-深在线程里的评论会被漏，而急停的全部意义就是不能被漏。
+**这是 HOLD 语义的核心，初稿在此自相矛盾，本版按 designer 裁定重写。**
 
-标记（首行，沿用 B.3 的标记纪律）：
+> **初稿错误**：初稿同时写了三件事——「带 SHA → 只停该 head」「push 不解除 HOLD」「不自动过期」。
+> **designer 指出三者不能同时成立**：若 `@ sha1` 真的只约束 `sha1`，那么 push 到 `sha2` 后阻断自然消失，
+> **等价于 push 绕过急停**。
+
+**修正后的 SHA 语义（designer 原文）**：
+
+> For a PR-scoped emergency HOLD, `@ <exact-head-sha>` is the **observation/provenance anchor** at which
+> the latch was asserted; it is **not an expiry boundary**. A PR HOLD **survives subsequent pushes** and
+> remains active until an explicit Human-authorized `HOLD_CLEARED`.
+>
+> 即：`HOLD: auto-merge @ abc123` 表示「**Human 在 abc123 这个已知 head 上拉下了该 PR 的 auto-merge 急停**」；
+> **不是**「仅 abc123 禁止 merge，push 一个新 SHA 自动恢复」。
+
+标记（首行，沿用 B.3 的严格语法）：
 
 ```
-HOLD: auto-merge @ <exact-head-sha>
-（<角色>: <交付方式>）
+HOLD: auto-merge @ <exact-head-sha>          ← 带 assertion anchor
+HOLD: auto-merge                              ← 无 anchor 的 location-scope HOLD
+（human: via workbench）                      ← 必须表达 Human 权威来源
 ```
 
-- 带 sha → 停该 head
-- 不带 sha → 停该 PR（**换 head 仍生效**）
-- **push 不解除 HOLD**——否则推一次就绕过了急停
+若将来真的需要「**只**禁止某一个 head」的功能，**应另立明确语义，不要复用 emergency HOLD**。
+
+**Provenance 第二行必须表达 Human 权威来源（designer 明确）**：
+
+> 不能继续用模糊的 `（<角色>: <交付方式>）`，因为本提案已明确 **authority only comes from Human**。
+
+应写成 Human 权威来源，例如：
+
+```
+（human: via workbench）          ← 人类经工作台直接发出
+（human: relayed by intg）        ← 人类经授权会话代写
+```
+
+**关键不变量（designer 原文）**：
+
+> **An Agent may transport a Human HOLD, but may not originate one.**
+> Provenance must preserve the **Human authority source** rather than making the relaying Agent appear to be
+> the authority. `HOLD_CLEARED` 同样只能来自 Human authority。
+
+**标记与 label 的关系——初稿有一处安全语义错误，本版更正**：
+
+> **初稿错误**：初稿写「标记 + label，**两者都要**」，且未说明 source of truth。
+> 若被读成「两者同时存在才生效」，**任何一次部分写失败都会使急停失效**。
+
+**修正后（designer 原文）**：
+
+> The **Human-authorized HOLD marker is the durable control record**.
+> `noos:hold` is a **visibility/index projection, not a second source of authority**.
+> **Missing or stale label state must never cancel a valid HOLD.**
+
+**fail-closed reconciliation（四种情形）**：
+
+| 情形 | 处置 |
+| --- | --- |
+| 有有效 HOLD marker、无 label | **仍然 HOLD**；并修复 label |
+| 有 `noos:hold` label、**找不到有效 marker** | **不得自动 merge**；先 reconcile / 交 Human |
+| marker 与 label 一致 | 正常 HOLD |
+| 有有效 `HOLD_CLEARED` | 才解除 latch |
 
 label：`noos:hold`。
 
@@ -112,15 +203,32 @@ label：`noos:hold`。
 | 任务 issue | 停该工作项相关 PR |
 | 指定协调 issue | 全局冻结 |
 
+**但规范与仓库层的职责必须分开（designer 明确）**：
+
+> **Canonical protocol** defines HOLD as a **merge-blocking Human control latch**；
+> **repository policy** defines how task/global locations are **resolved to concrete PRs**.
+
+> **否则**仅在 `AGENTS.md` 中规定「HOLD 必须阻断 merge」，会**重现 PR #77 已经裁掉的那个问题**：
+> **仓库层自行制造 canonical 未授权的 merge gate。**
+
 ### 6.3 解除与生命周期
 
-- 解除：同权限来源留 `HOLD_CLEARED: <同范围>` 并移除 label。
+- 解除：**只能由 Human authority** 留 `HOLD_CLEARED: <同范围>` 并移除 label（provenance 同 §6.1 的要求）。
 - **不自动过期**。会过期的急停不是急停。
-- **权威只来自人类**。会话可代为转达，但不构成授权。
+- **权威只来自人类**。会话可代为转达，但**不得发起**（§6.1 的不变量）。
 
 ### 6.4 强制检查点（最要紧的一条）
 
-**HOLD 必须进 integrator 的合并前置检查**（§5 第 3 条），否则它只是装饰而非开关。
+**designer 批准此点，并明确它必须进入 canonical merge semantics，而不仅是仓库细则**：
+
+> **Before any delegated auto-merge actuation, the Integrator MUST resolve applicable Human control latches
+> and MUST NOT merge while an effective HOLD exists.**
+
+配套（designer 明确）：
+
+> **watcher 抑制 merge handoff 可以作为优化，但不能成为正确性依赖。**
+> 即使 watcher 漏投或错误投递，**integrator 自己的最终 pre-merge check 仍必须拦下**。
+
 格式写错可以改；**没人读就完全白做**。
 
 ### 6.5 与 watcher 的关系
@@ -128,11 +236,36 @@ label：`noos:hold`。
 生效中的 HOLD 应抑制**合并交接**的投递（review 通知本身仍可送达，那是事实）。
 即：HOLD 不阻断唤醒，阻断的是「请合并」这一步。
 
-### 6.6 规范含义（需 designer 裁定）
+### 6.6 规范含义（**经 designer 裁定，本版重写**）
 
-`HOLD` 会成为 B.3 标记词表里的**第 5 个标记**。这正是本仓已确认的那类缺口——
-**协议缺少符号时人会自造，然后全链路不认**（`PARTIAL_ACCEPT` 即如此）。所以这次
-应当**一并把符号补进词表**，而不是让它先以野形态存在。
+> **初稿错误**：初稿写「`HOLD` 会成为 B.3 标记词表里的**第 5 个标记**」，
+> 把它描述成与现有四个**完全同类的** agent output marker。**designer 不接受该描述。**
+
+**现有四类标记是 workflow outcome / delivery markers**：`REVIEW:` / `DESIGN:` / `IMPLEMENTED:` / `INTEGRATED:`
+——它们是**agent 的判定/交付**。
+
+**而 HOLD 的性质不同（designer 原文）**：
+
+> **HOLD is a Human control latch, not an Agent verdict.** It may share B.3's strict marker grammar and
+> audit machinery, but **its authority class must remain distinct** from REVIEW / DESIGN / IMPLEMENTED / INTEGRATED.
+
+**故 B.3 应显式分成两类**：
+
+| 类别 | 成员 | 性质 |
+| --- | --- | --- |
+| **Workflow markers** | `REVIEW` / `DESIGN` / `IMPLEMENTED` / `INTEGRATED` | agent 的判定与交付 |
+| **Human control markers** | `HOLD` / `HOLD_CLEARED` | **人类控制闩锁** |
+
+其中（designer 原文）：
+
+> **A HOLD can only remove actuation eligibility; it can never grant it.**
+> `HOLD_CLEARED` only removes that veto and **never, by itself, authorizes a merge**.
+
+**这样仍保持「GitHub 评论不是正向授权介质」这一原则**：
+**HOLD 是 Human-originated deny latch，而不是通过评论授予 merge 权限。**
+
+（补记：本仓已确认的那类缺口——**协议缺少符号时人会自造，然后全链路不认**（`PARTIAL_ACCEPT` 即如此）
+——在本项上依然成立，所以符号应当一并补进词表；但**归类必须是「人类控制标记」而非「第 5 个 workflow marker」**。）
 
 ## 7. C+｜NOOS 工作台（界面设计）
 
@@ -193,32 +326,46 @@ label：`noos:hold`。
 - 工作台**只做刹车，不做油门**：v0 不得包含合并、推送、关单等动作。
 - 它不绕过任何门：贴的标记是**人的动作**，不替代 review 或 head 检查。
 
-## 8. D｜这些规则写在哪（本文的落点判断）
+## 8. D｜这些规则写在哪（**经 designer 裁定，本版重写**）
 
 原则是**分层落位**：越靠近权威模型越进规范，越靠近操作越留仓库。
+**但初稿在这一点上犯了两处错，本版按裁定更正。**
 
 | 内容 | 落点 | 理由 |
 | --- | --- | --- |
-| push 的机械例外；合并授权从「人类点击」改为「integrator 裁量」；`HOLD` 纳入标记词表 | **noos_docs 规范（附录 B / §4）** | 这三条都在收窄或扩张「敏感动作需授权」这条**原则**，而原则在规范里。只改 `AGENTS.md` 会与规范冲突——按你们自己的规矩「以规范本体为准」，那时 `AGENTS.md` 的改动会被判无效 |
-| `HOLD` 的落点/范围对照、integrator 前置检查四项、自动通道 label 名 | **`AGENTS.md`** | 仓库本地操作细则；别的仓库不必相同 |
-| push 例外的**后果**（force-push 作废复审依据等）、watcher 遇 HOLD 抑制合并交接 | **`.claude/skills/`（相应 skill）** | 这是执行上下文，写进 skill 才能被真正读到 |
+| **合并授权从「人类点击」改为「integrator 裁量」** | **`noos_docs` canonical protocol** | designer：**这不是仓库层可以自行解释出来的权限**——canonical B.0 明确把 merge 授权保留给 Human，**必须由规范正式修改授权模型**；`AGENTS.md` 只能在 canonical 已授权后**投影** |
+| **`HOLD` / `HOLD_CLEARED` 作为 Human control markers 进 B.3** | **`noos_docs` canonical protocol** | 同上：符号与其 authority class 属协议 |
+| **「HOLD 阻断 auto-merge」这条规则本身** | **`noos_docs` canonical protocol** | designer 明确：**否则仅在 `AGENTS.md` 规定它，就是仓库层自行制造 canonical 未授权的 merge gate**（即 PR #77 已裁掉的那类问题） |
+| **「每次 delegated auto-merge 须在 `INTEGRATED` 记录判为常规的依据」** | **`noos_docs` canonical protocol** | designer：应成为 **canonical requirement**，而非建议 |
+| **intake 句子的局部射程澄清** | **`AGENTS.md`**（仓库层） | designer：仓库层**可以**澄清现有 intake 句子的局部射程 |
+| `HOLD` 的 **task/global 范围如何解析到具体 PR**、label 名（`noos:hold`）等仓库细则 | **`AGENTS.md`** | Canonical 定义「HOLD 是阻断 merge 的人类控制闩锁」；**仓库层定义「位置如何解析到具体 PR」** |
+| push 后果（force-push 作废复审依据等）、watcher 遇 HOLD 抑制合并交接 | **`.claude/skills/`** | designer：后果可进 skill / execution context，**作为判断材料，而非治理规则**。watcher 抑制是**优化，不是正确性依赖** |
 | 工作台面板、Hub 的 GitHub 写通道 | **代码** | 机制 |
 | 凭据风险的「已考虑、不立规」 | **项目 memory**（按决定 3） | 防止重复讨论，不占治理篇幅 |
 
+> **初稿错在哪**：初稿把「**push 的机械例外**」列为待进规范的条目——**该条与 §3 的人类决定冲突，已被 designer 拒绝**（见 §4）。
+> 即：**本提案自己把一条人类已否决的规则又列了一遍。**
+
+**总则（designer 原文）**：
+
+> **Repository-local policy may parameterize an upstream-authorized merge lane;
+> it may not create that merge authority by itself.**
+
 **顺序**：规范先改（否则后续都无据），再改 `AGENTS.md`，再改 skill，最后实现面板。
+**在规范落地之前，本提案涉及的 canonical 级条款均无强制力。**
 
 ## 9. 待裁定 / 待实现
 
-**需 Epic Designer 裁定**：
+**需 Epic Designer 裁定 —— 已于 2026-09-20 裁定 `NEEDS_REVISION`**（裁定记录见**附录 A**）：
 
-1. 三条规范级变更（push 例外、合并授权、`HOLD` 入词表）是否成立；
-2. §5 新增的「自动合并须记录判为常规的理由」是否作为强制项；
-3. `HOLD` 作为第 5 个标记的**精确形态**（首行格式、provenance 行、与 `DESIGN:`/`REVIEW:`
-   并列是否合适）。
+1. 三条规范级变更是否成立 → **1(a) push：PARTIAL_ACCEPT 但必须修订**（删去 canonical 层豁免）；
+   **1(b) 合并授权：ACCEPT，但须由规范侧显式落地**；**1(c) HOLD 入 B.3：接受概念，精确语义已修订**。
+2. 「自动合并须记录判为常规的理由」是否作为强制项 → **ACCEPT，作为 MUST**（只约束 delegated lane）。
+3. `HOLD` 的精确形态 → **NEEDS_NARROW_REVISION**，五项已按其裁定修订（见附录 A 的逐条处置）。
 
 **需人类确认**：
 
-4. §7.6 的权限扩张是否可接受（`github.com` 加入 host_permissions 与 content_scripts）。
+4. §7.6 的权限扩张是否可接受（`github.com` 加入 host_permissions 与 content_scripts）。**仍待人类确认。**
 
 **实现切片（裁定后由 orchestrator 拆）**：
 
@@ -237,3 +384,37 @@ label：`noos:hold`。
 4. **面板的站点适配**：GitHub 页面结构（PR/issue）会被改版，选择器需按现有 ChatGPT
    适配同样的方式隔离与测试。
 5. 本文未涉及：是否需要按仓库/组织区分（当前仅 `futouyiba/noos-shuttle`）。
+
+## 附录 A：Epic Designer 裁定记录
+
+**Exact target**：`docs/deliberation-harness/agent-authority-and-halt-v0.md` @ `20d2b418ff3a4943bccecbb39f40ea72733dcc72`
+**Decision**：`NEEDS_REVISION`　**来源**：`des: direct in ChatGPT, 委派: 人`
+**裁定范围**：只覆盖 §9 请求的三项设计问题；**不授权**实现、修改 canonical workflow、merge、deploy 或 closure。
+
+### 逐条处置
+
+| # | designer 的 required revision | 本版处置 |
+| --- | --- | --- |
+| 1 | **删除 canonical 层的「feature-branch push mechanical exception」**；只保留 intake 射程澄清，并与 §3 的人类决定 #4 对齐 | §4 A1 重写；§8 的规范级清单删去该条，并注明**初稿把人类已否决的规则又列了一遍** |
+| 2 | **将 integrator delegated merge authority 明确写成 canonical-level authority change**，保持 repo policy 只是其 projection/parameterization | §5 重写：引 designer 原文与「**may parameterize … may not create**」总则；§8 落点表同步 |
+| 3 | **将「自动合并为何判为常规」设为 `INTEGRATED` 的 MUST audit field** | §5 该条升为 **MUST**，并写明**只约束 delegated lane** |
+| 4 | **把 B.3 分清 workflow marker 与 Human control marker**；纳入 `HOLD` / `HOLD_CLEARED` | §6.6 重写：两张表分列；引「**A HOLD can only remove actuation eligibility; it can never grant it**」 |
+| 5 | **修正 SHA HOLD 与「push 不解除」的矛盾**：SHA 是 assertion anchor，不是自动 expiry boundary | §6.1 重写，含 designer 原文与「`@ abc123` 表示什么／不表示什么」的对照 |
+| 6 | **明确 HOLD marker 与 `noos:hold` label 的 source-of-truth / mismatch fail-closed 规则** | §6.1 新增：marker 是 durable control record、label 是投影；**四种情形的 fail-closed 处置表** |
+| 7 | **明确「HOLD 阻断 auto-merge」本身由 canonical protocol 授权**；`AGENTS.md` 只定义 task/global scope resolution、label 名等仓库细节 | §6.2 与 §6.4 重写；§8 落点表同步 |
+
+### 裁定明确「不接受」的部分
+
+- **不接受**把「推送自己 worktree 的特性分支属机械例外」写入 canonical governance；
+- **不接受** §8 把「push 的机械例外」列入 `noos_docs` 规范级修改；
+- **不接受**把 HOLD 描述成与现有四个**完全同类**的「第 5 个 agent output marker」。
+
+理由（designer 原文要点）：第一条与**本文 §3 已记录的人类决定直接冲突**——
+那里写着「push 的例外不写进治理，交给 agent 判断」。
+
+### Resume condition
+
+> 完成上述**窄修订**后，可在**新 exact head** 回来做一次 **narrow re-adjudication**；
+> **不需要重新讨论**已由 Human 固定的分层、CI、凭据风险、两层开启、永久切换或 label opt-in 决定。
+
+**本版即对该 resume condition 的回应；下一步是那个新 head 上的 narrow re-adjudication。**
