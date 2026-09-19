@@ -84,6 +84,29 @@ describe("background continuation run coordinator", () => {
     expect(active.run?.lastConsumedTurnRef).toBe("turn:t1");
   });
 
+  it("consumes the round once when two worker instances converge the same completion", async () => {
+    // M2: a page that reloads mid-round, and the worker instance that replaces
+    // it, both offer the missing OPERATION_COMPLETED for a durable op that is
+    // already COMPLETED. Only the first may move the Run.
+    const backing: Record<string, unknown> = {};
+    const first = await loadHandler(backing);
+    await send(first.handler, { type: "start", input: START_INPUT });
+    await send(first.handler, { type: "apply", runId: "bcr-bg-1", event: { type: "DISPATCH_ISSUED", operationId: "bcr-bg-1:go:1" }, now: 101 });
+    await send(first.handler, { type: "apply", runId: "bcr-bg-1", event: { type: "OPERATION_ACCEPTED", operationId: "bcr-bg-1:go:1", turnRef: "turn:t1" }, now: 102 });
+
+    const restarted = await loadHandler(backing);
+    const applied = await send(restarted.handler, { type: "apply", runId: "bcr-bg-1", event: { type: "OPERATION_COMPLETED", operationId: "bcr-bg-1:go:1", turnRef: "turn:t1" }, now: 103 });
+    expect(applied.ok).toBe(true);
+    expect(applied.run?.consumedContinuations).toBe(1);
+
+    const replayed = await send(first.handler, { type: "apply", runId: "bcr-bg-1", event: { type: "OPERATION_COMPLETED", operationId: "bcr-bg-1:go:1", turnRef: "turn:t1" }, now: 104 });
+    expect(replayed.ok).toBe(false);
+    expect(replayed.error).toMatch(/non-pending operation/);
+    const settled = await send(restarted.handler, { type: "get_active", providerConversationRef: "conv-a" });
+    expect(settled.run?.consumedContinuations).toBe(1);
+    expect(settled.run?.phase).toBe("AWAITING_HUMAN_DECISION");
+  });
+
   it("archives an intervened run and keeps the candidate pool durable", async () => {
     const { handler } = await loadHandler();
     const send_ = send.bind(null, handler);

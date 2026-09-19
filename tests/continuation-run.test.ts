@@ -125,6 +125,34 @@ describe("applyRunEvent — full assisted budget lifecycle", () => {
     expect(completed.run.status).toBe("ENDED");
     expect(completed.run.stopReason).toBe("BUDGET_EXHAUSTED");
   });
+
+  it("converges a completion exactly once when the same event is offered again", () => {
+    // M2 crash window: the durable operation already completed, so every later
+    // recovery tick can offer the same OPERATION_COMPLETED until the Run applies
+    // it. The second offer must be a no-op, not a second consumed round.
+    const dispatched = applyRunEvent(run({ mode: "AUTO_X5" }), { type: "DISPATCH_ISSUED", operationId: "op-1" }, 101).run;
+    const completed = applyRunEvent(dispatched, { type: "OPERATION_COMPLETED", operationId: "op-1", turnRef: "turn:a" }, 102);
+    expect(completed.run.pendingSubmissionOperationId).toBeUndefined();
+    expect(completed.run.phase).toBe("EVALUATING");
+    expect(completed.run.consumedContinuations).toBe(1);
+    const replayed = applyRunEvent(completed.run, { type: "OPERATION_COMPLETED", operationId: "op-1", turnRef: "turn:a" }, 103);
+    expect(replayed.changed).toBe(false);
+    expect(replayed.error).toMatch(/non-pending operation/);
+    expect(replayed.run.consumedContinuations).toBe(1);
+    expect(replayed.run.acceptedOperationId).toBe("op-1");
+    expect(replayed.run.phase).toBe("EVALUATING");
+  });
+
+  it("keeps the round consumed once across ACCEPT, COMPLETED, and a replayed COMPLETED", () => {
+    const dispatched = applyRunEvent(run({ mode: "AUTO_X5" }), { type: "DISPATCH_ISSUED", operationId: "op-1" }, 101).run;
+    const accepted = applyRunEvent(dispatched, { type: "OPERATION_ACCEPTED", operationId: "op-1", turnRef: "turn:a" }, 102).run;
+    const completed = applyRunEvent(accepted, { type: "OPERATION_COMPLETED", operationId: "op-1", turnRef: "turn:a" }, 103).run;
+    const replayed = applyRunEvent(completed, { type: "OPERATION_COMPLETED", operationId: "op-1", turnRef: "turn:b" }, 104);
+    expect(replayed.changed).toBe(false);
+    expect(replayed.run.consumedContinuations).toBe(1);
+    // The refused replay must not restamp the turn the round actually consumed.
+    expect(replayed.run.lastConsumedTurnRef).toBe("turn:a");
+  });
 });
 
 describe("applyRunEvent — fail-closed paths", () => {
