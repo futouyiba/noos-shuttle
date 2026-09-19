@@ -3,11 +3,15 @@
 > Authority-Level: Candidate
 > Owns: DocGovernance
 >
-> 提案，不是契约。待 Epic Designer 裁定；裁定前不实施。
+> 提案，不是契约。**Epic Designer 已裁定 `PARTIAL_ACCEPT`**（记录见**附录 D**）；本版即对该裁定的
+> resume condition 的回应，**下一步是新 head 上的独立复审**。**裁定通过前不实施。**
 > 任务 issue：`noos-shuttle#76`。参考模型：中鱼升级项目 Notion 文档治理（经人类指定）。
 > **本提案不改变任何既有文档的内容与结构**；它提议的是一套规则，落地另行切片。
 >
-> 本版为回应独立复审 `REQUEST_CHANGES` 的修订版；逐条处置见**附录 C**。
+> 修订记录：**附录 C**（十轮独立复审，按轮次逐条处置）＋ **附录 D**（designer 裁定与逐条处置）。
+>
+> > 自指检验（§8.4）：本文件按自身规则携带 `Authority-Level: Candidate` + `Owns: DocGovernance`。
+> > **该字段目前仍是唯一一处以「本提案的规则」书写的权威声明**——其余既有文档尚未加头（Non-retroactive）。
 
 ## 0. 一句话
 
@@ -189,14 +193,29 @@
 
 **取值（四个，冻结）**：
 
-| 值 | 含义 | 作权威读？ | 与 §1.4 的关系 |
-| --- | --- | --- | --- |
-| `Current` | 该概念的权威读取路径 | 是 | **属 §1.4 的「Authority 文件」→ 改动走 1.2 全项** |
-| `Tombstone` | 语义已吸收，仅作追溯 | 否 | 仍属契约文件 → 同样走 1.2 全项 |
-| `Candidate` | 非权威；须经裁定才晋升 | 否 | 提案类，按 §1.4 该档判定 |
-| `Frozen` | 可冻结数值/证据，**永不成 Current** | 否 | 证据，非契约 |
+| 值 | 含义 | 作权威读？ |
+| --- | --- | --- |
+| `Current` | 该概念的权威读取路径 | 是 |
+| `Tombstone` | 已退役的权威：仍可读作 provenance，但**不是当前设计输入** | 否 |
+| `Candidate` | 非权威；须经裁定才晋升 | 否 |
+| `Frozen` | 可冻结数值/证据，**永不成 Current** | 否 |
 
-（**待裁定**：四个值是否应直接映射为 §1.4 的审核深度档？见附录 B 第 5 问。）
+> **与 §1.4 审核深度的关系（经 designer 裁定）**：**不接受四值与 §1.4 审核深度档的直接等价**。
+> designer 原文：「Authority level describes semantic status; review depth is determined by the canonical
+> workflow and the nature of the change. A Current/authority change necessarily receives the workflow's
+> authority-file treatment, but **the four status values do not themselves redefine §1.4 or create new review classes**.」
+> 即：`Current` 变更**必然**获得 §1.4 的 Authority 文件待遇（那是 §1.4 自己说的），
+> 但**不能反过来说「某个取值 = 某个审核深度」**。
+
+**`Owns:` 的含义（经 designer 裁定，务必按此读）**：
+
+> **`Owns:` 是「用于冲突检测的语义所有权」，不是排他的文件系统写权限。**
+
+**冲突处置必须是 fail-closed**：
+
+> **两份 `Current` 同时声明重叠的 `Owns:` ＝ 治理冲突，必须 fail closed**——
+> **不得**按新旧、文件名、详细度或目录深度来裁决归属。
+> （即：不因为某份更新、更详细、名字更"正式"、或挂得更深，就让它赢。）
 
 **纪律（承接参考模型）**：**Artifact Type ≠ Authority Level**。
 文档名里的 `Final` / `Specification` / `Architecture` / `Consolidated` 只描述**用途与阅读视角**，
@@ -207,13 +226,21 @@
 **消除的缺口**：缺口 2。**准入门**：它消除的是「两份 Current 都声称权威时无从裁决」这一具体失败——
 不解决它，缺口 1 补上的声明反而会**制造**冲突（两份都写 `Current` 时局面比现在更糟）。
 
-**规则**：一个概念只有一个语义源，由 `Owns:` 声明。
+**规则**：一个概念只有一个语义源，由 `Owns:` 声明。**designer 接受其为不变量**。
+
+**允许投影，禁止重新定义（designer 原文的精确边界）**：
+
+> 派生、解释、消费类文档**可以**重复或投影信息，**但必须指回 owning Current，且不得重新定义它**。
+> 这是让 `Owns:` 有用的**最小规则**。
+
+即：**Zero Competing Authority ≠ Zero Duplication**——稳定语义可以少量重复，但**权威只有一个**。
 
 **可检出性**（这一条是它优于一句原则的地方）：同一概念被两份 `Current` 声明 `Owns:` ＝ **可机械检出的冲突**。
 检出时：
 
 - Router 已指明归属 → 以 Router 指向者为准；
-- Router 未列或指向不明 → **视为治理缺陷**，须补 Router，**不得让 agent 自行判断**。
+- Router 未列或指向不明 → **视为治理缺陷**，须补 Router，**不得让 agent 自行判断**；
+- **两者都声称且无法消解 → fail closed**（见 §3.1：不得按新旧/文件名/详细度/目录深度裁决）。
 
 ### 3.3 Router
 
@@ -221,9 +248,14 @@
 
 **落点**：`docs/README.md`（`docs/` 目前**无 README**；单一入口覆盖两个簇）。
 
-**形态**：「问题 → 读哪份 → 有无下钻 → 停止条件」表。
+**形态**：「问题 → 读哪份 → 有无下钻 → 停止条件」表；另含**指针、状态、所有权、provenance** 的导航。
 
-**硬规则**：Router **不存领域结论**；**「链接存在」本身不是读取理由**——上层不复制下钻内容，
+**硬规则**（designer 原文的精确边界）：
+
+> Router **可以**是仓库的阅读路由/索引。它必须承载指针 / 状态 / 所有权 / provenance 的**导航**，
+> **不得复制实质设计结论**。**它是索引，不是第二个 `Current`。**
+
+配套：**「链接存在」本身不是读取理由**——上层不复制下钻内容，
 但必须让 agent 知道**自己是否缺了下钻内容**。
 
 ### 3.4 裁决登记
@@ -263,7 +295,16 @@
 而是**给已有的零散形态一个可检索的归口**。
 判据见下（参考文献的原句），可操作、可判真假。
 
-**落点**：`docs/pitfalls/P-YYYYMMDD-NNN.md`，一文件一条——**与裁决登记同构**（两套登记共用一种模式，刻意为之）。
+**收窄后的收录范围（经 designer 裁定）**：
+
+> 一条 `pitfalls/P-*.md` **只有在**满足以下条件时才成立：它是一个**持久的被否决方案 / 已知陷阱**，
+> 且**其被重新发现很可能会导致返工或回归**。
+>
+> **普通的局部 non-goals 留在其所属文档中，不必复制进登记。**
+
+条目须携带：**被否决的命题、理由/证据、权威/provenance、适用范围、重开条件**。
+
+落点：`docs/pitfalls/P-YYYYMMDD-NNN.md`，一文件一条——**与裁决登记同构**（两套登记共用一种模式，刻意为之）。
 
 **条目格式**：
 
@@ -293,11 +334,16 @@
 > **一条 `D-` 编号既不是 review 链接也不是 SHA 形态，无法从 §1.3 推导出来。**
 > 更要紧的是：若在仓库层自行增设这条门禁，**就是在做本提案所要防止的事**（制造第二真源）。
 
-**修正后的表述**：
+**修正后的表述（**经 designer 裁定进一步收紧**）**：
 
-> **本提案提议给规范 §1.3 增加一项 PR body 要求**——实施某裁定的 PR，其 body 须引用该裁定的 `D-` 编号。
-> **该修改属规范级，须按规范第 1 节走独立审核后由规范侧落地**（见 §11）。**在规范侧落地之前，
-> 本项不具备强制力**，`rulings/` 的写入依赖下述责任约定。
+> **本提案不主张、也不强制任何「实施 PR 须引用 `D-` 编号」的仓库级要求。**
+> 在 canonical workflow spec 明确采纳之前，`noos-shuttle` **不得制造第二套合并策略**。
+> 本提案**只提议**该上游变更（见 §11），并**自愿**在自身 PR 中引用 `D-` 编号作为示范；
+> 任何对 `noos_docs` 的修改都需要它自己经显式授权的 Work Item。
+
+> **designer 原文（就地记录）**：
+> 「Do not claim or enforce "implementation PR must cite a D-number" as repository policy until the canonical
+> workflow specification explicitly adopts it. … `noos-shuttle` must not manufacture a second merge policy.」
 
 **在规范侧落地前，责任人按约定确定**：由**执行该裁定的实现方**在其实施 PR 中固化；
 若无人执行该裁定（`#57`/`#58` 正是此形态），则由 **watcher 上报**（其「未分类必上报」已覆盖 designer 原生裁定），
@@ -325,26 +371,52 @@
 （例：`#67` 的 disposition 至今有效，宜作 `in-force` 轴的示例；**注**：它是 `PARTIAL_ACCEPT` 且**附 Required delta**，
 严格说其要求尚未满足——故它同时是「in-force 但未完成」的样本，不是「已落地」的样本。）
 
-**（4）与 Current 的双向绑定（最关键的一条）**
+**（4）与 Current 的双向绑定（本版按 designer 裁定**重写**）**
 
-**裁定记录 ≠ 裁定内容。** 只有记录、没有纳入，就只是「被存档」而不是「被纳入」。
+> **初稿错误（本 PR 最重要的一处）**：初稿写「若裁定需改变某 `Current` 的语义，则该 `Current` 更新之前，
+> 该条目**不得被当作已生效依据引用**」。**designer 明确否掉了这个语义**：
+>
+> > 移除任何「有效的 Designer 裁定在 Current 更新前『尚未生效』」的规则。
+> > **裁定在其 exact target 上自发布时即具权威**；`pending-incorporation` 只意味着
+> > **文档阅读路径尚未吸收它**。
+>
+> 治理不变量（designer 原文）：
+> **LLM proposes; Policy authorizes; Reducer/durable action applies; GitHub records provenance.**
+>
+> **即：权威来自流程，不来自文档收录。** 收录只让裁定**可被发现**，**不追溯创造它的权威**。
+> 初稿把「可发现性」当成了「生效条件」——那会**意外造出第二套权威体系**。
+
+**两条腿（只有一条改变 canonical 阅读路径）**：
 
 ```
-裁定评论（GitHub，权威源）
+裁定评论（GitHub，权威源）        ← 权威在此，自发布即生效
    │
-   ├─→ 实质内容 ──→ 落到相应 Current …… 这才让裁定「生效」
-   │                    └─ 该 Current 反向指回 D-xxx（可追溯）
-   └─→ 事件记录 ──→ rulings/D-YYYYMMDD-NNN.md（逐字存档）
+   ├─ Leg A：事件/provenance ──→ rulings/D-*.md（逐字存档）
+   │        …… 记录裁定「发生过」，不改变任何阅读路径
+   └─ Leg B：语义 delta ──────→ 落进 owning Current（当该裁定确实改变它时）
+            …… 只有这一步改变 canonical 文档阅读路径；该 Current 反向指回 D-xxx
 ```
 
-**硬规则**：
+**两条腿都做才算文档收口；但只有 Leg B 改变阅读路径。**
+**一条不要求 `Current` 变更的裁定，可以仅凭 provenance/档案收口**——不必为它硬造一次 Current 改动。
 
-> 若一条裁定的内容需要改变某个 `Current` 的语义，则在该 `Current` 更新之前，
-> 该条目的 `Status` **必须**标为 `pending-incorporation`，且**不得被当作已生效依据引用**。
+**`pending-incorporation` 的正确含义（本版改写）**：
+
+> 它标记的是**文档阅读路径尚未吸收该裁定**，**不是**裁定尚未生效。
+> **被要求读 `Current` 的消费者应被告知该 Current 已过期/待补**；
+> 但**档案不得抹除或暂停底层裁定**。
 
 **措辞更正（第一轮 m4）**：初稿称这使缺口「可**检出**」。实际上「该裁定是否需要改 Current」
 「Current 是否已反映该裁定」都是**语义判断，无机械检出路径**。故降级为：
 **有名字、可审计**——它的价值在于让缺口有一个**必须被填写的字段**，而不是让机器发现它。
+
+**档案不是权威（designer 新增的一条）**：
+
+> `D-*` 文件是**权威 GitHub 裁定的 provenance 投影，不是替代权威**。
+> 若档案文本与源裁定不一致，**以源裁定为准，且档案算缺陷**。
+
+故条目必须保留：source 评论 URL/id、exact target SHA、decision、以及**逐字决定性文本**
+（或一个无歧义的精确引用边界）。
 
 **（5）与既有条款的关系**
 
@@ -389,15 +461,18 @@ docs/README.md ………………………… Router（只说去哪读，不存�
   │
   ├─→ rulings/D-*.md ……………… 裁定逐字存档（§2.3 记录的落点）
   ├─→ pitfalls/P-*.md …………… 反设计登记
-  ├─→ evidence/*.json …………… Frozen（可冻结数值，永不成 Current）
-  └─→ candidates/ …………………… Candidate
+  └─→ evidence/*.json …………… Frozen（可冻结数值，永不成 Current）
 ```
 
-> **修正（第一轮 M2）**：**`candidates/` 在两个仓库的默认分支上都不存在**。
-> noos-shuttle 无此目录；noos_docs 只有 `review-candidate-v1..v4.md` 与
-> `v1-primary-design-sedimentation-candidate.md` 等**文件**，无 `candidates/` 目录。
-> （`chatgpt-provider-recovery-go-n-proposal-v0.md` 所引的 `docs/deliberation-harness/candidates/2026-09-17-*.md`
-> 两个路径在默认分支上均不存在——它们只存在于未合并分支。）
+> **`candidates/` 已从拓扑中移除（designer 裁定 REJECT）**：
+>
+> > Candidate **是语义状态，不是要求的文件系统位置**。既有的或未来的 candidate 目录可以作为
+> > **组织上的便利**存在，但**晋升不依赖于把文件移进/移出某个特定目录**。
+>
+> 这与第一轮的实测一致：**`candidates/` 在两个仓库的默认分支上都不存在**
+> （noos_docs 只有 `review-candidate-v1..v4.md` 等**文件**）。既然它从未存在、且晋升不应依赖位置，
+> **本提案不再提议新建该目录**——`Candidate` 仅作为 `Authority-Level:` 的一个取值存在。
+
 > 因此 **`candidates/` 是本提案提议的**新建**结构，不是「既有」**；它须在附录 A 过准入门。
 
 ## 5. 阅读预算与下钻提示
@@ -422,14 +497,21 @@ Router → 1 份 Current →（仅当需要依据时）1 份 ruling/pitfall → 
 
 ## 7. 晋升与退休
 
+**总则（designer 裁定）**：
+
+> `Candidate → Current` 与 `Current → Tombstone/historical` 的转换**需要一次显式授权的裁定与 provenance**；
+> **绝不**从合并时间、文件名，或「出现了更新的文档」**推断**。
+> **晋升还必须解决重叠的 `Owns:` 声明**（见 §3.1 的 fail-closed）。
+
 | 从 | 到 | 条件 |
 | --- | --- | --- |
-| `Candidate` | `Current` | 须引用一份 `D-` 裁定 |
-| `Current` | `Tombstone` | 被新的 `Current` 完整吸收时；文件保留，头改 `Tombstone`，`Supersedes` 反向指回 |
+| `Candidate` | `Current` | 须有**显式授权的裁定** + provenance；且须先消解重叠 `Owns:` |
+| `Current` | `Tombstone` | 被新的 `Current` 完整吸收时——同样须显式授权，不因新文档出现而自动发生；文件保留，头改 `Tombstone`，`Supersedes` 反向指回 |
 | 任何 | **删除** | 仅限规范 §2.1 允许的路径：先以 commit SHA 固化引用 |
 
 > **范围声明（第一轮 m2）**：规范 §2.1 的不可删除条款**原文只针对「proposal 文档」**。
 > 本表把它推广到**所有**文档，**这是本提案的推广，不是法条原义**。该推广须经裁定。
+> （截至本版，designer 对该推广的裁定为——见**附录 D** 的裁定记录。）
 
 ## 8. 验证用例走查
 
@@ -489,22 +571,23 @@ Router → 1 份 Current →（仅当需要依据时）1 份 ruling/pitfall → 
 4. **「一个概念」的边界**：只在出现实际冲突时才去界定，不预先给清单。
 5. **Non-retroactive 与批量加头的张力**：边界是「加头可、改正文不可」；但按 §1.4 加头仍需全项审核（§6 末段）。
 6. **Grandfather 的代价**：旧散文 / 新字段两种写法并存，校验要认两种。
-7. **`Tombstone` vs `Historical` 的用词争议——待人类裁定（占位）**。
+7. **`Tombstone` vs `Historical` 的用词——designer 明示保留给人类（`NEEDS_HUMAN`）**。
    本提案用既有词 `Tombstone`；反对理由是「生命周期极性不同」并举 `#67` 为反例。
-   §3.6(3) 已给出轴分离的解释（文档权威 vs 裁定在效是两个轴）。**用词归人类定**，裁定前不据此实施。
-8. **`candidates/` 的原状**（复审 M2）：本提案把它列为**待新建**，但参考模型把 `Candidate` 当作既有类。
-   需一并裁定：是新建目录，还是沿用 noos_docs 的 `*-candidate.md` 命名（后者已有实例）。
+   §3.6(3) 已给出轴分离的解释（文档权威 vs 裁定在效是两个轴）。
+   **该命名选择不阻塞其余 delta 的实施或复审**（designer 原文）。
+8. ~~`candidates/` 的原状~~ → **已由 designer 裁定并结清**：**拒绝作为治理要求**。
+   Candidate 是**语义状态，不是文件系统位置**；晋升**不得依赖移动文件**。§4 已从拓扑移除该目录（见该节）。
 
-## 11. 本提案需要规范侧改动的地方（新增，来自复审 M5）
+## 11. 本提案需要规范侧改动的地方
 
 以下**只能提议、必须由规范侧落地**。在落地前，本提案相关条款**不具备强制力**：
 
-| 提议 | 触及 | 理由 |
+| 提议 | 触及 | 状态 / 理由 |
 | --- | --- | --- |
-| §3.6(1)：PR body 须引用实施裁定的 `D-` 编号 | 规范 §1.3 | 这是新的合并门禁要求。**在仓库层自行增设它就是制造第二真源** |
-| §7 的不可删除推广到所有文档 | 规范 §2.1 | 原文只针对 proposal 文档 |
-| §3.1 的取值与 §1.4 审核深度档的映射 | 规范 §1.4 | 若映射，则属对该节的具体化 |
-| §3.6(6) 对「固化裁定」审核深度的重新指派（可降级为引用核对） | 规范 §1.4 | 该节规定触及 Authority 文件的改动不得以文档路径降级；本条**主张** `rulings/` 的逐字转录属可降级情形。**这是对 §1.4 的具体化主张，须由规范侧确认**；确认前按 §1.4 从严执行 |
+| 「实施裁定的 PR 须引用 `D-` 编号」 | 规范 §1.3 | **designer 裁定 DEFER**：在规范明确采纳前**不主张也不强制**；本提案**只提议**该上游变更，并**自愿**示范。**`noos-shuttle` 不得制造第二套合并策略**。任何对 `noos_docs` 的修改都需要它自己经显式授权的 Work Item |
+| §7 的不可删除推广到所有文档 | 规范 §2.1 | 原文只针对 proposal 文档；**推广仍待人裁**（见**附录 D** 的裁定记录） |
+| §3.6(6) 对「固化裁定」审核深度的重新指派（引用核对而非全项） | 规范 §1.4 | 该节规定触及 Authority 文件的改动不得以文档路径降级；本条**主张** `rulings/` 的逐字转录属可降级情形。**须由规范侧确认**；确认前按 §1.4 从严执行 |
+| ~~§3.1 的取值与 §1.4 审核深度档的映射~~ | 规范 §1.4 | **designer 已明确拒绝**该直接等价（见 §3.1）——**已从待议项中移除** |
 
 ## 附录 A：与参考模型的差异（哪些没采纳、为什么）
 
@@ -516,7 +599,7 @@ Router → 1 份 Current →（仅当需要依据时）1 份 ruling/pitfall → 
 | Semantic Owner（一概念一语义源） | **采纳（计为新增概念）** | 缺口 2 的正解；**本版已按复审 M3 更正归类** |
 | Historical | **采纳但用既有词 `Tombstone`** | 避免同一概念两个名字 |
 | Validation-Frozen | **采纳** | 对应既有 `evidence/` |
-| Candidate | **采纳，但容器待定** | **默认分支无 `candidates/`**（复审 M2）；见 §10 第 8 条 |
+| Candidate | **采纳为语义状态；拒绝为目录要求** | designer：Candidate 是**语义状态不是文件系统位置**，晋升不得依赖移动文件 |
 | Pitfall Registry | **采纳** | 对应缺口 4 |
 | Project / Domain Current 两级分层 | **未采纳** | 为「跨域工作区」设计；本仓库单一产品线，采用会违反准入门 |
 | Current Fact Owner | **未采纳** | 其存在理由是「同一数值多处消费需单一真源」，本仓无此形态 |
@@ -734,3 +817,52 @@ cea4071 §8 逐字转录的确实是 `5717432171`、后两条为「被指向」�
 
 本轮实跑（历轮声称「已删除/已改」的 11 个旧串逐个 grep）：**除作为缺陷被引述者外，全部 0 命中**。
 这条检查补上了「声称已改」类的机械化缺口——与第六轮对「计数」、第七轮对「引文」所做的同构。
+
+## 附录 D：Epic Designer 裁定记录
+
+**Exact target**：`docs/deliberation-harness/doc-governance-proposal-v0.md` @ `1fa23f590621bbabf3b7a67f25969d3f6d0dcc4f`
+**Decision**：`PARTIAL_ACCEPT`　**event**：`pr77-doc-governance-primary-design`
+**来源**：PR #77 线程的 designer disposition 评论（2026-09-19T12:32:19Z）
+
+> 本附录按 §3.6 的 **Leg A（事件/provenance）** 记录该裁定。**权威在源评论处**；
+> 本附录是**投影**，若与源不一致，**以源为准且本附录算缺陷**（§3.6(4)）。
+
+### 裁定接受的部分
+
+权威声明头 + `Owns:`（窄）、一概念一语义源（不变量）、Router（索引而非第二 Current）、
+裁决登记（**作为 provenance 投影而非替代权威**）、两条腿写入路径（**Leg A 记录、Leg B 改变阅读路径**）、
+晋升/退休须显式授权、**三条机械卫生作为「作者检查」而非治理概念**。
+
+### 裁定推翻或收紧的部分（本版已改）
+
+| # | 裁定 | 本版处置 |
+| --- | --- | --- |
+| 1 | **`D-` 编号合并门禁 → DEFER**：在规范明确采纳前不得主张或强制；不得制造第二套合并策略 | §3.6(1) 重写；§11 第 1 行改标 DEFER |
+| 2 | **`pending-incorporation` 语义 → REVISE**：删去「裁定未生效」；**裁定在其 exact target 上自发布即具权威**；该状态只表示**文档阅读路径尚未吸收** | §3.6(4) 重写 |
+| 3 | **`candidates/` → REJECT** 为治理要求；Candidate 是语义状态不是文件位置 | §4 拓扑移除该目录；§10 第 8 条结清；附录 A 改 |
+| 4 | **Authority-Level ↔ §1.4 审核深度 → REJECT** 为直接等价 | §3.1 该列删除并注明 |
+| 5 | 反设计登记 → 收窄至「持久的被否决方案/已知陷阱，且重新发现很可能导致返工或回归」；**普通 non-goals 留在原文档** | §3.5 加收窄条款 |
+| 6 | 重叠 `Owns:` 冲突 → **fail closed**，不得按新旧/文件名/详细度/目录深度裁决 | §3.1、§3.2 |
+| 7 | `Owns:` 是**冲突检测的语义所有权**，非排他写权限 | §3.1 |
+| 8 | 晋升/退休**绝不**从合并时间/文件名/更新文档推断 | §7 |
+
+### 保留给人类
+
+**`Tombstone` vs `Historical` 的命名**（`NEEDS_HUMAN`）——designer 明示不猜，
+且**该选择不阻塞其余 delta 的实施或复审**。
+
+### 边界（designer 明示）
+
+不授权编辑 `futouyiba/noos_docs`；不授权运行时代码变更、合并、部署或 issue 关闭；
+不要求追溯重写既有文档；**不使 `rulings/`、`pitfalls/` 或 `docs/README.md` 成为独立权威源**；
+不改变既有 exact-head 复审规则或人类合并授权。
+
+### Resume condition
+
+> **在新的 head 上修订提案以编码上述区分**，尤其是：
+> **裁定权威 vs 文档收录**、**`D-` 记录档案 vs 权威源**、**不得设仓库级 `D-` 编号合并门禁**、
+> **Candidate 状态独立于目录**、**负面知识收录收窄至持久的被否决方案/陷阱**。
+> 然后**对那个 exact head 取得一次新的独立复审**。复审之后，提案可回到晋升/整合检查；
+> **实现切片另行**。
+
+**本版即对该 resume condition 的回应；下一步是那个新 head 上的独立复审。**
