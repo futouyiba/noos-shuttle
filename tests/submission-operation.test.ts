@@ -1088,4 +1088,46 @@ describe("per-thread submission authority", () => {
     expect(absent.authority).toBe("ABSENT");
     expect(absent.outcome).toBe("STILL_AMBIGUOUS");
   });
+
+  // The two halves of the emission guard's discriminator: the same SUPERSEDED
+  // verdict, opposite sameFence. The authority gate compares the slot against
+  // the observation, which is equally false when the slot rotated (a real loss)
+  // and when a sibling carrier re-fenced the operation through recover (not a
+  // loss). Only the operation's durable fence separates the two.
+  it("reports a rotated authority slot as a real loss, fence unchanged", async () => {
+    const backing: Record<string, unknown> = {};
+    const [ledger] = ledgers(backing);
+    const threadA = threadContext("browser-tab:1", "conversation:a", "tA", "owner-a", 10);
+    await ledger.initializeAuthority(threadA);
+    await ledger.prepare(threadInput("go-a", threadA));
+    await ledger.claim("go-a", threadA, 11);
+
+    // Authority-only rotation: ensureAuthority writes the slot and never touches
+    // the operation record, so the fence this page dispatched under survives.
+    await ledger.initializeAuthority({ ...threadA, leaseOwnerRef: "owner-a2", sourceObservedAt: 40 });
+
+    const superseded = await ledger.reconcile("go-a", acceptedObservation(threadA, 50));
+    expect(superseded.authority).toBe("SUPERSEDED");
+    expect(superseded.sameFence).toBe(true);
+    expect(superseded.operation?.dispatchFence?.leaseOwnerRef).toBe("owner-a");
+  });
+
+  it("reports a sibling recover as a benign re-fence, durable fence rewritten", async () => {
+    const backing: Record<string, unknown> = {};
+    const [ledger] = ledgers(backing);
+    const threadA = threadContext("browser-tab:1", "conversation:a", "tA", "owner-a", 10);
+    await ledger.initializeAuthority(threadA);
+    await ledger.prepare(threadInput("go-a", threadA));
+    await ledger.claim("go-a", threadA, 11);
+
+    // What a second tab on the same conversation does: recover re-stamps the
+    // operation's fence with its own leaseOwnerRef in the same write as the slot.
+    const recovered = await ledger.recover("go-a", { ...threadA, leaseOwnerRef: "owner-a2", sourceObservedAt: 30 }, 30);
+    expect(recovered?.dispatchFence?.leaseOwnerRef).toBe("owner-a2");
+
+    // The losing page keeps observing under the fence it still holds.
+    const superseded = await ledger.reconcile("go-a", acceptedObservation(threadA, 50));
+    expect(superseded.authority).toBe("SUPERSEDED");
+    expect(superseded.sameFence).toBe(false);
+  });
 });

@@ -59,8 +59,18 @@ export type SubmissionOperationMutation =
  * on ABSENT with no re-acquisition path. That case wedges identically before
  * the change, so it is recorded rather than wired to a trigger; the firing
  * policy lives in content/submission-authority-loss.ts.
+ *
+ * `sameFence` is present on every SUPERSEDED result and states whether the
+ * operation's durable dispatch fence still equals the fence the caller observed.
+ * SUPERSEDED alone cannot tell a real loss from a sibling carrier's benign
+ * re-fence: `recover` rewrites `operation.dispatchFence` while also rotating the
+ * slot, so a page that lost the race to its own sibling observes SUPERSEDED for
+ * an operation that is still valid. In that case the durable fence carries the
+ * sibling's `leaseOwnerRef` and `sameFence` is false. `true` means the slot moved
+ * behind an otherwise untouched operation — nothing re-fenced it, so the caller's
+ * claim really is gone.
  */
-export type SubmissionReconcileResult = { outcome: "PROVEN_ACCEPTED" | "PROVEN_NOT_ACCEPTED" | "STILL_AMBIGUOUS"; authority?: "OK" | "ABSENT" | "SUPERSEDED"; operation?: SubmissionOperation };
+export type SubmissionReconcileResult = { outcome: "PROVEN_ACCEPTED" | "PROVEN_NOT_ACCEPTED" | "STILL_AMBIGUOUS"; authority?: "OK" | "ABSENT" | "SUPERSEDED"; sameFence?: boolean; operation?: SubmissionOperation };
 export interface SubmissionOperationStore {
   get(key?: string): Promise<unknown>;
   set(value: Record<string, unknown>): Promise<unknown>;
@@ -289,6 +299,15 @@ export class SubmissionOperationLedger {
       // observations from a page or worker that outlived the operation.
       if (!executionOwningStates.has(operation.state)) return { records, result: { outcome: "STILL_AMBIGUOUS" as const, operation: cloneOperation(operation) } };
 
+      // Whether the operation still carries the fence this caller dispatched
+      // under. Hoisted above the gate so the SUPERSEDED verdict can report it:
+      // the gate compares the slot against the observation, which is equally
+      // false for a rotated slot (a real loss) and for an operation a sibling
+      // carrier re-fenced through recover (not a loss — that sibling is now its
+      // actuator). Only the durable fence tells the two apart.
+      const sameFence = Boolean(observation.dispatchFence && operation.dispatchFence &&
+        sameDispatchFence(observation.dispatchFence, operation.dispatchFence));
+
       // Split the gate's previously collapsed situations into a diagnosis the
       // caller can act on. The predicate is unchanged; what moved is which slot
       // is read — getAuthority is now keyed by the operation's own thread, so an
@@ -310,14 +329,12 @@ export class SubmissionOperationLedger {
         // The slot exists but no longer matches this operation's observation.
         // Within one thread authority only ever moves forward (ensureAuthority
         // refuses a non-newer context), so this cannot heal by waiting.
-        return { records, result: { outcome: "STILL_AMBIGUOUS" as const, authority: "SUPERSEDED" as const, operation: cloneOperation(operation) } };
+        return { records, result: { outcome: "STILL_AMBIGUOUS" as const, authority: "SUPERSEDED" as const, sameFence, operation: cloneOperation(operation) } };
       }
 
       const baseline = operation.preSubmitBaseline;
       const claimedAt = operation.dispatchClaimedAt;
       const observationTime = observation.observedAt;
-      const sameFence = Boolean(observation.dispatchFence && operation.dispatchFence &&
-        sameDispatchFence(observation.dispatchFence, operation.dispatchFence));
       const lastEvidenceTime = operation.lastReconciliationEvidence?.observedAt;
       if (claimedAt === undefined || observationTime === undefined || observationTime <= claimedAt ||
         observationTime <= operation.lastObservedAt ||

@@ -3389,7 +3389,7 @@ async function reconcileActiveSubmission(observation: CarrierObservation): Promi
   try {
     const response = await sendExtensionMessage<
       { type: "NOOS_SUBMISSION_MUTATION"; mutation: Record<string, unknown> },
-      { ok?: boolean; result?: { outcome?: string; authority?: "OK" | "ABSENT" | "SUPERSEDED"; operation?: { state?: string } } }
+      { ok?: boolean; result?: { outcome?: string; authority?: "OK" | "ABSENT" | "SUPERSEDED"; sameFence?: boolean; operation?: { state?: string } } }
     >({
       type: "NOOS_SUBMISSION_MUTATION",
       mutation: {
@@ -3414,6 +3414,7 @@ async function reconcileActiveSubmission(observation: CarrierObservation): Promi
     if (!response?.ok || !result) return;
     const authorityLoss = evaluateAuthorityLoss({
       authority: result.authority,
+      sameFence: result.sameFence,
       now: Date.now(),
       windowMs: SUBMISSION_STABLE_WINDOW_MS,
       since: submissionAuthorityLossSince,

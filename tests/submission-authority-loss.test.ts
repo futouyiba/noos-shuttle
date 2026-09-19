@@ -7,6 +7,7 @@ const active = (over: Partial<{ operationId: string; logicalThreadId: string }> 
   ({ operationId: "go-1", logicalThreadId: "t1", ...over });
 const observe = (over: Partial<AuthorityLossInput> = {}) => evaluateAuthorityLoss({
   authority: "SUPERSEDED",
+  sameFence: true,
   now: 5_000,
   windowMs: 2_000,
   since: null,
@@ -32,6 +33,17 @@ describe("evaluateAuthorityLoss", () => {
 
   it("never fires on ABSENT, which has no true-positive producer", () => {
     expect(observe({ authority: "ABSENT", since: 0, now: 1_000_000 })).toEqual({ since: null, fire: false });
+  });
+
+  it("never fires when the durable fence was re-fenced under this page", () => {
+    // A sibling tab on the same conversation re-fenced the operation through
+    // recover, so nothing was lost: the sibling is its actuator now, and the
+    // Run it is driving is still valid.
+    expect(observe({ since: 0, now: 1_000_000, sameFence: false })).toEqual({ since: null, fire: false });
+  });
+
+  it("suppresses rather than fires when the fence verdict is missing", () => {
+    expect(observe({ since: 0, now: 1_000_000, sameFence: undefined })).toEqual({ since: null, fire: false });
   });
 
   it("requires the diagnosed operation to be the Run's pending one", () => {

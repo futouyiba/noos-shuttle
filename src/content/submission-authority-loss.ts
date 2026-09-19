@@ -25,12 +25,27 @@
  * per-thread keying there is no shared slot to be taken over, and even before
  * it, another conversation winning a slot is not this Run losing anything.
  * Hence the explicit identity checks below rather than a bare "not OK".
+ *
+ * SUPERSEDED alone is likewise not enough. Two tabs on one conversation both
+ * adopt the Run and both re-fence the operation through recover, which stamps
+ * the later tab's leaseOwnerRef into the operation's durable dispatch fence. The
+ * loser then reads a stable SUPERSEDED for an operation that is still valid and
+ * being driven by its sibling — terminating that Run would turn a carrier race
+ * into a fail-safe. The durable fence is what separates the two, so the verdict
+ * requires `sameFence === true`: the slot moved, but nothing re-fenced the
+ * operation behind us. `false` and `undefined` both suppress.
  */
 
 export type SubmissionAuthorityDiagnosis = "OK" | "ABSENT" | "SUPERSEDED";
 
 export interface AuthorityLossInput {
   authority: SubmissionAuthorityDiagnosis | undefined;
+  /**
+   * Whether the operation's durable dispatch fence still equals the fence this
+   * page observed. Only meaningful alongside SUPERSEDED; the verdict requires
+   * `true`, so a missing value suppresses rather than fires.
+   */
+  sameFence?: boolean;
   now: number;
   windowMs: number;
   /** When this page first saw the diagnosis hold continuously; null if not tracking. */
@@ -48,7 +63,8 @@ export interface AuthorityLossVerdict {
 export function evaluateAuthorityLoss(input: AuthorityLossInput): AuthorityLossVerdict {
   const active = input.active;
   const run = input.run;
-  const superseded = input.authority === "SUPERSEDED" && active !== null && run !== null &&
+  const superseded = input.authority === "SUPERSEDED" && input.sameFence === true &&
+    active !== null && run !== null &&
     run.status === "ACTIVE" &&
     run.pendingSubmissionOperationId === active.operationId &&
     active.logicalThreadId === run.logicalThreadId;
