@@ -602,6 +602,235 @@ describe("content script smoke flow", () => {
     await page.close();
   }, 15_000);
 
+  it("converges a Run whose operation completed durably before its Run event survived", async () => {
+    // Slice (c) M2. The crash window is real: index.ts records COMPLETED on the
+    // durable operation and only then offers OPERATION_COMPLETED to the Run, so a
+    // reload in between leaves a COMPLETED operation behind a Run that still
+    // records it as pending. No code path used to reach that operation again --
+    // restoreActiveSubmission lists execution-owning states only -- so the Run
+    // waited on MAX_IN_FLIGHT=1 forever. Reproducing the window here means
+    // building exactly that durable pair through production paths and letting a
+    // freshly booted content script (the reload) come up on it.
+    const page = await newMockChatPage({ startWithHandoffs: false, injectContentScript: false });
+    await page.evaluate(() => {
+      const listeners: Array<(message: unknown, sender: unknown, sendResponse: (response: unknown) => void) => unknown> = [];
+      const backing: Record<string, unknown> = {};
+      const sendMessage = async (message: unknown) => new Promise<unknown>(resolve => {
+        if ((message as { type?: string }).type === "NOOS_OBSERVATION_CARRIER") {
+          resolve({ carrierRef: "browser-tab:11" });
+          return;
+        }
+        let settled = false;
+        const complete = (response: unknown) => {
+          if (!settled) {
+            settled = true;
+            resolve(response);
+          }
+        };
+        const listener = listeners[0];
+        if (!listener) {
+          complete(undefined);
+          return;
+        }
+        const returned = listener(message, {
+          id: "extension-id",
+          frameId: 0,
+          tab: { id: 11 },
+          url: window.location.href
+        }, complete);
+        if (returned !== true) complete(undefined);
+      });
+      (globalThis as unknown as { realLedgerBacking: Record<string, unknown> }).realLedgerBacking = backing;
+      (globalThis as unknown as { chrome: any }).chrome = {
+        runtime: {
+          id: "extension-id",
+          getURL: (path: string) => `chrome-extension://mock/${path}`,
+          sendMessage,
+          lastError: undefined,
+          onInstalled: { addListener: () => undefined },
+          onMessage: { addListener: (listener: typeof listeners[number]) => listeners.push(listener) }
+        },
+        storage: {
+          local: {
+            get: async (key: string) => ({ [key]: backing[key] }),
+            set: async (value: Record<string, unknown>) => Object.assign(backing, value),
+            remove: async () => undefined
+          }
+        },
+        downloads: { download: async () => 1 }
+      };
+    });
+    await page.addScriptTag({ content: `(function () {\n${serviceWorkerScript}\n})();` });
+    await page.evaluate(() => {
+      (globalThis as any).providerDispatches = 0;
+      const main = document.querySelector("main")!;
+      // The mock provider completes whatever round it is handed: the submitted
+      // payload comes back as a user message (so the acceptance fingerprint still
+      // matches the operation's payload) and then a stable assistant turn.
+      document.querySelector("button")!.addEventListener("click", () => {
+        (globalThis as any).providerDispatches++;
+        const text = document.querySelector("#prompt-textarea")!.textContent!;
+        const user = document.createElement("div");
+        user.dataset.messageAuthorRole = "user";
+        user.textContent = text;
+        main.append(user);
+        const stop = document.createElement("button");
+        stop.dataset.testid = "stop-button";
+        stop.textContent = "Stop";
+        main.append(stop);
+        setTimeout(() => {
+          stop.remove();
+          const assistant = document.createElement("div");
+          assistant.dataset.messageAuthorRole = "assistant";
+          assistant.textContent = "Round one complete.";
+          main.append(assistant);
+        }, 200);
+      });
+    });
+    await page.addScriptTag({ content: contentScript });
+    await clickShuttle(page, ".surface-fab");
+    await clickShuttle(page, "[data-action='generate-capture']");
+    await expect.poll(
+      () => page.evaluate(() => (globalThis as any).realLedgerBacking.noosSubmissionOperations?.[0]?.state),
+      { timeout: 20_000 }
+    ).toBe("COMPLETED");
+
+    // The Run half of the crash window, through the production Run RPCs only:
+    // a dispatched round is accepted (the round is consumed here, before the
+    // durable completion), and DISPATCH_ISSUED stays the last Run event the Run
+    // ever received.
+    const induced = await page.evaluate(async () => {
+      const backing = (globalThis as any).realLedgerBacking;
+      const operation = backing.noosSubmissionOperations[0];
+      const send = (globalThis as any).chrome.runtime.sendMessage;
+      const now = Date.now();
+      const started = await send({ type: "NOOS_CONTINUATION_RUN_MUTATION", mutation: { type: "start", input: {
+        runId: "bcr-m2-crash",
+        workItemId: "shuttle-bcr-run",
+        logicalThreadId: operation.logicalThreadId,
+        providerConversationRef: operation.providerConversationRef,
+        bindingEpoch: operation.dispatchFence.bindingEpoch,
+        maxContinuations: 5,
+        mode: "AUTO_X5",
+        now
+      } } });
+      const dispatched = await send({ type: "NOOS_CONTINUATION_RUN_MUTATION", mutation: { type: "apply", runId: "bcr-m2-crash",
+        event: { type: "DISPATCH_ISSUED", operationId: operation.operationId }, now: now + 1 } });
+      const accepted = await send({ type: "NOOS_CONTINUATION_RUN_MUTATION", mutation: { type: "apply", runId: "bcr-m2-crash",
+        event: { type: "OPERATION_ACCEPTED", operationId: operation.operationId, turnRef: "turn:round-1" }, now: now + 2 } });
+      return {
+        started: started.ok,
+        dispatched: dispatched.ok,
+        accepted: accepted.ok,
+        phase: accepted.run?.phase,
+        consumedContinuations: accepted.run?.consumedContinuations,
+        pendingSubmissionOperationId: accepted.run?.pendingSubmissionOperationId,
+        providerConversationRef: operation.providerConversationRef,
+        operationState: operation.state,
+        revision: backing.noosSubmissionOperationsRevision,
+        userMessageCount: document.querySelectorAll("[data-message-author-role='user']").length
+      };
+    });
+    expect(induced).toMatchObject({
+      started: true,
+      dispatched: true,
+      accepted: true,
+      phase: "ASSISTANT_GENERATING",
+      consumedContinuations: 1,
+      operationState: "COMPLETED"
+    });
+    // The Run is waiting on the operation that already completed.
+    expect(induced.pendingSubmissionOperationId).toBe(await page.evaluate(() =>
+      (globalThis as any).realLedgerBacking.noosSubmissionOperations[0].operationId));
+
+    // The reload is the crash premise itself, so perform a real one: the new
+    // document starts with an empty Run cache and no activeSubmission, while the
+    // extension's durable storage (operations, revision, Run store) survives.
+    const durable = await page.evaluate(() =>
+      JSON.parse(JSON.stringify((globalThis as any).realLedgerBacking)));
+    await page.addInitScript(realLedgerBridge, durable);
+    await page.reload();
+    await page.evaluate(() => {
+      (globalThis as any).providerDispatches = 0;
+      const main = document.querySelector("main")!;
+      document.querySelector("button")!.addEventListener("click", () => {
+        (globalThis as any).providerDispatches++;
+        const user = document.createElement("div");
+        user.dataset.messageAuthorRole = "user";
+        user.textContent = document.querySelector("#prompt-textarea")!.textContent!;
+        main.append(user);
+      });
+    });
+    await page.addScriptTag({ content: `(function () {\n${serviceWorkerScript}\n})();` });
+    await page.addScriptTag({ content: contentScript });
+    const runPhase = () => page.evaluate((conversationRef) =>
+      ((globalThis as any).realLedgerBacking.noosContinuationRunStore?.activeByConversation?.[conversationRef]?.phase) ?? "none",
+      induced.providerConversationRef);
+    await expect.poll(runPhase, { timeout: 20_000 }).toBe("EVALUATING");
+
+    const settled = await page.evaluate((conversationRef) => {
+      const backing = (globalThis as any).realLedgerBacking;
+      return {
+        run: backing.noosContinuationRunStore.activeByConversation[conversationRef],
+        operation: backing.noosSubmissionOperations[0],
+        operationCount: backing.noosSubmissionOperations.length,
+        revision: backing.noosSubmissionOperationsRevision,
+        userMessageCount: document.querySelectorAll("[data-message-author-role='user']").length,
+        providerDispatches: (globalThis as any).providerDispatches
+      };
+    }, induced.providerConversationRef);
+    // Converged exactly once: the operation the Run was waiting on is the one
+    // that was applied, and the round it had already consumed is not consumed again.
+    expect(settled.run.pendingSubmissionOperationId).toBeUndefined();
+    expect(settled.run.consumedContinuations).toBe(1);
+    expect(settled.run.status).toBe("ACTIVE");
+    expect(settled.run.acceptedOperationId).toBe(settled.operation.operationId);
+    // Convergence is not a delivery: the operation ledger is untouched and no
+    // provider message was sent to reach the durable fact.
+    expect(settled.operation.state).toBe("COMPLETED");
+    expect(settled.revision).toBe(induced.revision);
+    expect(settled.userMessageCount).toBe(0);
+    expect(settled.providerDispatches).toBe(0);
+    // Nor is it a dispatch: the converged Run stays in EVALUATING and does not
+    // drive the next AUTO round by itself (M3's job, deliberately out of scope).
+    await page.waitForTimeout(2_500);
+    expect(await page.evaluate(() => (globalThis as any).providerDispatches)).toBe(0);
+    expect(await runPhase()).toBe("EVALUATING");
+    expect(await page.evaluate(() => (globalThis as any).realLedgerBacking.noosSubmissionOperations.length)).toBe(1);
+
+    // A second boot on the converged storage must not re-converge: it neither
+    // writes to the operation ledger nor drives a round. (The Run's own phase
+    // after this boot belongs to the pre-existing reload-resume for an AUTO_X5
+    // run in EVALUATING, which is M3's territory and is left alone here.)
+    const converged = await page.evaluate(() =>
+      JSON.parse(JSON.stringify((globalThis as any).realLedgerBacking)));
+    await page.addInitScript(realLedgerBridge, converged);
+    await page.reload();
+    await page.evaluate(() => {
+      (globalThis as any).providerDispatches = 0;
+      document.querySelector("button")!.addEventListener("click", () => {
+        (globalThis as any).providerDispatches++;
+      });
+    });
+    await page.addScriptTag({ content: `(function () {\n${serviceWorkerScript}\n})();` });
+    await page.addScriptTag({ content: contentScript });
+    await page.waitForTimeout(3_000);
+    const rebooted = await page.evaluate((conversationRef) => {
+      const backing = (globalThis as any).realLedgerBacking;
+      return {
+        pending: backing.noosContinuationRunStore.activeByConversation[conversationRef]?.pendingSubmissionOperationId,
+        operationCount: backing.noosSubmissionOperations.length,
+        revision: backing.noosSubmissionOperationsRevision,
+        providerDispatches: (globalThis as any).providerDispatches
+      };
+    }, induced.providerConversationRef);
+    expect(rebooted.operationCount).toBe(1);
+    expect(rebooted.revision).toBe(settled.revision);
+    expect(rebooted.pending).toBeUndefined();
+    expect(rebooted.providerDispatches).toBe(0);
+    await page.close();
+  }, 90_000);
+
   it("spawns and adopts a FRESH child tab through the real service-worker lanes", async () => {
     const page = await newMockChatPage({ startWithHandoffs: false, injectContentScript: false });
     await page.evaluate(() => {
@@ -1359,6 +1588,58 @@ describe("content script smoke flow", () => {
     await folderPage.close();
   });
 });
+
+// Runs inside the page: wires the real service-worker bundle to an in-page
+// `chrome` mock whose durable storage is a plain object. Installed through
+// addInitScript so a reload can come up on a *surviving* extension storage.
+function realLedgerBridge(snapshot: Record<string, unknown>): void {
+  const listeners: Array<(message: unknown, sender: unknown, sendResponse: (response: unknown) => void) => unknown> = [];
+  const backing = snapshot;
+  const sendMessage = async (message: unknown) => new Promise<unknown>(resolve => {
+    if ((message as { type?: string }).type === "NOOS_OBSERVATION_CARRIER") {
+      resolve({ carrierRef: "browser-tab:11" });
+      return;
+    }
+    let settled = false;
+    const complete = (response: unknown) => {
+      if (!settled) {
+        settled = true;
+        resolve(response);
+      }
+    };
+    const listener = listeners[0];
+    if (!listener) {
+      complete(undefined);
+      return;
+    }
+    const returned = listener(message, {
+      id: "extension-id",
+      frameId: 0,
+      tab: { id: 11 },
+      url: window.location.href
+    }, complete);
+    if (returned !== true) complete(undefined);
+  });
+  (globalThis as unknown as { realLedgerBacking: Record<string, unknown> }).realLedgerBacking = backing;
+  (globalThis as unknown as { chrome: any }).chrome = {
+    runtime: {
+      id: "extension-id",
+      getURL: (path: string) => `chrome-extension://mock/${path}`,
+      sendMessage,
+      lastError: undefined,
+      onInstalled: { addListener: () => undefined },
+      onMessage: { addListener: (listener: typeof listeners[number]) => listeners.push(listener) }
+    },
+    storage: {
+      local: {
+        get: async (key: string) => ({ [key]: backing[key] }),
+        set: async (value: Record<string, unknown>) => Object.assign(backing, value),
+        remove: async () => undefined
+      }
+    },
+    downloads: { download: async () => 1 }
+  };
+}
 
 async function newMockChatPage(
   options: {
