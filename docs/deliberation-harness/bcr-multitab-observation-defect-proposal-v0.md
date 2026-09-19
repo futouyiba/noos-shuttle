@@ -360,7 +360,7 @@ Worktree: `.claude/worktrees/sharp-leavitt-798409`
 
 - F3 的**方向**已由 #54 裁定唯一确定：「只有 canonical lease holder 可 actuate」意味着**非** lease holder 的 tick 不得 actuate。当前 `bcrWatcherTick` 无守卫、`apply` wire 无 provenance，属**与该裁定相反**，故判为落后实现。分歧点只在**实现形态**（canonical lease 的自然键、provenance 字段），归 `Q2`。
 - F1 则**未必**与既有裁定冲突：若「整个浏览器同一时刻仅一个 submission authority」是有意设计，则 `STILL_AMBIGUOUS` 是**该设计下的预期行为**，问题降级为「多会话并发时不应一方活、一方冻结」的**新语义问题**（`Q1`），而非实现落后。
-- **两者是否应合并为同一类，取决于 `Q1` 的答案**：若裁定「authority 按 logical thread / canonical lease 分槽」，则 F1 亦落入「#54 已蕴含」，与 F3 同类，本文的分类应随即修正。**该分类不对称属待确认项，不由本文单方收束。**
+- **两者是否应合并为同一类，取决于 `Q1` 的答案**：若裁定「authority 按 logical thread / canonical lease 分槽」，则 F1 亦落入「#54 已蕴含」，与 F3 同类，本文的分类应随即修正。**该分类不对称属待确认项，不由本文单方收束。**（Q1 已裁定为**按 logical thread / per-Run 分槽**，故本待确认项已由 designer 收束——见 [§8](#8-designer-裁定记录)。）
 
 ### 待 Epic Designer 裁定的问题（不自行裁定）
 
@@ -371,6 +371,8 @@ Worktree: `.claude/worktrees/sharp-leavitt-798409`
 - **Q5**：新增 Page Lifecycle `freeze`/`resume` 处理、以及区分「切标签页」与「导航离开」的 `suspended` 语义，是否与已裁定的 reload/reattach 恢复语义重复或冲突？
 - **Q6**（建议）：是否要求 `reconcile` 长期 `STILL_AMBIGUOUS` 时产生可观测降级信号（C6）——「静默停滞」是否本身即为可接受行为？
 
+**Q1–Q6 均已作答。** 裁定记录见 [§8. Designer 裁定（记录）](#8-designer-裁定记录)。本节问题清单保留原样，**不因 §8 而重开**。
+
 ---
 
 ## 7. Authority / Addressability
@@ -379,3 +381,78 @@ Worktree: `.claude/worktrees/sharp-leavitt-798409`
 - 本文所引源码行号绑定 revision `5703312`（**本文撰写时的 HEAD~1**；本文档所在 commit 为 `8e1bf41bc67714ac64b2052400f30fd297d64c53`。`5703312` 是运行中扩展 dist 的构建来源，故行号对运行代码具权威性）。
 - 本文对 #54 的引用仅用于**边界约束**，不替代 #54 的 proposal；本 proposal 的语义对象是观测层与 watcher 层。
 - 本 proposal **未**实现任何运行时代码，**未**自动发送「继续」/「go」、**未**点击 Retry、**未**刷新 provider 页面、**未**制造限流。
+
+---
+
+## 8. Designer 裁定（记录）
+
+§6 的 Q1–Q6 已由 Epic Designer 作答。本节**记录**该裁定：它是转录，不是新一轮讨论，**不重开** Q1–Q6——Q1–Q6 自此已答、不再开放。§6 的问题清单保留原样，作为「当初的请求」，其地位不变。
+
+**Provenance**
+
+| 字段 | 值 |
+|---|---|
+| 作者 | Epic Designer（`futouyiba`），标题 `## Primary Design Disposition` |
+| 裁定 | **`PARTIAL_ACCEPT`** |
+| 精确目标 | `docs/deliberation-harness/bcr-multitab-observation-defect-proposal-v0.md` @ `bd4163bd4adb0d95c7ec03f85c9ce93c5ad344be`（PR #57 / Issue #56 派单） |
+| 出处 | PR #57 comment `5717432171`，2026-09-17T16:02:12Z |
+| Governor event | `event=issue56-design-dispatch-5716935789 head=bd4163bd4adb0d95c7ec03f85c9ce93c5ad344be action=primary-design-partial-accept` |
+| 家族记录 | Issue #56 comment `5718137417`（含 Q→M 映射表） |
+| 姊妹裁定 | PR #58 comment `5717715062`（后台依赖缺陷族，另一份文档的 §11） |
+
+designer 自述理由（原文）：
+
+> The evidence separates one already-authorized implementation defect from several genuine contract questions. Keep the narrow boundary: do not redesign provider recovery (#54) and do not treat background throttling as the primary semantic cause.
+
+### Q1–Q6（逐条转录）
+
+**Q1 — submission claim authority 的作用域**
+
+> **ACCEPT per-logical-thread / per-Run authority; reject one browser-global actuation slot as the intended concurrency semantics.** The current single `SUBMISSION_AUTHORITY_KEY` is an implementation artifact that serializes unrelated logical threads and can strand one live operation in `STILL_AMBIGUOUS`. Canonical authority must be scoped by the logical execution identity it authorizes. This does not authorize two carriers to actuate the *same* Run concurrently.
+
+**Q2 — canonical lease 自然键与交接**
+
+> **ACCEPT existing authority model, no new Human gate for ordinary carrier replacement.** The natural authorization identity is the existing logical thread / Run plus its current actuation lease/fence. Carrier/tab identity is evidence/attachment, not the authority key. Handover is legal only through the existing lease/fence transition and runtime-eligibility checks; an ordinary reload/tab replacement does not itself require fresh Human authorization. Any scope/goal/authority-owner change still follows its existing Human/design gate.
+
+**Q3 — 「人类介入」的判定语义**
+
+> **ACCEPT provenance-based attribution; reject raw per-tab count delta as sufficient authority to terminate.** A user-count change is `USER_INTERVENTION` only when a new Human-authored provider turn is observed for the Run/conversation and cannot be attributed to the current authorized SubmissionOperation/recovery operation. Duplicate/stale observers and count catch-up after throttling are not intervention evidence by themselves. Unknown attribution fails closed: do not advance/actuate; surface ambiguity rather than terminally inventing Human intervention.
+
+**Q4 — 由 `READY_TO_GO` 自动重发 go**
+
+> **REJECT as an implicit recovery rule.** `READY_TO_GO` + no pending operation is not, by itself, authorization to manufacture another provider turn. Normal Go × N progression may issue the next GO only when the existing continuation policy/evaluator and budget authorize that next round. Recovery/re-send after a failed or ambiguous dispatch must use the separately adjudicated #54 recovery semantics/provenance; do not collapse it into watcher retry.
+
+**Q5 — Page Lifecycle `freeze`/`resume` 与 `suspended`**
+
+> **ACCEPT as implementation support, not a new recovery contract.** Distinguishing `visibilitychange`/background throttling from actual page freeze/navigation and re-establishing observation after resume is compatible with #54. It may restore observation/reconciliation eligibility; it must not itself prove provider acceptance, consume budget, re-send, or bypass lease/fence checks.
+
+**Q6 — 长期 `STILL_AMBIGUOUS` 的可观测降级信号**
+
+> **ACCEPT observable degraded state.** Silent indefinite stalling is not acceptable. A bounded observation/reconcile period that remains ambiguous must produce durable/visible degraded evidence (without guessing acceptance or auto-retrying). Exact timeout/UX copy is implementation-local unless it changes recovery authority.
+
+### Required delta（转录）
+
+1. Treat F3 as direct implementation lag: only the canonical lease/fence holder may apply Run-actuating watcher mutations; carry enough provenance/fence evidence for the reducer/background lane to reject stale/non-holder mutation.
+2. Replace browser-global submission claim authority with authority scoped to the logical execution identity, preserving single-actuator semantics within one Run.
+3. Make run adoption/re-adoption and observation resume converge after carrier replacement/background return without treating the return itself as provider/recovery evidence.
+4. Replace terminal raw-count `USER_INTERVENTION` inference with attributable Human-turn evidence; ambiguous attribution pauses/degrades instead of terminating.
+5. Keep watcher retry separate from #54 recovery operations; no implicit GO re-send.
+6. Surface prolonged `STILL_AMBIGUOUS` as degraded/diagnostic evidence.
+
+### Boundary / non-goals（转录）
+
+- Do not reopen #54 Evidence Gate, RecoveryBudget, context rebase, provider Retry/Continue semantics, or Automation Boundary.
+- Do not create a second canonical carrier-binding/lease ledger.
+- Do not authorize concurrent actuation of one Run from multiple tabs.
+- Do not treat timer throttling, visibility return, or observer catch-up as provider acceptance evidence.
+- F4's observed misfire attribution remains `PENDING_VALIDATION`; this disposition fixes the authority rule, not the unproven empirical cause.
+
+### Resume condition（转录）
+
+> Update the proposal/disposition record to encode Q1–Q6 above, then produce bounded implementation slices against a new exact head. Runtime changes require fresh independent review on each exact implementation head before promotion. PR #57 remains docs-only/draft until its design record reflects this disposition; this comment does not authorize merge or deployment.
+
+即：**本节就是该 resume condition 要求的那次「记录」**。在该记录落盘之前，PR #57 维持 docs-only / draft。
+
+### 由本裁定随之解决的问题
+
+§6 末尾留下的「F1 / F3 分类不对称属待确认项，不由本文单方收束」——Q1 既已裁定为 **per-logical-thread / per-Run 分槽**，按 §6 自己给出的判据，**F1 亦落入「#54 已蕴含」**，与 F3 同类。该不对称由此收束，Required delta 第 1、2 条正面覆盖了这两项。（本节由 Orchestrator 依裁定推得并记录，非 designer 原句。）
