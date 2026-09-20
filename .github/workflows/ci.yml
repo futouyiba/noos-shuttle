@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            apps/noos-hub/package-lock.json
+            apps/llm-wiki/package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Typecheck root
+        run: npm run typecheck
+
+      - name: Test root
+        run: npm test -- --exclude tests/content-ui-smoke.test.ts
+
+      - name: Install Hub dependencies
+        run: npm --prefix apps/noos-hub ci
+
+      - name: Build Hub web frontend
+        run: npm run hub:web:build
+
+      - name: Install LLM Wiki dependencies
+        run: npm --prefix apps/llm-wiki ci
+
+      - name: Typecheck LLM Wiki
+        run: npm run wiki:typecheck
+
+      - name: Test LLM Wiki (mocked)
+        run: npm run wiki:test
