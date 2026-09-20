@@ -19,6 +19,9 @@ import type {
 } from "../core/continuation-run";
 import { EXTENSION_CONTEXT_INVALID, sendExtensionMessage } from "../shared/extension-runtime";
 import { COPY, type ShuttleLocale, getStoredLocale, storeLocale } from "../shared/i18n";
+// Runtime import is content-side only: no other entry pulls this module, so
+// Rollup inlines it instead of emitting a chunk MV3 content scripts cannot load.
+import { buildContinuationPayload, type ContinuationPayloadMode } from "../core/continuation-payload";
 import { ClipboardAdapter } from "../storage/ClipboardAdapter";
 import { DownloadAdapter } from "../storage/DownloadAdapter";
 import { NoosVaultAdapter } from "../storage/NoosVaultAdapter";
@@ -233,6 +236,13 @@ let bcrBudgetCap = 5;
 let bcrAutoConfigured = false;
 let bcrEvalModel = "deepseek-chat";
 let bcrLastDispatchReanchor = false;
+/**
+ * Payload actually dispatched for the round it names, kept only so the round's
+ * candidate evidence can record which locale variant ran (issue #60). Never a
+ * source of truth: acceptance matches the ledger's fingerprint of the bytes
+ * handed to the provider, not this copy.
+ */
+let bcrLastDispatchPayload: { round: number; locale: ShuttleLocale; mode: ContinuationPayloadMode; text: string } | null = null;
 // A Stop pressed while the auto-advance lock is held (evaluator round-trip or
 // dispatch) must not be lost: it is consumed at the next auto-advance boundary.
 let bcrStopRequested = false;
@@ -1595,6 +1605,7 @@ function adoptRunState(run: ContinuationRun | null): void {
       bcrExpectedUserCount = runtimeObservationLedger.value?.userMessageCount ?? -1;
       bcrStopRequested = false;
       bcrLastDispatchReanchor = false;
+      bcrLastDispatchPayload = null;
       // An AUTO run left mid-evaluation by a reload resumes its evaluation
       // here; a READY_TO_GO resume is surfaced as [Send go] instead.
       if (run.mode === "AUTO_X5" && run.phase === "EVALUATING") {
@@ -1753,12 +1764,19 @@ async function issueRunGo(app: HTMLElement): Promise<void> {
   // dedup.
   const operationId = `${bcrRun.runId}:go:${round}-${Date.now().toString(36)}`;
   bcrExpectedUserCount = (observation.userMessageCount ?? 0) + 1;
-  // Soft re-anchor V0: after three plain "go" rounds, later rounds restate the
-  // frozen run goal so deep local reasoning does not drift from it.
+  // Soft re-anchor V0: after three plain continuation rounds, later rounds
+  // restate the frozen run goal so deep local reasoning does not drift from it.
   const reanchor = bcrRun.mode === "AUTO_X5" && bcrRun.consumedContinuations >= 3;
   bcrLastDispatchReanchor = reanchor;
+  // Locale is read at dispatch time from the stored Shuttle switch; the payload
+  // is the exact text handed to the provider, so the ledger fingerprints this
+  // variant, not a canonical one.
+  const payloadLocale = getStoredLocale();
+  const payloadMode: ContinuationPayloadMode = reanchor ? "REANCHOR_GO" : "PLAIN_GO";
+  const payload = buildContinuationPayload(payloadLocale, payloadMode, bcrRun.goal);
+  bcrLastDispatchPayload = { round, locale: payloadLocale, mode: payloadMode, text: payload };
   const outcome: { status: "DISPATCHED" | "UNCERTAIN" | "BLOCKED" } = { status: "BLOCKED" };
-  await dispatchHumanGo(buildContinuationPayload(bcrRun, reanchor), getPageContext(), "shuttle-bcr-run", {
+  await dispatchHumanGo(payload, getPageContext(), "shuttle-bcr-run", {
     operationId,
     runLinked: true,
     onResult: reported => { outcome.status = reported; }
@@ -1784,19 +1802,6 @@ async function runExclusiveBcrAction(work: () => Promise<void>): Promise<void> {
   } finally {
     bcrBusy = false;
   }
-}
-
-function buildContinuationPayload(run: ContinuationRun, reanchor: boolean): string {
-  if (!reanchor) return "go";
-  const goalText = run.goal?.trim() || "继续执行你自己声明的下一步；不要展开可选支线";
-  return [
-    "go",
-    "",
-    "[NOOS Re-anchor]",
-    `Current Goal: ${goalText}`,
-    "Keep current scope; do not expand optional follow-ups. Stop if completion or a Human/review/evidence boundary is reached.",
-    "[/NOOS Re-anchor]"
-  ].join("\n");
 }
 
 /** AUTO_X5 advance: evaluate the completed round through the isolated evaluator, then auto-dispatch the next governed GO or end the run. ASSISTED runs never enter here. */
@@ -1917,16 +1922,23 @@ async function captureBcrCandidate(
   const evidence = readSubmissionMessageEvidence();
   const turnRef = run.lastConsumedTurnRef ??
     (evidence.lastAssistantMessageFingerprint ? `turn:${evidence.lastAssistantMessageFingerprint}` : undefined);
+  const continuationIndex = Math.max(run.consumedContinuations, 1);
+  // Attach the dispatched payload only when the record names that same round;
+  // a candidate captured without a matching dispatch carries no payload claim.
+  const dispatched = bcrLastDispatchPayload?.round === continuationIndex ? bcrLastDispatchPayload : null;
   await mutateContinuationRun({
     type: "record_round_evidence",
     runId: run.runId,
-    continuationIndex: Math.max(run.consumedContinuations, 1),
+    continuationIndex,
     turnRef,
     assistantTurnExcerpt: lastAssistantExcerpt(),
     decision,
     humanAction,
     stopReason,
     continuationMode,
+    payloadLocale: dispatched?.locale,
+    payloadMode: dispatched?.mode,
+    payloadText: dispatched?.text,
     assessment,
     capturedAt: Date.now()
   });

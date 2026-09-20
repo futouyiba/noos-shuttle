@@ -1,4 +1,7 @@
 /** Minimal durable Bounded Continuation Run: one Human authorization for at most N governed GO rounds. Pure transitions; storage, actuation, and observation live with the caller (background coordinator + HumanGoRuntime). ASSISTED mode asks the Human every round; AUTO_X5 advances rounds through an isolated evaluator behind the same conservative gate. */
+import type { ShuttleLocale } from "../shared/i18n";
+import type { ContinuationPayloadMode } from "./continuation-payload";
+
 export type ContinuationRunStatus = "CREATED" | "ACTIVE" | "ENDED" | "CANCELLED" | "FAILED_SAFE";
 export type ContinuationRunMode = "ASSISTED" | "AUTO_X5";
 export type ContinuationRunPhase = "READY_TO_GO" | "DISPATCHING" | "ASSISTANT_GENERATING" | "STABILIZING" | "AWAITING_HUMAN_DECISION" | "EVALUATING" | "ENDED";
@@ -260,12 +263,21 @@ export interface CandidateContinuationFixture {
   decision: "HUMAN_CONTINUE" | "HUMAN_STOP" | "AUTO_CONTINUE" | "AUTO_STOP" | "BUDGET_ENDED" | "RUN_ABORTED";
   humanAction: "continued" | "stopped" | "intervened" | "pending";
   continuationMode?: "PLAIN_GO" | "REANCHOR_GO";
+  /**
+   * Provider-facing payload actually dispatched for this round, recorded so
+   * dogfood can compare stop/drift behaviour across the locale variants
+   * (issue #60). Observational only: acceptance still matches the exact
+   * dispatched bytes through the submission ledger.
+   */
+  payloadLocale?: ShuttleLocale;
+  payloadMode?: ContinuationPayloadMode;
+  payloadText?: string;
   assessment?: Record<string, unknown>;
   stopReason?: ContinuationStopReason;
   capturedAt: number;
 }
 
-export function createFixtureCandidate(run: ContinuationRun, input: { continuationIndex: number; turnRef?: string; assistantTurnExcerpt?: string; decision: CandidateContinuationFixture["decision"]; humanAction: CandidateContinuationFixture["humanAction"]; continuationMode?: CandidateContinuationFixture["continuationMode"]; assessment?: Record<string, unknown>; stopReason?: ContinuationStopReason; capturedAt: number }): CandidateContinuationFixture {
+export function createFixtureCandidate(run: ContinuationRun, input: { continuationIndex: number; turnRef?: string; assistantTurnExcerpt?: string; decision: CandidateContinuationFixture["decision"]; humanAction: CandidateContinuationFixture["humanAction"]; continuationMode?: CandidateContinuationFixture["continuationMode"]; payloadLocale?: ShuttleLocale; payloadMode?: ContinuationPayloadMode; payloadText?: string; assessment?: Record<string, unknown>; stopReason?: ContinuationStopReason; capturedAt: number }): CandidateContinuationFixture {
   return {
     candidateId: `${run.runId}:${input.continuationIndex}`,
     runId: run.runId,
@@ -276,6 +288,9 @@ export function createFixtureCandidate(run: ContinuationRun, input: { continuati
     decision: input.decision,
     humanAction: input.humanAction,
     continuationMode: input.continuationMode,
+    payloadLocale: input.payloadLocale,
+    payloadMode: input.payloadMode,
+    payloadText: input.payloadText,
     assessment: input.assessment,
     stopReason: input.stopReason,
     capturedAt: input.capturedAt
@@ -308,6 +323,9 @@ export type ContinuationRunMutation =
       humanAction: CandidateContinuationFixture["humanAction"];
       stopReason?: ContinuationStopReason;
       continuationMode?: "PLAIN_GO" | "REANCHOR_GO";
+      payloadLocale?: ShuttleLocale;
+      payloadMode?: ContinuationPayloadMode;
+      payloadText?: string;
       assessment?: Record<string, unknown>;
       capturedAt: number;
     }
@@ -372,6 +390,9 @@ export function reduceContinuationRunStore(store: ContinuationRunStore, mutation
         decision: mutation.decision,
         humanAction: mutation.humanAction,
         continuationMode: mutation.continuationMode,
+        payloadLocale: mutation.payloadLocale,
+        payloadMode: mutation.payloadMode,
+        payloadText: mutation.payloadText,
         assessment: mutation.assessment,
         stopReason: mutation.stopReason,
         capturedAt: mutation.capturedAt
