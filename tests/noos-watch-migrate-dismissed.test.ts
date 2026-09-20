@@ -123,6 +123,21 @@ describe("计划：只移动已作出结论的条目", () => {
     expect(confirmed.indeterminate.map((i) => i.commentId)).not.toContain(String(NO_RECIPIENT.id));
   });
 
+  it("UNROUTED 的欠账条目也进计划（活状态里真的出现过这条形态）", () => {
+    // 活状态实例：5750908030 是 orchestrator 派的复审委派记录，action 字面写着
+    // 「记录不路由：B.3 委派记录」，却被记成 state=UNROUTED。计划只从 CLAIMED 收
+    // 的话它永远移不动，而它又会进欠账投影 ⇒ 每轮复报。
+    const state = buildFixturesState();
+    state.claims["5750908030"] = { state: "UNROUTED", action: "记录不路由：B.3 委派记录", claimedAt: "2026-09-20T16:03:51Z" };
+    const comments = [
+      ...normalizeComments(toGhApiComments()),
+      { id: 5750908030, thread: 93, body: "rev: review PR#93 @ 4c598a5\n（orch: 派单, 委派: rev）", createdAt: null }
+    ];
+    const plan = planMigration(state, comments);
+    expect(plan.decisions.find((d) => d.commentId === "5750908030")?.rule).toBe("D1");
+    expect(plan.stayed.map((s) => s.commentId)).not.toContain("5750908030");
+  });
+
   it("计划里每条 decision 都带非空 reason（可审计）", () => {
     for (const decision of plan.decisions) expect(decision.reason.length).toBeGreaterThan(0);
   });

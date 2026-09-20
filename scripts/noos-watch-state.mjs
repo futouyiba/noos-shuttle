@@ -29,6 +29,18 @@ export const CLAIM_STATES = ["CLAIMED", "ROUTED", "UNROUTED", "DISMISSED"];
 export const TERMINAL_CLAIM_STATES = ["ROUTED", "DISMISSED"];
 
 /**
+ * 欠账状态：认领了、还没了结。**终态只能从这两个之一到达**。
+ *
+ * `UNROUTED` 必须在内。活状态里真的出现过一条：orchestrator 给本 PR 派的
+ * 复审委派记录（`rev: review PR#93 @ 4c598a5…`）被记为 `UNROUTED`，而它的
+ * `action` 字面写着「记录不路由：B.3 委派记录」。若终态只从 `CLAIMED` 收，
+ * 这条既判不了终态、又会因为进了欠账投影而**每轮复报**——正是本任务要杀的
+ * 那个病换了个形态。判据本身不受影响：真未分类的条目命中不了 D1–D5，
+ * 开了这个口子也移不动。
+ */
+export const TERMINATABLE_CLAIM_STATES = ["CLAIMED", "UNROUTED"];
+
+/**
  * 终态判据清单。每条都要在 skill 正文里有对应文字（判据与实现不得漂移）。
  * 规则 id 写进 `claims[<id>].dismissRule`，便于审计「这条为什么被判掉」。
  */
@@ -323,7 +335,8 @@ export function evaluateNoRecipientDismissal(entry, { confirmedNoRecipient = fal
 /**
  * 把终态写回 claims 与 pending。**纯函数**：返回新对象，不改入参。
  *
- * - 只接受从 `CLAIMED` 到 `DISMISSED` 的转移；已是终态的不动。
+ * - 只接受从欠账状态（`CLAIMED` / `UNROUTED`）到 `DISMISSED` 的转移；
+ *   已是终态的不动（终态不可覆盖）。
  * - `claims` 不删除任何条目（既有约定：删条目会让欠账水位下的旧评论重读后重发）。
  * - 对应的 pending 条目改为 `status: "DISMISSED"` 并保留在数组中（审计 +
  *   水位钉住的理由仍成立），不删除。
@@ -336,7 +349,7 @@ export function applyDismissals(state, decisions, now = new Date().toISOString()
   for (const decision of decisions) {
     const id = String(decision.commentId);
     const claim = claims[id];
-    if (claim && claim.state !== "CLAIMED") continue; // 终态不可覆盖
+    if (claim && !TERMINATABLE_CLAIM_STATES.includes(claim.state)) continue; // 终态不可覆盖
     claims[id] = {
       ...(claim ?? {}),
       state: "DISMISSED",

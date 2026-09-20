@@ -144,6 +144,12 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
    判据全部是**闭集匹配**：命中不了就落回下方的「未分类上报」，绝不因
    「看着不像要投递的」而消失。
 
+   **转移的起点是欠账状态——`CLAIMED` 或 `UNROUTED` 都可以**，不只是
+   `CLAIMED`。活状态里出现过一条被记成 `UNROUTED` 的委派记录（`action`
+   字面写着「记录不路由」）：若终态只从 `CLAIMED` 收，这条既判不了终态、
+   又会因为进了欠账投影而**每轮复报**——正是本任务要杀的那个病换个形态。
+   真未分类的条目命中不了 D1–D5，开了这个口子也移不动。
+
    - **D1 委派记录**：首行匹配 `^(orch|impl|rev|des|intg)\s*[:：]`
      （大小写无关、全角归一后匹配；只认**首行**，正文提到角色不算）。
      B.3 委派记录是**唤醒行**，不是 verdict 输出标记；要路由的是紧跟其
@@ -245,7 +251,8 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
    触发任何投递，所以在步骤 3 内就地写回
    `{state:"DISMISSED", dismissRule, dismissedAt, dismissReason}`，或与
    步骤 7 的写回一并落盘——两者都安全，因为重跑只会重算出同一个结论。
-   但**必须在持锁状态下写**；状态文件的所有写入都受同一条锁约束。
+   起点可以是 `CLAIMED` 或 `UNROUTED`（见步骤 3）。但**必须在持锁状态下
+   写**；状态文件的所有写入都受同一条锁约束。
 
    **投递通道与兜底**（规范 §4.4 允许的兜底通道）：
 

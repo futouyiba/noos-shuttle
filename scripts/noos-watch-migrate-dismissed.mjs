@@ -25,6 +25,7 @@ import { pathToFileURL } from "node:url";
 import { defaultLockPath, isEntryPoint, operate } from "./noos-watch-lock.mjs";
 import {
   DISMISSAL_RULES,
+  TERMINATABLE_CLAIM_STATES,
   applyDismissals,
   evaluateDismissal,
   evaluateNoRecipientDismissal,
@@ -89,7 +90,9 @@ export function planMigration(state, comments, { confirmR4 = false } = {}) {
   const stayed = [];
 
   for (const [commentId, claim] of Object.entries(state.claims ?? {})) {
-    if (claim.state !== "CLAIMED") continue;
+    // 欠账状态都收：`UNROUTED` 也进得去（活状态里出现过被记成 UNROUTED 的
+    // 委派记录，只从 CLAIMED 收会让它永远移不动、每轮复报）。
+    if (!TERMINATABLE_CLAIM_STATES.includes(claim.state)) continue;
     const comment = byId.get(commentId);
     const pendingEntry = (state.pending ?? []).find((item) => String(item.comment) === commentId);
     // 无评论正文时退回条目上记录的首行（pending 条目带 `marker`），使 D1/D2 仍可判。

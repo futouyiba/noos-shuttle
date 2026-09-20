@@ -6,6 +6,7 @@ export type CommentKind = "delegation-record" | "known-no-wakeup" | "routable" |
 
 export declare const CLAIM_STATES: ClaimState[];
 export declare const TERMINAL_CLAIM_STATES: ClaimState[];
+export declare const TERMINATABLE_CLAIM_STATES: ClaimState[];
 export declare const DISMISSAL_RULES: Record<DismissalRule, string>;
 export declare const SPEC_OUTPUT_MARKERS: string[];
 export declare const SPEC_VERDICTS: Record<string, string[]>;

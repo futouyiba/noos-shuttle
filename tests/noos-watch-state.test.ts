@@ -9,6 +9,7 @@ import {
   renderDismissed,
   renderUnclassified,
   renderUndelivered,
+  TERMINATABLE_CLAIM_STATES,
   type WatcherState
 } from "../scripts/noos-watch-state.mjs";
 import {
@@ -381,6 +382,38 @@ describe("欠账投影收 UNROUTED（reviewer F1）", () => {
       []
     );
     expect(projectBriefing(state).undelivered.map((item) => item.commentId)).toEqual(["3", "4"]);
+  });
+});
+
+describe("欠账状态都可判终态（活数据暴露的缺口）", () => {
+  it("UNROUTED 也能移入 DISMISSED，且移出后不再欠账", () => {
+    const state = minimalState({ "1": { state: "UNROUTED" } }, [{ type: "unrouted", comment: 1, marker: "rev: review PR#93 @ aaa1111" }]);
+    const after = applyDismissals(state, [{ commentId: "1", rule: "D1", reason: "B.3 委派记录，不路由", evidence: {} }], MIGRATED_AT);
+    expect(after.claims["1"].state).toBe("DISMISSED");
+    expect(after.claims["1"].dismissRule).toBe("D1");
+    expect(projectBriefing(after).undelivered).toEqual([]);
+  });
+
+  it("只从 CLAIMED 收会让这条永远移不动——回归断言", () => {
+    // 若哪天有人把 TERMINATABLE_CLAIM_STATES 收回成只含 CLAIMED，这条会红。
+    expect(TERMINATABLE_CLAIM_STATES).toContain("CLAIMED");
+    expect(TERMINATABLE_CLAIM_STATES).toContain("UNROUTED");
+  });
+
+  it("终态仍不可覆盖：ROUTED 与 DISMISSED 都不动", () => {
+    const state = minimalState({ "1": { state: "ROUTED" }, "2": { state: "DISMISSED" } }, []);
+    const after = applyDismissals(
+      state,
+      [
+        { commentId: "1", rule: "D1", reason: "不该生效", evidence: {} },
+        { commentId: "2", rule: "D5", reason: "不该生效", evidence: {} }
+      ],
+      MIGRATED_AT
+    );
+    expect(after.claims["1"].state).toBe("ROUTED");
+    expect(after.claims["1"].dismissRule).toBeUndefined();
+    expect(after.claims["2"].state).toBe("DISMISSED");
+    expect(after.claims["2"].dismissRule).toBeUndefined();
   });
 });
 
