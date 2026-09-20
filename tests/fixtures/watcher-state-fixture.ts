@@ -38,10 +38,14 @@ export const CLAIMS_ONLY_DELEGATION: FixtureComment = {
   note: "B.3 委派记录（claims-only）"
 };
 
-/** 2 条 `IMPLEMENTED:`（D2）：规范已知标记，本 skill 无对应唤醒动作。 */
+/**
+ * 2 条 `IMPLEMENTED:`（D2）：规范已知标记，本 skill 无对应唤醒动作。
+ * 文本照抄生产（`IMPLEMENTED: PR#82`、`IMPLEMENTED: PR#57（DRAFT）` 这类带
+ * 括号变体的形态都在用），用来锁住「D2 只认 head、不看取值」。
+ */
 export const IMPLEMENTED_MARKERS: FixtureComment[] = [
-  { id: 5749163336, thread: 69, body: "IMPLEMENTED: PR#82 （impl: 直评）\n（impl: 直评, 委派: 人）", note: "规范 IMPLEMENTED 标记" },
-  { id: 5749208522, thread: 60, body: "IMPLEMENTED: PR#83 （impl: 直评）\n（impl: 直评, 委派: 人）", note: "规范 IMPLEMENTED 标记" }
+  { id: 5749163336, thread: 69, body: "IMPLEMENTED: PR#82\n（impl: 直评, 委派: 人）", note: "规范 IMPLEMENTED 标记" },
+  { id: 5749208522, thread: 60, body: "IMPLEMENTED: PR#83（DRAFT）\n（impl: 直评, 委派: 人）", note: "规范 IMPLEMENTED 标记" }
 ];
 
 /** 被同线程更晚的 APPROVE 取代的 REQUEST_CHANGES（D3）。 */
@@ -58,21 +62,27 @@ export const MOOT_APPROVALS: FixtureComment[] = [
   { id: 5749207718, thread: 83, body: "REVIEW: APPROVE @ b37b4083767540a7cbf57f297ad94994e8c7d04c\n（rev: 直评, 委派: orch）", note: "合并交接已无对象" }
 ];
 
-/** 真未完成：`INTEGRATED:` 记录本身可路由、只是送不出去 ⇒ 必须留在「未完成投递」。 */
+/**
+ * 真未完成：`INTEGRATED:` 记录本身可路由、只是送不出去 ⇒ 必须留在「未完成投递」。
+ *
+ * 文本**照抄生产形态**：`INTEGRATED: <自由摘要> @ <merge-sha>`——首行**不带
+ * 任何 PR 引用**（实测 18/18 条如此），摘要里恰好含 1 个 `@`，ref 在最后一段。
+ * 早先的夹具写成 `INTEGRATED: PR#82 @ d4dc5e4`，那是不具代表性的自造形状。
+ */
 export const TRULY_UNDELIVERED: FixtureComment[] = [
-  { id: 5749501889, thread: 82, body: "INTEGRATED: PR#82 @ d4dc5e4\n（intg: 直评, 委派: 人）", note: "集成记录待通知" },
-  { id: 5749502109, thread: 83, body: "INTEGRATED: PR#83 @ 1ee215a\n（intg: 直评, 委派: 人）", note: "集成记录待通知" },
-  { id: 5749502316, thread: 70, body: "INTEGRATED: PR#70 @ 1beaff2\n（intg: 直评, 委派: 人）", note: "集成记录待通知" },
-  { id: 5749502542, thread: 77, body: "INTEGRATED: PR#77 @ 3ce4079\n（intg: 直评, 委派: 人）", note: "集成记录待通知" },
-  { id: 5749502708, thread: 79, body: "INTEGRATED: PR#79 @ 049a794\n（intg: 直评, 委派: 人）", note: "集成记录待通知" }
+  { id: 5749501889, thread: 82, body: "INTEGRATED: 运行时（src/content/chatgpt-dom.ts），已重建部署；合并后 main 验证 typecheck 干净、CI 口径（Node 24）41 files / 520 passed @ d4dc5e43c8eb08b1dc4db9acb3a148cc8d7b1884\n（intg: 直评, 委派: 人）", note: "集成记录待通知" },
+  { id: 5749502109, thread: 83, body: "INTEGRATED: 运行时（src/content/index.ts + src/core/×3），已重建部署；合并后 main 验证 typecheck 干净、全量 42 files / 549 passed @ 1ee215a1299d28cbc0d8ccbe776ee7ab9f969153\n（intg: 直评, 委派: 人）", note: "集成记录待通知" },
+  { id: 5749502316, thread: 70, body: "INTEGRATED: 脚本/skill/docs（不改扩展产物），无需部署；合并后 main 验证 typecheck 干净、全量 41 files / 536 passed @ 1beaff29d6ae525d5fb3599010cb0ff20cee5585\n（intg: 直评, 委派: 人）", note: "集成记录待通知" },
+  { id: 5749502542, thread: 77, body: "INTEGRATED: 纯文档，无需部署；合并后 main 验证 typecheck 干净、CI 口径（Node 24）40 files / 508 passed @ 3ce407905dc276d6e46d8c9fd0e8c8110d847d69\n（intg: 直评, 委派: 人）", note: "集成记录待通知" },
+  { id: 5749502708, thread: 79, body: "INTEGRATED: 纯文档，无需部署；合并后 main 验证 typecheck 干净、CI 口径（Node 24）41 files / 520 passed @ 049a79420ec2303d1f60622a3c71018ea00f0918\n（intg: 直评, 委派: 人）", note: "集成记录待通知" }
 ];
 
 /** claims-only 的集成记录（真未完成，不在 pending 里）。 */
 export const CLAIMS_ONLY_INTEGRATED: FixtureComment[] = [
-  { id: 5749531134, thread: 73, body: "INTEGRATED: PR#73 @ 9c1a2ab\n（intg: 直评, 委派: 人）", note: "集成记录待通知" },
-  { id: 5749531301, thread: 57, body: "INTEGRATED: PR#57 @ 2ab77c1\n（intg: 直评, 委派: 人）", note: "集成记录待通知" },
-  { id: 5749531424, thread: 81, body: "INTEGRATED: PR#81 @ 88c1c02\n（intg: 直评, 委派: 人）", note: "集成记录待通知" },
-  { id: 5749549901, thread: 86, body: "INTEGRATED: PR#86 @ 6731a60\n（intg: 直评, 委派: 人）", note: "集成记录待通知" }
+  { id: 5749531134, thread: 73, body: "INTEGRATED: 纯文档（单文件，无构建无部署）；合并后 main 验证 typecheck 干净、CI 口径（Node 24）41 files / 536 passed @ 7632be56daa1\n（intg: 直评, 委派: 人）", note: "集成记录待通知" },
+  { id: 5749531301, thread: 57, body: "INTEGRATED: 纯文档（单文件，无构建无部署）；合并后 main 验证 typecheck 干净、CI 口径 41 files / 536 passed @ 9866a9610e3f\n（intg: 直评, 委派: 人）", note: "集成记录待通知" },
+  { id: 5749531424, thread: 81, body: "INTEGRATED: 运行时改动（`src/content/index.ts` + 新增 `src/core/…`），已重建并部署 @ 88c1c023cdc0\n（intg: 直评, 委派: 人）", note: "集成记录待通知" },
+  { id: 5749549901, thread: 86, body: "INTEGRATED: **纯测试**（`git diff 6731a60^1 6731a60` 确认：恰 1 文件），无需部署 @ 6731a60e7d46\n（intg: 直评, 委派: 人）", note: "集成记录待通知" }
 ];
 
 /**
@@ -100,6 +110,19 @@ export const NO_RECIPIENT: FixtureComment = {
 };
 export const NO_RECIPIENT_NOTE = "该工作流由 Orchestrator 会话直评驱动，不存在独立实现会话可唤醒";
 
+/**
+ * **负例对照**（reviewer F4）：孤立的 verdict——同线程里没有任何更晚的
+ * `APPROVE`（D3）也没有任何 `INTEGRATED:`（D5）⇒ **必须留 `CLAIMED`**。
+ *
+ * 没有这组对照，将来有人把 D3/D5 的判据改得过宽，现有测试仍然会全绿。
+ * `5749796067` 是生产里的真实一条（thread 88 的 APPROVE，其后确实没有
+ * INTEGRATED，实测不被 D5 命中）。
+ */
+export const ISOLATED_VERDICTS: FixtureComment[] = [
+  { id: 5749796067, thread: 88, body: "REVIEW: APPROVE @ d63c0bde2f41\n（rev: 直评, 委派: orch）", note: "孤立 APPROVE（同线程无 INTEGRATED）" },
+  { id: 5749940001, thread: 90, body: "REVIEW: REQUEST_CHANGES @ 4f2a1b9\n（rev: 直评, 委派: orch）", note: "孤立 REQUEST_CHANGES（同线程无更晚 APPROVE）" }
+];
+
 export const ALL_COMMENTS: FixtureComment[] = [
   ...DELEGATION_RECORDS,
   CLAIMS_ONLY_DELEGATION,
@@ -109,14 +132,16 @@ export const ALL_COMMENTS: FixtureComment[] = [
   ...TRULY_UNDELIVERED,
   ...CLAIMS_ONLY_INTEGRATED,
   ...UNCLASSIFIED,
+  ...ISOLATED_VERDICTS,
   NO_RECIPIENT
 ];
 
-/** 本该保留为 `CLAIMED` 的条目：真未完成 + 真未分类。 */
+/** 本该保留为 `CLAIMED` 的条目：真未完成 + 真未分类 + 负例对照。 */
 export const EXPECTED_STAYED: FixtureComment[] = [
   ...TRULY_UNDELIVERED,
   ...CLAIMS_ONLY_INTEGRATED,
   ...UNCLASSIFIED,
+  ...ISOLATED_VERDICTS,
   NO_RECIPIENT
 ];
 

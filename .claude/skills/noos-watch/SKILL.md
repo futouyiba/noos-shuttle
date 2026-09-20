@@ -88,6 +88,11 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
    「未完成投递」项**。只有 `CLAIMED`（认领了、结果未知——可能是被
    中断在投递中途）与 `UNROUTED`（未分类）构成欠账。
 
+   简报投影**必须同时收这两个状态**（`scripts/noos-watch-state.mjs` 的
+   `undelivered`）。今天没有写方会置 `UNROUTED`，但 schema 允许它、
+   步骤 3 也写着「记为 `UNROUTED` 进 pending」——一个存在却从不进简报
+   的状态就是静默丢信号的口子，不能因为「现在用不到」就漏掉。
+
    没有 `DISMISSED` 时，`CLAIMED` 同时承担「投递失败/被中断」与
    「我判定不投递」两种含义，而按步骤 3 它**每轮都要报成未完成投递**
    ——人工分诊成本随轮次无上限复现。终态把前者（结论）从欠账里择出，
@@ -175,7 +180,21 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
 
    **未分类上报（必须执行）**：不匹配上表、未命中上述终态判据、但 body
    命中以下任一保守判据的评论，一律记为 `UNROUTED` 进 pending，并在简报中
-   逐条列出「线程 + 评论链接 + 命中的判据」：
+   逐条列出「线程 + 评论链接 + 命中的判据」。
+
+   pending 条目**必须**带上可复算的分类信息：
+
+   ```json
+   { "type": "unclassified-authority", "comment": <id>, "issue": <N>,
+     "marker": "<评论首行的原文>", "reason": "<命中的判据>", "action": "人工分类权威信号；不自动转写 verdict" }
+   ```
+
+   `marker` 记**首行原文**（不是复述）：简报投影靠它复算这条属于哪一档，
+   缺了它投影就只能默认上报（见下），噪音会上去。`type` 用
+   `unclassified-authority` 标记「已判定为未分类」，与 `unrouted`（能路由
+   但没有接收方，见步骤 4）区分开。
+
+   保守判据：
 
    - 含 `noos-governor`（designer 经 connector 的裁定记录标记）
    - 含 `**Decision:**`（同上，原生裁定的判定行）
@@ -192,6 +211,12 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
 
    这条的意义是让「丢」变得可见：解析器永远会漏掉下一种没见过的
    格式，而「不认识就上报」使漏变成可观测的。
+
+   **前三条判据只有 skill 侧能判**：它们要求回看评论**正文**，而简报投影
+   只拿得到 `marker`（首行）。所以**「body 级护栏」始终是 skill 侧的义务**，
+   不是投影能兜住的——投影在认不出档位时一律**默认上报**（宁可多报，
+   不可静默丢），但真正把 `noos-governor` 与 `**Decision:**` 捞出来靠的是
+   本步骤，不是投影。
 
    **未知 ≠ 已判定不路由**：一条评论要么被上表路由、要么命中 D1–D5 判
    终态、要么进本 pending——三者互斥且穷尽。**不得**因为「看起来不需要

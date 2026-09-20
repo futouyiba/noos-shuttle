@@ -174,12 +174,20 @@ function verdictOf(head, value) {
   return (SPEC_VERDICTS[head] ?? []).includes(beforeSha) ? beforeSha : `${beforeSha} (枚举外)`;
 }
 
-/** `APPROVE @ b37b408` → `b37b408`；无 `@` 时返回 null。 */
+/**
+ * 取标记的 exact ref。B.3 的形态把 ref 放在**最后**一段
+ * （`REVIEW: <verdict> @ <head>`、`INTEGRATED: <摘要> @ <merge-sha>`），
+ * 所以取最后一个 `@` 之后的首个分词——摘要里出现 `@`（提及、邮箱）不会取错。
+ *
+ * 再要求它**长得像 sha**：审计字段宁可取不到（null）也不能填一段垃圾，
+ * 那正是 `dismissRule` / `dismissedAt` / `dismissReason` 一族要避免的事。
+ * 只影响审计与证据展示；没有任何路由判定读这个值。
+ */
 function shaOf(value) {
-  const parts = value.split("@");
+  const parts = String(value).split("@");
   if (parts.length < 2) return null;
-  const sha = parts[1].trim().split(/\s+/)[0];
-  return sha.length > 0 ? sha : null;
+  const token = parts[parts.length - 1].trim().split(/\s+/)[0];
+  return /^[0-9a-f]{7,40}$/i.test(token) ? token : null;
 }
 
 /** 该标记是否在路由表里，且取值合法。 */
@@ -352,13 +360,27 @@ export function applyDismissals(state, decisions, now = new Date().toISOString()
 }
 
 /**
- * 简报投影。**核心验收点在这里**：`undelivered` 只含 `CLAIMED`，
- * `DISMISSED` 只进 `dismissed`（审计），永不进 `undelivered`。
+ * 简报投影。**核心验收点在这里**：`DISMISSED` 只进 `dismissed`（审计），
+ * 永不进 `undelivered`。
  *
  * 三态严格区分（skill 步骤 8）：
- * - `undelivered` —— 认领了但没投成：真未完成，交人判断
+ * - `undelivered` —— 认领了但没了结：真未完成，交人判断
  * - `unclassified` —— 未分类权威信号：必须逐条上报
  * - `channelBlocked` —— 通道级事实：与单条评论无关，始终上报
+ *
+ * **两条投影都倒向「多报」**，因为这一层的失败模式是**静默丢信号**，
+ * 不是噪音：
+ *
+ * - `undelivered` 收 `CLAIMED` **与 `UNROUTED`**。今天没有写方会置
+ *   `UNROUTED`（实测状态里只有 `ROUTED`/`CLAIMED`），但 schema 允许它、
+ *   skill 步骤 3 也写着「记为 `UNROUTED` 进 pending」——一个存在却从不
+ *   进简报的状态就是静默丢信号的口子。
+ * - `unclassified` 在**认不出来时默认上报**：只要条目没有可判的首行、
+ *   又不是被证明可路由/已判定不路由的，就报。老条目与没按 skill 记录
+ *   `marker` 的写方因此不会掉出去。
+ *
+ * 代价是可能把一条其实可路由的条目同时列进两段——宁可让人多看一眼，
+ * 不可让权威信号无声消失。
  */
 export function projectBriefing(state) {
   const claims = state.claims ?? {};
@@ -367,7 +389,7 @@ export function projectBriefing(state) {
   const undelivered = [];
   const dismissedEntries = [];
   for (const [commentId, claim] of Object.entries(claims)) {
-    if (claim.state === "CLAIMED") undelivered.push({ commentId, ...claim });
+    if (claim.state === "CLAIMED" || claim.state === "UNROUTED") undelivered.push({ commentId, ...claim });
     else if (claim.state === "DISMISSED") dismissedEntries.push({ commentId, ...claim });
   }
   undelivered.sort((a, b) => Number(a.commentId) - Number(b.commentId));
@@ -375,15 +397,19 @@ export function projectBriefing(state) {
   const isDismissed = (commentId) =>
     commentId != null && claims[String(commentId)]?.state === "DISMISSED";
 
-  // 未分类只收「真未分类」：条目上记的 type 与从 marker 重算的结果取并集，
-  // 两个来源都不漏。可路由但送不出去的条目属「未完成」，不属「未分类」
-  // ——两者都进简报，但混在一起会让人分不清该投递还是该分类。
+  // 先看条目自述，再看可判的首行，最后**默认上报**。
+  // 注意：`marker` 只是首行，body 级护栏（`noos-governor` / `**Decision:**` /
+  // provenance 行）在这里看不见——那类判据是 skill 侧的义务，投影不为它兜底
+  // 也兜不住；所以「认不出」必须倒向上报，而不是倒向沉默。
   const unclassified = pending.filter((item) => {
     if (item.comment == null || item.type === "channel-blocked") return false;
     if (isDismissed(item.comment) || item.status === "DISMISSED") return false;
-    const byRecordedType = item.type === "unclassified-authority";
-    const byMarker = typeof item.marker === "string" && classifyComment(item.marker).kind === "unclassified";
-    return byRecordedType || byMarker;
+    if (item.type === "unclassified-authority") return true;
+    const kind = typeof item.marker === "string" ? classifyComment(item.marker).kind : null;
+    if (kind === "unclassified") return true;
+    if (kind === "routable") return false; // 真未完成，属 undelivered 那一段
+    if (kind === "delegation-record" || kind === "known-no-wakeup") return false; // 已判定不路由
+    return true;
   });
   const channelBlocked = pending.find((item) => item.type === "channel-blocked") ?? null;
 

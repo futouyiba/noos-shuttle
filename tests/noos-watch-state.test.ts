@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyDismissals,
   classifyComment,
+  evaluateDismissal,
   evaluateNoRecipientDismissal,
   parseMarker,
   projectBriefing,
@@ -11,11 +12,13 @@ import {
   type WatcherState
 } from "../scripts/noos-watch-state.mjs";
 import {
+  ALL_COMMENTS,
   CLAIMS_ONLY_DELEGATION,
   CLAIMS_ONLY_INTEGRATED,
   DELEGATION_RECORDS,
   EXPECTED_STAYED,
   IMPLEMENTED_MARKERS,
+  ISOLATED_VERDICTS,
   MOOT_APPROVALS,
   NO_RECIPIENT,
   NO_RECIPIENT_NOTE,
@@ -75,12 +78,46 @@ describe("解析层：首行标记分档", () => {
   });
 
   it("`INTEGRATED:` 仍可路由（有对应动作：记录并通知 orchestrator）", () => {
-    expect(classifyComment("INTEGRATED: PR#82 @ d4dc5e4").kind).toBe("routable");
+    expect(classifyComment("INTEGRATED: 纯文档，无需部署；合并后 main 验证 @ 3ce4079").kind).toBe("routable");
+  });
+
+  it("exact ref 取最后一段，摘要里的 `@` 不会取错", () => {
+    // 生产形态：`INTEGRATED: <自由摘要> @ <merge-sha>`，ref 在最后。
+    const production =
+      "INTEGRATED: 纯文档，无需部署；合并后 main 验证 typecheck 干净、CI 口径（Node 24）40 files / 508 passed @ 3ce407905dc276d6e46d8c9fd0e8c8110d847d69";
+    expect(parseMarker(production).sha).toBe("3ce407905dc276d6e46d8c9fd0e8c8110d847d69");
+    // 摘要里出现 `@`（提及）：仍取最后一段。
+    expect(parseMarker("INTEGRATED: 摘要含 @someone 提及 @ 8d7765a4da34").sha).toBe("8d7765a4da34");
+    // 不是 sha 就取不到，而不是填一段垃圾进审计字段。
+    expect(parseMarker("INTEGRATED: 纯文档 @ 见上").sha).toBeNull();
+    expect(parseMarker("INTEGRATED: 纯文档，无 ref").sha).toBeNull();
   });
 
   it("未知首行仍然落回未分类（「未分类必上报」护栏）", () => {
     expect(classifyComment("## Primary Design Disposition").kind).toBe("unclassified");
     expect(classifyComment("验收复查（integrator，spec §4.2）：PR #82 已合并").kind).toBe("unclassified");
+  });
+});
+
+describe("夹具保真：照抄生产形态，不自造形状", () => {
+  const integrated = ALL_COMMENTS.filter((c) => parseMarker(c.body).head === "INTEGRATED:");
+
+  it("夹具里的 INTEGRATED 文本与生产同形（无 PR 引用、恰好一个 @、ref 在末尾）", () => {
+    expect(integrated.length).toBeGreaterThan(0);
+    for (const comment of integrated) {
+      const line = comment.body.split("\n")[0];
+      // 实测生产 18/18 条 INTEGRATED 首行都不带 PR 引用——夹具不得自造这个形状，
+      // 否则「用夹具验收」会把结论证成自己想要的形状。
+      expect(line).not.toMatch(/PR\s*#?\s*\d+/i);
+      expect((line.match(/@/g) ?? []).length).toBe(1);
+      expect(parseMarker(comment.body).sha).not.toBeNull();
+    }
+  });
+
+  it("夹具里的 IMPLEMENTED 文本取自生产在用形态", () => {
+    for (const comment of IMPLEMENTED_MARKERS) {
+      expect(comment.body.split("\n")[0]).toMatch(/^IMPLEMENTED: PR#\d+/);
+    }
   });
 });
 
@@ -231,6 +268,119 @@ describe("D4：无匹配接收方须显式确认，不隐式推断", () => {
     const decision = evaluateNoRecipientDismissal(entry, { confirmedNoRecipient: true });
     expect(decision?.rule).toBe("D4");
     expect(decision?.reason).toContain(NO_RECIPIENT_NOTE);
+  });
+});
+
+describe("负例对照：孤立的 verdict 不得被判掉（reviewer F4）", () => {
+  const after = migratedState();
+  const projection = projectBriefing(after);
+  const undeliveredIds = projection.undelivered.map((item) => item.commentId);
+  const dismissedIds = projection.dismissed.entries.map((item) => item.commentId);
+
+  it("同线程无更晚 APPROVE / INTEGRATED 的 verdict 仍留 CLAIMED", () => {
+    for (const comment of ISOLATED_VERDICTS) {
+      const id = String(comment.id);
+      expect(after.claims[id].state).toBe("CLAIMED");
+      expect(undeliveredIds).toContain(id);
+      expect(dismissedIds).not.toContain(id);
+    }
+  });
+
+  it("D5 要求更晚的 INTEGRATED：更早的不开火", () => {
+    const earlier = { id: 1, thread: 99, body: "INTEGRATED: 纯文档 @ aaa1111" };
+    const approve = { id: 2, thread: 99, body: "REVIEW: APPROVE @ bbb2222\n（rev: 直评, 委派: orch）" };
+    // INTEGRATED 在 APPROVE 之前 ⇒ 该次合并还没发生，交接不无对象
+    expect(evaluateDismissal({ commentId: 2, thread: 99, body: approve.body }, [earlier, approve])).toBeNull();
+  });
+
+  it("D5：INTEGRATED 更晚才开火", () => {
+    const approve = { id: 1, thread: 99, body: "REVIEW: APPROVE @ bbb2222\n（rev: 直评, 委派: orch）" };
+    const later = { id: 2, thread: 99, body: "INTEGRATED: 纯文档 @ aaa1111" };
+    const decision = evaluateDismissal({ commentId: 1, thread: 99, body: approve.body }, [approve, later]);
+    expect(decision?.rule).toBe("D5");
+    expect(decision?.evidence).toMatchObject({ integratedBy: "2" });
+  });
+
+  it("D3 要求更晚的 APPROVE：更早的不开火", () => {
+    const approve = { id: 1, thread: 98, body: "REVIEW: APPROVE @ ccc3333\n（rev: 直评, 委派: orch）" };
+    const changes = { id: 2, thread: 98, body: "REVIEW: REQUEST_CHANGES @ ddd4444\n（rev: 直评, 委派: orch）" };
+    expect(evaluateDismissal({ commentId: 2, thread: 98, body: changes.body }, [approve, changes])).toBeNull();
+  });
+
+  it("D3：APPROVE 更晚才开火", () => {
+    const changes = { id: 1, thread: 97, body: "REVIEW: REQUEST_CHANGES @ ddd4444\n（rev: 直评, 委派: orch）" };
+    const approve = { id: 2, thread: 97, body: "REVIEW: APPROVE @ ccc3333\n（rev: 直评, 委派: orch）" };
+    expect(evaluateDismissal({ commentId: 1, thread: 97, body: changes.body }, [changes, approve])?.rule).toBe("D3");
+  });
+
+  it("跨线程不算数：别的线程的更晚标记不得开火", () => {
+    const approve = { id: 1, thread: 96, body: "REVIEW: APPROVE @ bbb2222" };
+    const otherThread = { id: 2, thread: 95, body: "INTEGRATED: 纯文档 @ aaa1111" };
+    expect(evaluateDismissal({ commentId: 1, thread: 96, body: approve.body }, [approve, otherThread])).toBeNull();
+  });
+});
+
+/** 最小状态：只放投影关心的两个集合。 */
+function minimalState(claims: Record<string, { state: string }>, pending: Record<string, unknown>[]): WatcherState {
+  return { schemaVersion: 2, watermark: "2026-09-20T00:00:00Z", claims, pending } as unknown as WatcherState;
+}
+
+describe("投影 fail-open：认不出来必须倒向上报（reviewer F2）", () => {
+  it("按 skill 明文落 pending（无 marker）时仍进未分类，不静默漏", () => {
+    const state = minimalState({ "1": { state: "CLAIMED" } }, [{ type: "unrouted", comment: 1, action: "拟投暗号" }]);
+    expect(projectBriefing(state).unclassified.map((item) => String(item.comment))).toContain("1");
+  });
+
+  it("type 为 unclassified-authority 时即使没有 marker 也上报", () => {
+    const state = minimalState({ "1": { state: "CLAIMED" } }, [
+      { type: "unclassified-authority", comment: 1, reason: "枚举外取值" }
+    ]);
+    expect(projectBriefing(state).unclassified).toHaveLength(1);
+  });
+
+  it("有 marker 且可路由的不混进未分类（真未完成归 undelivered）", () => {
+    const state = minimalState({ "1": { state: "CLAIMED" } }, [
+      { type: "unrouted", comment: 1, marker: "INTEGRATED: 纯文档 @ aaa1111" }
+    ]);
+    const projection = projectBriefing(state);
+    expect(projection.unclassified).toEqual([]);
+    expect(projection.undelivered.map((item) => item.commentId)).toEqual(["1"]);
+  });
+
+  it("有 marker 且已判定不路由的也不进未分类", () => {
+    const state = minimalState({ "1": { state: "CLAIMED" } }, [
+      { type: "unrouted", comment: 1, marker: "rev: review PR#1 @ aaa1111" }
+    ]);
+    expect(projectBriefing(state).unclassified).toEqual([]);
+  });
+
+  it("有 marker 且未分类的进未分类", () => {
+    const state = minimalState({ "1": { state: "CLAIMED" } }, [
+      { type: "unrouted", comment: 1, marker: "REVIEW: APPROVE WITH FINDINGS @ aaa1111" }
+    ]);
+    expect(projectBriefing(state).unclassified.map((item) => String(item.comment))).toEqual(["1"]);
+  });
+
+  it("已判终态的条目即使没有 marker 也不上报", () => {
+    const state = minimalState({ "1": { state: "DISMISSED" } }, [{ type: "unrouted", comment: 1 }]);
+    const projection = projectBriefing(state);
+    expect(projection.unclassified).toEqual([]);
+    expect(projection.undelivered).toEqual([]);
+  });
+});
+
+describe("欠账投影收 UNROUTED（reviewer F1）", () => {
+  it("state 为 UNROUTED 的 claim 出现在未完成投递里，不静默丢", () => {
+    const state = minimalState({ "1": { state: "UNROUTED" } }, []);
+    expect(projectBriefing(state).undelivered.map((item) => item.commentId)).toEqual(["1"]);
+  });
+
+  it("两个终态都不进未完成投递；UNROUTED 与 CLAIMED 都进", () => {
+    const state = minimalState(
+      { "1": { state: "ROUTED" }, "2": { state: "DISMISSED" }, "3": { state: "CLAIMED" }, "4": { state: "UNROUTED" } },
+      []
+    );
+    expect(projectBriefing(state).undelivered.map((item) => item.commentId)).toEqual(["3", "4"]);
   });
 });
 

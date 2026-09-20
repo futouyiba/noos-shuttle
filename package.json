@@ -20,6 +20,7 @@
     "watch:lock": "node scripts/noos-watch-lock.mjs",
     "watch:lock:test": "bash scripts/noos-watch-lock-self-test.sh",
     "watch:migrate": "node scripts/noos-watch-migrate-dismissed.mjs",
+    "watch:corpus-check": "node scripts/noos-watch-corpus-check.mjs",
     "review:intake": "node scripts/review-intake.mjs",
     "sleep:acceptance": "scripts/noos-sleep-resume-acceptance.sh",
     "sleep:acceptance:self-test": "scripts/noos-sleep-resume-acceptance-self-test.sh",
