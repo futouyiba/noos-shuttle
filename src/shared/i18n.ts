@@ -45,6 +45,26 @@ export interface ShuttleCopy {
   bcrSendGo: string;
   bcrEndedLabel: string;
   bcrReason: string;
+  bcrStopReasonBudgetExhausted: string;
+  bcrStopReasonWaitHuman: string;
+  bcrStopReasonWaitReview: string;
+  bcrStopReasonWaitEvidence: string;
+  bcrStopReasonWaitExternal: string;
+  bcrStopReasonGoalSatisfied: string;
+  bcrStopReasonOptionalScopeExtension: string;
+  bcrStopReasonScopeDrift: string;
+  bcrStopReasonStalled: string;
+  bcrStopReasonAssessmentUncertain: string;
+  bcrStopReasonConfidenceBelowHigh: string;
+  bcrStopReasonFocusNotAdvancing: string;
+  bcrStopReasonExcerptUnavailable: string;
+  bcrStopReasonUserCancelled: string;
+  bcrStopReasonUserIntervention: string;
+  bcrStopReasonAuthorityChanged: string;
+  bcrStopReasonConversationRebaseRequired: string;
+  bcrStopReasonSubmissionUncertain: string;
+  bcrStopReasonCarrierFailure: string;
+  bcrStopReasonEvaluatorUnavailable: string;
   bcrGoalMayContinue: string;
   bcrCarrierNotReady: string;
   bcrCarrierGenerating: string;
@@ -251,6 +271,26 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     bcrSendGo: "Send go",
     bcrEndedLabel: "Run ended",
     bcrReason: "Reason",
+    bcrStopReasonBudgetExhausted: "Round budget used up",
+    bcrStopReasonWaitHuman: "Waiting for a human decision",
+    bcrStopReasonWaitReview: "Waiting for review",
+    bcrStopReasonWaitEvidence: "Waiting for evidence",
+    bcrStopReasonWaitExternal: "Waiting on an external result",
+    bcrStopReasonGoalSatisfied: "Goal satisfied",
+    bcrStopReasonOptionalScopeExtension: "An optional scope extension was offered",
+    bcrStopReasonScopeDrift: "Scope drift",
+    bcrStopReasonStalled: "Progress suspected stalled",
+    bcrStopReasonAssessmentUncertain: "The evaluator reported uncertainty instead of a verdict",
+    bcrStopReasonConfidenceBelowHigh: "Evaluator confidence below HIGH",
+    bcrStopReasonFocusNotAdvancing: "The current focus is not advancing",
+    bcrStopReasonExcerptUnavailable: "No usable assistant turn text; the round was not evaluated",
+    bcrStopReasonUserCancelled: "Stopped by you",
+    bcrStopReasonUserIntervention: "You sent a message; the run stopped",
+    bcrStopReasonAuthorityChanged: "The execution authority changed",
+    bcrStopReasonConversationRebaseRequired: "The conversation changed; re-anchoring required",
+    bcrStopReasonSubmissionUncertain: "The submission outcome is uncertain",
+    bcrStopReasonCarrierFailure: "The carrier failed",
+    bcrStopReasonEvaluatorUnavailable: "The evaluator was unavailable",
     bcrGoalMayContinue: "Goal may still be in progress.",
     bcrCarrierNotReady: "Carrier not READY; cannot start the run.",
     bcrCarrierGenerating: "The provider is still generating. Try again once this turn finishes.",
@@ -449,6 +489,26 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     bcrSendGo: "发送 go",
     bcrEndedLabel: "Run 已结束",
     bcrReason: "原因",
+    bcrStopReasonBudgetExhausted: "轮次预算已用尽",
+    bcrStopReasonWaitHuman: "等待人工决定",
+    bcrStopReasonWaitReview: "等待评审",
+    bcrStopReasonWaitEvidence: "等待证据",
+    bcrStopReasonWaitExternal: "等待外部结果",
+    bcrStopReasonGoalSatisfied: "目标已达成",
+    bcrStopReasonOptionalScopeExtension: "提出了可选的范围外延伸",
+    bcrStopReasonScopeDrift: "范围漂移",
+    bcrStopReasonStalled: "疑似停滞",
+    bcrStopReasonAssessmentUncertain: "评估器自陈不确定，未给出判断",
+    bcrStopReasonConfidenceBelowHigh: "评估器置信度未达 HIGH",
+    bcrStopReasonFocusNotAdvancing: "当前焦点未在推进",
+    bcrStopReasonExcerptUnavailable: "未取到可用的 assistant 正文，本轮未评估",
+    bcrStopReasonUserCancelled: "你已停止",
+    bcrStopReasonUserIntervention: "你插入了消息，Run 已停止",
+    bcrStopReasonAuthorityChanged: "执行授权已变更",
+    bcrStopReasonConversationRebaseRequired: "会话已变更，需重新锚定",
+    bcrStopReasonSubmissionUncertain: "提交结果不确定",
+    bcrStopReasonCarrierFailure: "carrier 故障",
+    bcrStopReasonEvaluatorUnavailable: "评估器不可用",
     bcrGoalMayContinue: "Goal 可能仍在进行中。",
     bcrCarrierNotReady: "Carrier 未就绪，无法开始 Run。",
     bcrCarrierGenerating: "provider 正在生成，请等本轮结束后再试。",

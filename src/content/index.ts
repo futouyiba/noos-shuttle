@@ -18,6 +18,7 @@ import type {
   ContinuationStopReason
 } from "../core/continuation-run";
 import { bcrStartGateMessage, recoverStartGateMessage } from "../core/bcr-start-copy";
+import { bcrStopReasonLabel } from "../core/bcr-stop-reason-copy";
 import { EXTENSION_CONTEXT_INVALID, sendExtensionMessage } from "../shared/extension-runtime";
 import { COPY, type ShuttleLocale, getStoredLocale, storeLocale } from "../shared/i18n";
 // Runtime import is content-side only: no other entry pulls this module, so
@@ -600,7 +601,7 @@ function renderBcrSection(copy: (typeof COPY)[ShuttleLocale]): string {
       ended
         ? `<div class="bcr-ended">
             <strong>${escapeHtml(copy.bcrEndedLabel)} ${ended.consumedContinuations} / ${ended.maxContinuations}</strong>
-            <span class="bcr-reason">${escapeHtml(copy.bcrReason)}: ${escapeHtml(ended.stopReason ?? "—")}</span>
+            <span class="bcr-reason">${escapeHtml(copy.bcrReason)}: ${escapeHtml(ended.stopReason ? bcrStopReasonLabel(ended.stopReason, copy) : "—")}</span>
             ${ended.stopReason === "BUDGET_EXHAUSTED" ? `<span class="bcr-note">${escapeHtml(copy.bcrGoalMayContinue)}</span>` : ""}
           </div>`
         : ""
@@ -1858,11 +1859,15 @@ async function autoAdvanceRound(): Promise<void> {
     }
     const continuationMode: "PLAIN_GO" | "REANCHOR_GO" = bcrLastDispatchReanchor ? "REANCHOR_GO" : "PLAIN_GO";
     if (response.decision === "WOULD_CONTINUE") {
-      await captureBcrCandidate("AUTO_CONTINUE", "pending", undefined, continuationMode, response.assessment);
+      await captureBcrCandidate("AUTO_CONTINUE", "pending", undefined, continuationMode, response.assessment, response.vetoHit);
       await applyContinuationRunEvent({ type: "EVALUATION_PASSED" });
     } else {
-      await captureBcrCandidate("AUTO_STOP", "pending", response.stopReason ?? "WAIT_HUMAN", continuationMode, response.assessment);
-      await applyContinuationRunEvent({ type: "EVALUATION_STOPPED", reason: response.stopReason ?? "WAIT_HUMAN" });
+      // A stop with no reason is a stop the evaluator did not attribute; read it
+      // as "no usable verdict" rather than inventing a Human wait. Every path
+      // that produces a stop now names its own cause.
+      const stopReason: ContinuationStopReason = response.stopReason ?? "EVALUATOR_UNAVAILABLE";
+      await captureBcrCandidate("AUTO_STOP", "pending", stopReason, continuationMode, response.assessment, response.vetoHit);
+      await applyContinuationRunEvent({ type: "EVALUATION_STOPPED", reason: stopReason });
     }
   }
   if (consumeStop()) {
@@ -1944,7 +1949,10 @@ async function captureBcrCandidate(
   humanAction: CandidateContinuationFixture["humanAction"],
   stopReason?: ContinuationStopReason,
   continuationMode?: CandidateContinuationFixture["continuationMode"],
-  assessment?: Record<string, unknown>
+  assessment?: Record<string, unknown>,
+  // Undefined when no veto evaluation happened for this round; recording false
+  // there would claim the word list was consulted and found nothing.
+  vetoHit?: boolean
 ): Promise<void> {
   if (!bcrRun) return;
   const run = bcrRun;
@@ -1964,6 +1972,7 @@ async function captureBcrCandidate(
     decision,
     humanAction,
     stopReason,
+    vetoHit,
     continuationMode,
     payloadLocale: dispatched?.locale,
     payloadMode: dispatched?.mode,

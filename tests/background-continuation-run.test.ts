@@ -13,6 +13,9 @@ const START_INPUT = {
   now: 100
 };
 
+/** A completed turn with enough material to evaluate (the lane refuses near-empty excerpts). */
+const LONG_EXCERPT = "Settled another step of the gate question. ".repeat(8);
+
 function providerSender() {
   return { frameId: 0, tab: { id: 11 }, id: "extension-id", url: "https://chatgpt.com/c/conv-a" };
 }
@@ -41,6 +44,7 @@ interface RunReply {
   model?: string;
   decision?: string;
   stopReason?: string;
+  vetoHit?: boolean;
   synced?: boolean;
   reason?: string;
 }
@@ -190,11 +194,11 @@ describe("background continuation run coordinator", () => {
     const raw = (message: object) => new Promise<RunReply>(resolve => {
       handler(message, providerSender(), value => resolve(value as RunReply));
     });
-    const unconfigured = await raw({ type: "NOOS_CONTINUATION_EVALUATE", runId: "bcr-bg-1", assistantTurnExcerpt: "advanced" });
+    const unconfigured = await raw({ type: "NOOS_CONTINUATION_EVALUATE", runId: "bcr-bg-1", assistantTurnExcerpt: LONG_EXCERPT });
     expect(unconfigured.ok).toBe(false);
     expect(unconfigured.error).toBe("evaluator_unconfigured");
     await raw({ type: "NOOS_CONTINUATION_EVAL_CONFIG", config: { apiKey: "sk-abc", model: "deepseek-chat" } });
-    const noRun = await raw({ type: "NOOS_CONTINUATION_EVALUATE", runId: "ghost", assistantTurnExcerpt: "advanced" });
+    const noRun = await raw({ type: "NOOS_CONTINUATION_EVALUATE", runId: "ghost", assistantTurnExcerpt: LONG_EXCERPT });
     expect(noRun.ok).toBe(false);
     expect(noRun.error).toBe("no_active_auto_run");
     await send(handler, { type: "start", input: { ...START_INPUT, mode: "AUTO_X5", goal: "Settle the gate question" } });
@@ -203,18 +207,51 @@ describe("background continuation run coordinator", () => {
     await send(handler, { type: "apply", runId: "bcr-bg-1", event: { type: "OPERATION_ACCEPTED", operationId: "bcr-bg-1:go:1" }, now: 102 });
     const completed = await send(handler, { type: "apply", runId: "bcr-bg-1", event: { type: "OPERATION_COMPLETED", operationId: "bcr-bg-1:go:1", turnRef: "turn:t1" }, now: 103 });
     expect(completed.run?.phase).toBe("EVALUATING");
-    const passing = await raw({ type: "NOOS_CONTINUATION_EVALUATE", runId: "bcr-bg-1", assistantTurnExcerpt: "advanced the focus" });
+    const passing = await raw({ type: "NOOS_CONTINUATION_EVALUATE", runId: "bcr-bg-1", assistantTurnExcerpt: `${LONG_EXCERPT}advanced the focus` });
     expect(passing.ok).toBe(true);
     expect(passing.decision).toBe("WOULD_CONTINUE");
+    expect(passing.vetoHit).toBe(false);
     const body = JSON.parse((fetchImpl.mock.calls[0] as unknown as [string, { body: string }])[1].body);
     expect(body.model).toBe("deepseek-chat");
     expect(body.messages[1].content).toContain("Settle the gate question");
     const failing = vi.fn(async () => new Response("denied", { status: 401 }));
     vi.stubGlobal("fetch", failing);
-    const denied = await raw({ type: "NOOS_CONTINUATION_EVALUATE", runId: "bcr-bg-1", assistantTurnExcerpt: "advanced" });
+    const denied = await raw({ type: "NOOS_CONTINUATION_EVALUATE", runId: "bcr-bg-1", assistantTurnExcerpt: LONG_EXCERPT });
     expect(denied.ok).toBe(true);
     expect(denied.decision).toBe("WOULD_STOP");
     expect(denied.stopReason).toBe("EVALUATOR_UNAVAILABLE");
+  });
+
+  // Fail closed before the model is asked: an excerpt this short is a node that
+  // has not rendered, and the UNCERTAIN/LOW answer it would earn is not a
+  // judgment about the round. The stop must say "no text", not "a Human is needed".
+  it("refuses to evaluate an unusable excerpt and never calls the evaluator", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { content: "{}" } }] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchImpl);
+    const { handler } = await loadHandler();
+    const raw = (message: object) => new Promise<RunReply>(resolve => {
+      handler(message, providerSender(), value => resolve(value as RunReply));
+    });
+    await raw({ type: "NOOS_CONTINUATION_EVAL_CONFIG", config: { apiKey: "sk-abc", model: "deepseek-chat" } });
+    await send(handler, { type: "start", input: { ...START_INPUT, mode: "AUTO_X5", goal: "Settle the gate question" } });
+    await send(handler, { type: "apply", runId: "bcr-bg-1", event: { type: "DISPATCH_ISSUED", operationId: "bcr-bg-1:go:1" }, now: 101 });
+    await send(handler, { type: "apply", runId: "bcr-bg-1", event: { type: "OPERATION_ACCEPTED", operationId: "bcr-bg-1:go:1" }, now: 102 });
+    await send(handler, { type: "apply", runId: "bcr-bg-1", event: { type: "OPERATION_COMPLETED", operationId: "bcr-bg-1:go:1", turnRef: "turn:t1" }, now: 103 });
+    for (const excerpt of ["", "OK", "已经完成。", "x".repeat(19)]) {
+      const refused = await raw({ type: "NOOS_CONTINUATION_EVALUATE", runId: "bcr-bg-1", assistantTurnExcerpt: excerpt });
+      expect(refused.ok, excerpt).toBe(true);
+      expect(refused.decision, excerpt).toBe("WOULD_STOP");
+      expect(refused.stopReason, excerpt).toBe("EXCERPT_UNAVAILABLE");
+      // No veto claim either: the word list was never consulted.
+      expect(refused.vetoHit, excerpt).toBeUndefined();
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+    const noRunId = await raw({ type: "NOOS_CONTINUATION_EVALUATE", assistantTurnExcerpt: LONG_EXCERPT });
+    expect(noRunId.ok).toBe(false);
+    expect(noRunId.error).toBe("runId_required");
+    const tooLong = await raw({ type: "NOOS_CONTINUATION_EVALUATE", runId: "bcr-bg-1", assistantTurnExcerpt: "x".repeat(8_001) });
+    expect(tooLong.ok).toBe(false);
+    expect(tooLong.error).toBe("excerpt_too_long");
   });
 
   it("syncs the evaluator config from the Hub pull endpoint and lands it locally", async () => {

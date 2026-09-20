@@ -15,6 +15,18 @@ export type ContinuationStopReason =
   | "OPTIONAL_SCOPE_EXTENSION"
   | "SCOPE_DRIFT"
   | "STALLED"
+  /**
+   * The evaluator's remaining blocking terms, each reported as itself. They
+   * used to collapse into WAIT_HUMAN, which made "the model asked for a Human",
+   * "the model reported MEDIUM confidence", "the model declined to judge", and
+   * "there was no text to judge" read identically. Splitting the reason is a
+   * reporting fix only: the gate that produces the stop is unchanged.
+   */
+  | "ASSESSMENT_UNCERTAIN"
+  | "CONFIDENCE_BELOW_HIGH"
+  | "FOCUS_NOT_ADVANCING"
+  /** No usable assistant-turn text to evaluate: the evaluator was never called and no verdict exists. */
+  | "EXCERPT_UNAVAILABLE"
   | "USER_CANCELLED"
   | "USER_INTERVENTION"
   | "AUTHORITY_CHANGED"
@@ -274,10 +286,18 @@ export interface CandidateContinuationFixture {
   payloadText?: string;
   assessment?: Record<string, unknown>;
   stopReason?: ContinuationStopReason;
+  /**
+   * True when the deterministic stop-veto word list — not the model — produced
+   * this stop. Recorded so a stop can be attributed after the fact: without it,
+   * "the model judged a stop" and "the veto flipped a would-continue" are only
+   * distinguishable by reverse-engineering an all-green assessment (issue: the
+   * AUTO evaluator report already claimed this field was recorded).
+   */
+  vetoHit?: boolean;
   capturedAt: number;
 }
 
-export function createFixtureCandidate(run: ContinuationRun, input: { continuationIndex: number; turnRef?: string; assistantTurnExcerpt?: string; decision: CandidateContinuationFixture["decision"]; humanAction: CandidateContinuationFixture["humanAction"]; continuationMode?: CandidateContinuationFixture["continuationMode"]; payloadLocale?: ShuttleLocale; payloadMode?: ContinuationPayloadMode; payloadText?: string; assessment?: Record<string, unknown>; stopReason?: ContinuationStopReason; capturedAt: number }): CandidateContinuationFixture {
+export function createFixtureCandidate(run: ContinuationRun, input: { continuationIndex: number; turnRef?: string; assistantTurnExcerpt?: string; decision: CandidateContinuationFixture["decision"]; humanAction: CandidateContinuationFixture["humanAction"]; continuationMode?: CandidateContinuationFixture["continuationMode"]; payloadLocale?: ShuttleLocale; payloadMode?: ContinuationPayloadMode; payloadText?: string; assessment?: Record<string, unknown>; stopReason?: ContinuationStopReason; vetoHit?: boolean; capturedAt: number }): CandidateContinuationFixture {
   return {
     candidateId: `${run.runId}:${input.continuationIndex}`,
     runId: run.runId,
@@ -293,6 +313,7 @@ export function createFixtureCandidate(run: ContinuationRun, input: { continuati
     payloadText: input.payloadText,
     assessment: input.assessment,
     stopReason: input.stopReason,
+    vetoHit: input.vetoHit,
     capturedAt: input.capturedAt
   };
 }
@@ -322,6 +343,7 @@ export type ContinuationRunMutation =
       decision: CandidateContinuationFixture["decision"];
       humanAction: CandidateContinuationFixture["humanAction"];
       stopReason?: ContinuationStopReason;
+      vetoHit?: boolean;
       continuationMode?: ContinuationPayloadMode;
       payloadLocale?: ShuttleLocale;
       payloadMode?: ContinuationPayloadMode;
@@ -383,6 +405,7 @@ export function reduceContinuationRunStore(store: ContinuationRunStore, mutation
       if (!Number.isInteger(mutation.continuationIndex) || mutation.continuationIndex < 1) return { ok: false, error: "continuationIndex: positive integer required" };
       if (!Number.isFinite(mutation.capturedAt)) return { ok: false, error: "capturedAt: number required" };
       if (mutation.assessment !== undefined && (typeof mutation.assessment !== "object" || mutation.assessment === null)) return { ok: false, error: "assessment: object required when provided" };
+      if (mutation.vetoHit !== undefined && typeof mutation.vetoHit !== "boolean") return { ok: false, error: "vetoHit: boolean required when provided" };
       const candidate = createFixtureCandidate(run, {
         continuationIndex: mutation.continuationIndex,
         turnRef: mutation.turnRef,
@@ -395,6 +418,7 @@ export function reduceContinuationRunStore(store: ContinuationRunStore, mutation
         payloadText: mutation.payloadText,
         assessment: mutation.assessment,
         stopReason: mutation.stopReason,
+        vetoHit: mutation.vetoHit,
         capturedAt: mutation.capturedAt
       });
       if (store.candidates.some((existing) => existing.candidateId === candidate.candidateId)) return { ok: true, run, store };

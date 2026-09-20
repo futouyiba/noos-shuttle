@@ -414,6 +414,62 @@ describe("AUTO_X5 mode", () => {
     });
     expect(bad.ok).toBe(false);
   });
+
+  // Item from the 2026-09-20 forensics: the candidate pool had no way to tell a
+  // model-authored stop from a stop the deterministic word list flipped, so a
+  // veto could only be inferred from "an all-green assessment stopped anyway".
+  it("records the deterministic veto on the candidate so a stop can be attributed", () => {
+    let store = emptyContinuationRunStore();
+    const started = reduceContinuationRunStore(store, { type: "start", input: { runId: "bcr-veto", workItemId: "w", logicalThreadId: "t", providerConversationRef: "conv-v", bindingEpoch: 1, maxContinuations: 5, mode: "AUTO_X5", goal: "g", now: 1 } });
+    store = started.ok ? started.store : store;
+    const allGreen = { goal_status: "IN_PROGRESS", focus_status: "OPEN_ADVANCING", scope_relation: "WITHIN_SCOPE", dependency: "NONE", anchor_need: "NONE", confidence: "HIGH" };
+    const vetoed = reduceContinuationRunStore(store, {
+      type: "record_round_evidence",
+      runId: "bcr-veto",
+      continuationIndex: 1,
+      decision: "AUTO_STOP",
+      humanAction: "pending",
+      stopReason: "WAIT_HUMAN",
+      vetoHit: true,
+      assessment: allGreen,
+      capturedAt: 2
+    });
+    expect(vetoed.ok).toBe(true);
+    store = vetoed.ok ? vetoed.store : store;
+    expect(store.candidates[0].vetoHit).toBe(true);
+    expect(store.candidates[0].stopReason).toBe("WAIT_HUMAN");
+    expect(store.candidates[0].assessment).toEqual(allGreen);
+
+    // A round the model stopped on its own records no veto hit.
+    const modelStopped = reduceContinuationRunStore(store, {
+      type: "record_round_evidence",
+      runId: "bcr-veto",
+      continuationIndex: 2,
+      decision: "AUTO_STOP",
+      humanAction: "pending",
+      stopReason: "GOAL_SATISFIED",
+      vetoHit: false,
+      assessment: { ...allGreen, goal_status: "SATISFIED" },
+      capturedAt: 3
+    });
+    expect(modelStopped.ok).toBe(true);
+    store = modelStopped.ok ? modelStopped.store : store;
+    expect(store.candidates[0].vetoHit).toBe(false);
+    expect(store.candidates[0].stopReason).toBe("GOAL_SATISFIED");
+
+    // Off the wire the flag is a boolean or absent, never coerced.
+    const notBoolean = reduceContinuationRunStore(store, {
+      type: "record_round_evidence",
+      runId: "bcr-veto",
+      continuationIndex: 3,
+      decision: "AUTO_STOP",
+      humanAction: "pending",
+      vetoHit: "yes" as unknown as boolean,
+      capturedAt: 4
+    });
+    expect(notBoolean.ok).toBe(false);
+    expect(store.candidates).toHaveLength(2);
+  });
 });
 
 describe("createFixtureCandidate", () => {
@@ -424,5 +480,12 @@ describe("createFixtureCandidate", () => {
     expect(candidate.turnRef).toBe("turn:t2");
     expect(candidate.assistantTurnExcerpt).toBe("excerpt");
     expect(candidate.stopReason).toBeUndefined();
+    expect(candidate.vetoHit).toBeUndefined();
+  });
+
+  it("carries the veto flag through when the round was vetoed", () => {
+    const candidate = createFixtureCandidate(run(), { continuationIndex: 1, decision: "AUTO_STOP", humanAction: "pending", stopReason: "WAIT_HUMAN", vetoHit: true, capturedAt: 501 });
+    expect(candidate.vetoHit).toBe(true);
+    expect(candidate.stopReason).toBe("WAIT_HUMAN");
   });
 });

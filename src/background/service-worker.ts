@@ -45,6 +45,7 @@ import {
   BCR_EVALUATOR_CONFIG_KEY,
   BCR_EVALUATOR_DEFAULT_MODEL,
   evaluateContinuation,
+  isEvaluatorExcerptUsable,
   normalizeEvaluatorConfig
 } from "../core/continuation-evaluator";
 import {
@@ -162,8 +163,19 @@ async function handleContinuationEvaluate(message: { runId?: unknown; assistantT
   if (!storage) return { ok: false, error: "storage_unavailable" };
   const runId = typeof message.runId === "string" ? message.runId.trim() : "";
   const excerpt = typeof message.assistantTurnExcerpt === "string" ? message.assistantTurnExcerpt : "";
-  if (runId === "" || excerpt === "") return { ok: false, error: "runId_and_assistantTurnExcerpt_required" };
+  if (runId === "") return { ok: false, error: "runId_required" };
+  // Kept as a payload bound even though the shipped content script caps the
+  // excerpt at 2000 chars: this lane is an authority boundary any extension
+  // context can message, and the excerpt is forwarded to a third-party endpoint.
   if (excerpt.length > 8_000) return { ok: false, error: "excerpt_too_long" };
+  // Fail closed before the evaluator is called at all. A node that has not
+  // rendered carries no material, so the model can only answer UNCERTAIN/LOW —
+  // and that "nothing to judge" answer would otherwise be displayed as a stop
+  // verdict the model reached. Report the missing text as itself instead: it is
+  // not a Human wait, and it is not the model's judgment.
+  if (!isEvaluatorExcerptUsable(excerpt)) {
+    return { ok: true, decision: "WOULD_STOP", stopReason: "EXCERPT_UNAVAILABLE", error: "excerpt_unavailable" };
+  }
   const rawConfig = (await storage.get(BCR_EVALUATOR_CONFIG_KEY))[BCR_EVALUATOR_CONFIG_KEY];
   const config = normalizeEvaluatorConfig(rawConfig);
   if (!config) return { ok: false, error: "evaluator_unconfigured" };
@@ -185,7 +197,10 @@ async function handleContinuationEvaluate(message: { runId?: unknown; assistantT
     decision: verdict.decision,
     assessment: verdict.assessment,
     stopReason: verdict.stopReason,
-    vetoHit: verdict.vetoHit === true,
+    // Passed through as computed, never coerced: an undefined veto means no veto
+    // evaluation happened, and recording it as false would claim the word list
+    // was consulted and found nothing.
+    vetoHit: verdict.vetoHit,
     error: verdict.error
   };
 }
@@ -255,7 +270,8 @@ function isKnownContinuationRunMutation(mutation: ContinuationRunMutation): bool
       return typeof mutation.runId === "string" && mutation.runId.trim() !== "" &&
         Number.isInteger(mutation.continuationIndex) && mutation.continuationIndex >= 1 &&
         typeof mutation.capturedAt === "number" && Number.isFinite(mutation.capturedAt) &&
-        typeof mutation.decision === "string" && typeof mutation.humanAction === "string";
+        typeof mutation.decision === "string" && typeof mutation.humanAction === "string" &&
+        (mutation.vetoHit === undefined || typeof mutation.vetoHit === "boolean");
     case "attach_candidate":
       return !!mutation.candidate && typeof mutation.candidate === "object" &&
         typeof mutation.candidate.candidateId === "string" && mutation.candidate.candidateId.trim() !== "";
