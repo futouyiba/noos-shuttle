@@ -27,7 +27,7 @@
 
 | 已有实践 | 证据 |
 | --- | --- |
-| **被取代文档的声明已基本一致** | v0 / v1 / v2 / `reducer-operations-v0` / `n1-n5-amendment-v0` / `m1-m3-amendment-v0` 六份**前两行逐字节相同**：<br>`> **SUPERSEDED — do not use as current design input.**`<br>``> Current candidate: `cross-agent-handoff-escalation-contract-v3.md` (consolidated current contract)``<br>（**第三行有微差**：v1 为 `Full historical v1 re-review target is frozen at exact commit:`，其余五份为 `... content is frozen at ...`；且 v1 缺 `provenance pointer only` 一行。见**第一轮 n1**） |
+| **被取代文档的声明已基本一致** | v0 / v1 / v2 / `reducer-operations-v0` / `n1-n5-amendment-v0` / `m1-m3-amendment-v0` 六份**前两行逐字节相同**：<br>`> **SUPERSEDED — do not use as current design input.**`<br>``> Current candidate: `cross-agent-handoff-escalation-contract-v3.md` (consolidated current contract)``<br>（**冻结行措辞有微差**：v1 为 `Full historical v1 re-review target is frozen at exact commit:`，其余五份为 `... content is frozen at ...`；且 v1 缺 `provenance pointer only` 一行，故该行在 v1 是第三内容行、在其余五份是第四内容行。见**第一轮 n1**） |
 | **被吸收层的 tombstone 清单** | v3 头部：「Supersedes as the current reading path（semantics fully absorbed herein; files retained as provenance tombstones）」+ 四份文件清单 |
 | **裁定记录（形态雏形）** | `v1-adjudication-record.md`：注明裁定来源、结论、`treated as final`、authority baseline 新 SHA |
 | **冻结证据** | `docs/deliberation-harness/evidence/*.json`（**4 份**） |
@@ -105,7 +105,7 @@
 | # | 形态 | 位置 | 是否在 `main` | 完整度 |
 | --- | --- | --- | --- | --- |
 | 1 | 转述式记录 | `docs/deliberation-harness/v1-adjudication-record.md` | **是** | 记来源与结论，**无逐字引用块** |
-| 2 | **逐字存档** | **`docs/carrier-summon-v2-proposal.md` §9「Designer 裁定原文存档」** | **是** | **provenance + exact target + 逐字引用**，并额外声明「该评论未采用附录 B.3 的严格标记语法，标记合规性留给 integrator 判定」 |
+| 2 | **逐字存档** | **`docs/carrier-summon-v2-proposal.md` §9「Designer 裁定原文存档」** | **是** | **provenance + exact target + 逐字引用**，并额外声明（**逐字**）：「**未**采用附录 B.3 的严格标记语法（首行 `DESIGN: <verdict>` + provenance 次行）…标记合规性**与合并门禁判定**留给 integrator **按 §4.2/B.3 处置**」 |
 | 3 | 提案内 §11 记录 | `docs/bcr-family-disposition` 分支，commit `16aa617`（2026-09-19 18:58:13，"record BCR background-dependence designer disposition (§11)"） | 否（未合并） | 记录 `5717715062` 一族 |
 | 4 | 提案内 §8 记录 | `bcr-multitab-observation-defect-proposal-v0.md` §8（分支 `futou-/sharp-leavitt-798409`，commit `cea4071`，2026-09-19 18:59:00） | 否（未合并） | **逐字转录 `5717432171`**；对 `5718137417` 作「家族记录（含 Q→M 映射表）」、对 `5717715062` 作「姊妹裁定（另一份文档的 §11）」——即**后两条是被指向，不是被它记录** |
 
@@ -351,10 +351,13 @@ tombstone **不是第五个 Authority-Level，也不是第二个权威轴**。�
 > 「Do not claim or enforce "implementation PR must cite a D-number" as repository policy until the canonical
 > workflow specification explicitly adopts it. … `noos-shuttle` must not manufacture a second merge policy.」
 
-**在规范侧落地前，责任人按约定确定**：由**执行该裁定的实现方**自愿在其 PR 中完成 **Leg A 记录**
-（这是归档责任，**不是合并门禁**——门禁那一条已 DEFER）；
+**在规范侧落地前，责任人按约定确定**：由**执行该裁定的实现方**完成 **Leg A 记录**
+（这是归档责任，**无合并门禁故不具强制力**——门禁那一条已 DEFER；但裁定要求两条腿都做才算文档收口，
+故它是约定的责任，不是可选项）；
 若无人执行该裁定（`#57`/`#58` 正是此形态），则由 **watcher 上报**（其「未分类必上报」已覆盖 designer 原生裁定），
 由人类或 orchestrator 决定是否立任务。**上报不等于归档，但至少不再静默。**
+该上报规则目前**只在 PR #70 的加固分支上**（`.claude/skills/noos-watch/SKILL.md` 的「未分类必上报」）；
+#70 未合并前，本提案此处是**依赖该 PR 的假设**，不得读作现状。
 
 **（2）源与保真**
 
