@@ -125,8 +125,11 @@ try {
     // Node keeps the literal path under --preserve-symlinks-main; both
     // resolutions must be recognised, or that flag silently disables the lock.
     assert.equal(isEntryPoint(via, pathToFileURL(path.resolve(via)).href), true);
-    // A genuinely different file is still not this entry point.
-    assert.equal(isEntryPoint(path.join(tmp, 'other.mjs'), pathToFileURL(fs.realpathSync(script)).href), false);
+    // A genuinely different file must be refused. Use one that EXISTS: a
+    // missing path returns false via the catch and would not prove anything.
+    const other = path.join(root, 'package.json');
+    assert.equal(isEntryPoint(other, pathToFileURL(fs.realpathSync(script)).href), false);
+    assert.equal(isEntryPoint(other, pathToFileURL(path.resolve(script)).href), false);
     const file = path.join(tmp, 'symlink.lock');
     // Invoke through the symlink itself; running `script` directly would not
     // exercise the resolution the guard depends on.

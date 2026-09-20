@@ -125,10 +125,10 @@ function main(argv) {
  */
 export function isEntryPoint(argv1, moduleUrl) {
   if (typeof argv1 !== "string" || argv1 === "") return false;
-  let resolved;
-  try { resolved = fs.realpathSync(argv1); } catch { return false; }
-  return moduleUrl === pathToFileURL(resolved).href
-    || moduleUrl === pathToFileURL(path.resolve(argv1)).href;
+  // Filesystem-free comparison first: path.resolve never throws, so this branch
+  // must not be reachable only when realpathSync succeeds.
+  if (moduleUrl === pathToFileURL(path.resolve(argv1)).href) return true;
+  try { return moduleUrl === pathToFileURL(fs.realpathSync(argv1)).href; } catch { return false; }
 }
 
 if (isEntryPoint(process.argv[1], import.meta.url)) {
