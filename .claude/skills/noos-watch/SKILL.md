@@ -22,13 +22,24 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
   watcher 存在——这是「重复取件」的结构性防线。
 - **先认领后动作**：路由任何一条评论之前，必须先把该评论以
   `CLAIMED` 写回状态文件并确认落盘；投递成功后才转为 `ROUTED`。
-  未认领就投递＝重复取件的直接成因。
+  未认领就投递＝重复取件的直接成因。（判 `DISMISSED` 不触发投递，
+  故不经过 `CLAIMED`；但终态的写回同样必须持锁。）
+- **终态是结论，不是逃生门**：判 `DISMISSED` 只允许走步骤 3 的
+  D1–D5 闭集判据。任何「这条大概不用管」的判断都必须落回未分类上报
+  ——未分类是安全侧；静默丢弃权威裁定是已知事故，不是可接受行为。
 - **不认识但像正式文件的，必须上报**：无法按下方词表分类、却携带
   权威信号的评论（见步骤 3 末），一律进 pending 并在简报中列出，
   **不得静默跳过**。静默丢弃权威裁定是已知事故，不是可接受行为。
 - 只认首行标记 + 次行 provenance 的评论（唤醒不校验委派记录；
   接收方按 B.3 推导规则核对后才行动）。
 - 无法解析目标会话时不投递，记入 pending 并在简报中汇报。
+
+**判据与实现一一对应**：步骤 3 的 D1–D5 判据在
+`scripts/noos-watch-state.mjs` 里有可执行定义（纯函数、只读、不写状态），
+测试在 `tests/noos-watch-state.test.ts`。改判据必须同时改正文与实现，
+否则两者会漂移。存量欠账的一次性迁移用
+`scripts/noos-watch-migrate-dismissed.mjs`（**默认 dry-run**，`--apply`
+才落盘且必须先取得同一把锁）。
 
 ## 步骤
 
@@ -65,12 +76,22 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
    {
      "schemaVersion": 2,
      "watermark": "ISO8601",
-     "claims": { "<commentId>": { "state": "CLAIMED|ROUTED|UNROUTED", "action": "...", "claimedAt": "ISO8601", "routedAt": "ISO8601", "note": "..." } },
+     "claims": { "<commentId>": { "state": "CLAIMED|ROUTED|UNROUTED|DISMISSED", "action": "...", "claimedAt": "ISO8601", "routedAt": "ISO8601", "dismissRule": "D1|D2|D3|D4|D5", "dismissedAt": "ISO8601", "dismissReason": "...", "note": "..." } },
      "pending": [],
      "stages": [],
      "health": { "lastStartedAt": "ISO8601", "lastSuccessfulAdvanceAt": "ISO8601|null", "lastCompletedPollAt": "ISO8601|null", "activeRun": null, "consecutiveInterruptions": 0, "lastError": "string|null" }
    }
    ```
+
+   **两个终态，语义不同、后果一致**：`ROUTED` 是「已投递」，
+   `DISMISSED` 是「已作出结论：不投递」。两者都**不再进简报的
+   「未完成投递」项**。只有 `CLAIMED`（认领了、结果未知——可能是被
+   中断在投递中途）与 `UNROUTED`（未分类）构成欠账。
+
+   没有 `DISMISSED` 时，`CLAIMED` 同时承担「投递失败/被中断」与
+   「我判定不投递」两种含义，而按步骤 3 它**每轮都要报成未完成投递**
+   ——人工分诊成本随轮次无上限复现。终态把前者（结论）从欠账里择出，
+   后者（未知）继续上报。
 
    无文件则初始化 `watermark = now - 15min`。**旧的 `processed` 数组
    是 v1 schema**：读到数组且无 `claims` 时迁移——每个 id 记为
@@ -88,10 +109,11 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
    拉取新评论（覆盖 issue 与 PR 评论）；返回满页时续页拉取
    （page=2,3,…）至不满页。
 
-3. 逐条分类。**先查 `claims`**：已 `ROUTED` 的跳过；`CLAIMED` 但未
-   `ROUTED` 的**不得重发**，列入简报的「未完成投递」项交人判断
-   （可能是上轮被中断在投递中途）。其余按首行标记 + 次行 provenance
-   分档路由：
+3. 逐条分类。**先查 `claims`**：命中终态（`ROUTED` / `DISMISSED`）的
+   跳过——`ROUTED` 是已投递，`DISMISSED` 是已作出「不投递」的结论，
+   **两者都不再进简报的「未完成投递」项**；仍为 `CLAIMED` 且未判终态的
+   **不得重发**，列入简报的「未完成投递」项交人判断（可能是上轮被中断
+   在投递中途）。其余按首行标记 + 次行 provenance 分档路由：
 
    - `REVIEW: REQUEST_CHANGES` → 向该 PR 的实现会话投 `fix PR#N`
    - `REVIEW: APPROVE` → 通知实现会话与 orchestrator；向
@@ -106,30 +128,99 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
    - `DESIGN: REQUEST_CHANGES` 或 `DESIGN: REJECTED` 且 PR 已合并
      → 提示 orchestrator 以新 dispatch 立 follow-up issue
    - `INTEGRATED:` → 记录并通知 orchestrator
+   - `IMPLEMENTED: PR#M` → **已知输出标记、无唤醒动作**。它是实现在
+     任务 issue 上的完成记录（规范 B.3）；唤醒 integrator 的证据是
+     `REVIEW: APPROVE`，不是本条。记为「已知、不路由」并按 D2 判终态，
+     **不进 pending**
 
-   **未分类上报（必须执行）**：不匹配上表、但 body 命中以下任一
-   保守判据的评论，一律记为 `UNROUTED` 进 pending，并在简报中
+   **终态 `DISMISSED`（已作出结论：不投递）**：命中以下判据的评论，
+   记为 `DISMISSED` 并写 `dismissRule` / `dismissedAt` / `dismissReason`
+   （可审计），**不进 pending、不进简报的「未完成投递」项、不投递**。
+   判据全部是**闭集匹配**：命中不了就落回下方的「未分类上报」，绝不因
+   「看着不像要投递的」而消失。
+
+   - **D1 委派记录**：首行匹配 `^(orch|impl|rev|des|intg)\s*[:：]`
+     （大小写无关、全角归一后匹配；只认**首行**，正文提到角色不算）。
+     B.3 委派记录是**唤醒行**，不是 verdict 输出标记；要路由的是紧跟其
+     后、承载结论的那条首行标记。所以委派记录本身不路由，判终态。
+   - **D2 已知标记、无唤醒动作**：首行是规范已知输出标记，但上表未定义
+     对应动作——**当前仅 `IMPLEMENTED:`**。这条闭集之外的未知标记一律
+     走「未分类上报」，**不得套用本判据**。
+   - **D3 被同线程更晚的同族收敛 verdict 取代**：本条首行是
+     `REVIEW:` / `DESIGN:` 且取值为非收敛值（`REQUEST_CHANGES` /
+     `REJECTED`），而同线程存在 **commentId 更大**（GitHub 评论 id 单调
+     递增）、同族、取值为 `APPROVE`（**逐字等于**——`APPROVE WITH
+     FINDINGS` 不算）的评论。记 `supersededBy: <commentId>`。判据成立的
+     理由是：派发 `fix PR#N` 会在已 APPROVE 的 head 上诱发新改动并作废
+     该 APPROVE，投递它比不投递更有害。
+   - **D4 无匹配接收方且已记录原因**：步骤 4 解析不到接收方会话，
+     **且**已在该条 pending 上记录结构化原因（`recipient: null` +
+     `recipientNote`），**且**该原因是线程的结构性事实（例如「该工作流
+     由 orchestrator 会话直评驱动，不存在独立实现会话可唤醒」），不是
+     暂时性查找失败。暂时性失败维持 `CLAIMED` 并继续上报——**通道不可用
+     与「没有收件人」是两回事**，前者是环境故障、后者是结论。
+     （本轮新解析失败的条目在步骤 4 记录原因后判；历史上已记录原因的
+     旧条目在步骤 3 重判。两者判据相同。）
+   - **D5 合并交接已无对象**：本条是 `REVIEW:` / `DESIGN:` 的 `APPROVE`，
+     而同线程已有 **commentId 更大**的 `INTEGRATED:` 记录——合并已经
+     发生，通知与合并交接都没有对象了。
+
+   **判据不得越界**：`REVIEW:` / `DESIGN:` 取值不在规范枚举内（如
+   `APPROVE WITH FINDINGS`）、designer 的自由文本裁定、`noos-governor`
+   与 `**Decision:**` 记录，**一条都不适用 D1–D5**，必须继续进 pending
+   等人工分类。那是规范侧的枚举缺口（另立提案处理），不是本层可以自动
+   判掉的东西。D1–D5 只覆盖「本 skill 已经能确定不投递」的情形。D5 相对
+   前述三类是**超出最小要求的一条**（见 PR 说明），若复审认为它越界，
+   直接删掉该判据即可，其余判据不依赖它。
+
+   **未分类上报（必须执行）**：不匹配上表、未命中上述终态判据、但 body
+   命中以下任一保守判据的评论，一律记为 `UNROUTED` 进 pending，并在简报中
    逐条列出「线程 + 评论链接 + 命中的判据」：
 
    - 含 `noos-governor`（designer 经 connector 的裁定记录标记）
    - 含 `**Decision:**`（同上，原生裁定的判定行）
-   - 含形如 `（…: …, 委派: …）` 的 provenance 行
-   - 含 `DESIGN:` / `REVIEW:` / `INTEGRATED:` / `IMPLEMENTED:` 但
-     取值不在规范枚举内（例如 `DESIGN: PARTIAL_ACCEPT`——规范只定义
+   - 含形如 `（…: …, 委派: …）` 的 provenance 行，**且首行不是
+     `orch:` / `impl:` / `rev:` / `des:` / `intg:` 形式的 B.3 委派记录**
+     ——委派记录按 D1 处理。不排除就会自我触发：B.3 要求每条委派记录都
+     带 provenance 行，写一条合规委派记录等于自动给自己造一条 pending
+   - 含 `DESIGN:` / `REVIEW:` / `INTEGRATED:` 但取值不在规范枚举内
+     （例如 `DESIGN: PARTIAL_ACCEPT`——规范只定义
      `APPROVE|REQUEST_CHANGES|REJECTED`，**协议缺这个符号**）
+
+   `IMPLEMENTED:` 已从上一条摘出（它是已知标记，按 D2 判终态，不再是
+   「未分类」判据的一部分）。
 
    这条的意义是让「丢」变得可见：解析器永远会漏掉下一种没见过的
    格式，而「不认识就上报」使漏变成可观测的。
 
+   **未知 ≠ 已判定不路由**：一条评论要么被上表路由、要么命中 D1–D5 判
+   终态、要么进本 pending——三者互斥且穷尽。**不得**因为「看起来不需要
+   投递」而既不路由也不上报。
+
 4. 会话寻址：`ccd_session_mgmt list_sessions` 按标题 / 分支匹配该 PR
-   的实现会话；匹配不到则进 pending（`{"type":"unrouted",
-   "comment":<id>, "action":<拟投暗号>}`）。
+   的实现会话；匹配不到则进 pending，并**把「为什么没有收件人」记成
+   结构化字段**：
+
+   ```json
+   { "type": "unrouted", "comment": <id>, "action": <拟投暗号>,
+     "recipient": null, "recipientNote": "<为什么解析不到可唤醒的会话>" }
+   ```
+
+   `recipientNote` 是 D4 的判据依据，必须写清「线程的结构性事实」还是
+   「暂时性查找失败」；只有前者才可能判终态，后者维持 `CLAIMED` 继续上报。
+   **投递通道不可用不是「没有收件人」**，不写进 `recipientNote`。
 
 5. **认领后路由**：对每一条将要投递的评论，先把
    `claims[<id>] = {state:"CLAIMED", action, claimedAt}` **写回并
    确认落盘**，然后才投递。投递成功后改记
    `{state:"ROUTED", routedAt, deliveredVia}`。投递失败或本轮被中断时
    **保留 `CLAIMED`**——宁可下一轮报「未完成」交人判断，也不重发。
+
+   判 `DISMISSED` 的条目（步骤 3 的 D1–D5）**不经过 `CLAIMED`**：它不
+   触发任何投递，所以在步骤 3 内就地写回
+   `{state:"DISMISSED", dismissRule, dismissedAt, dismissReason}`，或与
+   步骤 7 的写回一并落盘——两者都安全，因为重跑只会重算出同一个结论。
+   但**必须在持锁状态下写**；状态文件的所有写入都受同一条锁约束。
 
    **投递通道与兜底**（规范 §4.4 允许的兜底通道）：
 
@@ -172,13 +263,18 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
    - `watermark` 只推进到**最后一个已成功处理（`ROUTED`）或已显式
      记入 `pending` 的评论时间**——**不得越过未投递项**。无法判定
      时保持原值，宁可下轮重读也不吞掉未处理消息。
-   - `claims` 追加，**不截断 ROUTED，也不删除 CLAIMED**。水位被欠账钉住时，
-     最近 500 条截断会让旧已投递评论重读后重发。本版本不做自动 GC。
+   - `claims` 追加，**不截断 `ROUTED`，不删除 `CLAIMED`，也不删除
+     `DISMISSED`**。水位被欠账钉住时，最近 500 条截断会让旧已投递评论
+     重读后重发；终态同理——删掉 `DISMISSED` 会让同一评论重读后重新进入
+     分类，已经判过的条目又会变回欠账。本版本不做自动 GC。
    - 所有状态写入必须持有同一个锁，手动运行也一样；并集合并不是并发写保护。
    - 完整拉取并完成本轮处理/记账后，更新 `lastCompletedPollAt = now`，
      清空 `activeRun`，重置 `consecutiveInterruptions = 0`；**无新评论同样更新**。
      只有实际推进水位才更新 `lastSuccessfulAdvanceAt`。有 pending/CLAIMED
      的已完成轮询仍算完成，但 `lastError` 记欠账原因；没有欠账才清空错误。
+     判为终态的条目**不算欠账**，不进 `lastError`。已完成的轮询若仍有欠账，
+     必须同步刷新 pending 里 `channel-blocked` 条目的 `pendingUndelivered`
+     计数，别让它停留在旧值上自相矛盾。
      异常提前结束不更新完成/推进时间，按步骤 1 计中断。
    - 释放锁：
 
@@ -197,10 +293,19 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
    | 有新评论但未全部投递成功 | 列出每条未投递项 + 原因 + 建议动作 |
    | 本轮未完成（异常 / 被中断） | 明确写「本轮未完成」，附 `lastError` 与已认领未投递的评论 |
 
+   **「未完成投递」项只含 `CLAIMED`（及 `UNROUTED`）——不含终态。**
+   `ROUTED` 已投递，`DISMISSED` 已作出结论，两者都不是待办：把它们列进
+   欠账会让同一条目每轮复现一次，人工分诊成本无上限。
+
    另附：处理条数、路由去向、在途 stage、pending 积压总数、
+   **终态计数**（按 `dismissRule` 分组，如 `D1=12 D2=2`）、
    `consecutiveInterruptions` 当前值（> 0 时提示需要人工查看），
    以及**本轮经兜底评论投递的条数**——大于 0 时提示「唤醒已进持久
    邮箱，需人在线转达或由有会话通道的会话排空」。
+
+   终态计数出现在简报里是为了让「本层判过什么」可复核（每条的
+   `dismissedAt` / `dismissReason` 都在状态文件里可查），**它本身不是
+   待办**，不得表述成「未完成」。
 
 ## 健康信号（本 skill 必须如实产出）
 
