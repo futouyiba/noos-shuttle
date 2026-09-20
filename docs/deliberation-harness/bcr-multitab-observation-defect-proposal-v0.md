@@ -360,7 +360,7 @@ Worktree: `.claude/worktrees/sharp-leavitt-798409`
 
 - F3 的**方向**已由 #54 裁定唯一确定：「只有 canonical lease holder 可 actuate」意味着**非** lease holder 的 tick 不得 actuate。当前 `bcrWatcherTick` 无守卫、`apply` wire 无 provenance，属**与该裁定相反**，故判为落后实现。分歧点只在**实现形态**（canonical lease 的自然键、provenance 字段），归 `Q2`。
 - F1 则**未必**与既有裁定冲突：若「整个浏览器同一时刻仅一个 submission authority」是有意设计，则 `STILL_AMBIGUOUS` 是**该设计下的预期行为**，问题降级为「多会话并发时不应一方活、一方冻结」的**新语义问题**（`Q1`），而非实现落后。
-- **两者是否应合并为同一类，取决于 `Q1` 的答案**：若裁定「authority 按 logical thread / canonical lease 分槽」，则 F1 亦落入「#54 已蕴含」，与 F3 同类，本文的分类应随即修正。**该分类不对称属待确认项，不由本文单方收束。**（Q1 已裁定为**按 logical thread / per-Run 分槽**，故本待确认项已由 designer 收束——见 [§8](#8-designer-裁定记录)。）
+- **两者是否应合并为同一类，取决于 `Q1` 的答案**：若裁定「authority 按 logical thread / canonical lease 分槽」，则 F1 亦落入「#54 已蕴含」，与 F3 同类，本文的分类应随即修正。**该分类不对称属待确认项，不由本文单方收束。**（Q1 已裁定为**按 logical thread / per-Run 分槽**，故本待确认项依 Q1 裁定即行收束——见 [§8](#8-designer-裁定记录)。**此收束系依 Q1 推得，非 designer 原句。**）
 
 ### 待 Epic Designer 裁定的问题（不自行裁定）
 
@@ -398,7 +398,7 @@ Worktree: `.claude/worktrees/sharp-leavitt-798409`
 | 出处 | PR #57 comment `5717432171`，2026-09-17T16:02:12Z |
 | Governor event | `event=issue56-design-dispatch-5716935789 head=bd4163bd4adb0d95c7ec03f85c9ce93c5ad344be action=primary-design-partial-accept` |
 | 家族记录 | Issue #56 comment `5718137417`（含 Q→M 映射表） |
-| 姊妹裁定 | PR #58 comment `5717715062`（后台依赖缺陷族，另一份文档的 §11） |
+| 姊妹裁定 | PR #58 comment `5717715062`（后台依赖缺陷族；该族的 `§11. Designer disposition` 收录于 **PR #73**，截至 2026-09-20 尚未合并入 main） |
 
 designer 自述理由（原文）：
 
