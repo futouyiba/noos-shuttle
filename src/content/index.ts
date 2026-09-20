@@ -25,6 +25,8 @@ import { NoosVaultAdapter } from "../storage/NoosVaultAdapter";
 import { attachMarkdownFilesToChatInput, getChatComposer, getPageText, insertIntoChatInput, isChatbotGenerating, submitChatInput } from "./chatgpt-dom";
 import { captureChatGptTranscriptWithScroll, captureRenderedChatGptTranscript } from "./chatgpt-transcript";
 import { RuntimeObservationLedger, type CarrierObservation } from "./runtime-observer";
+import { evaluateAuthorityLoss } from "./submission-authority-loss";
+import { isSubmissionFence, selectCompletedSubmissionToConverge } from "./submission-completion-convergence";
 import styles from "./styles.css?inline";
 
 const SUBMISSION_STABLE_WINDOW_MS = 2_000;
@@ -212,9 +214,13 @@ let observationRouteSince = 0;
 // ChatGPT's main thread while streaming (#22).
 let observationOutputFingerprint = "";
 let observationOutputChangedAt: number | null = null;
-let activeSubmission: { operationId: string; fence: SubmissionDispatchFence; claimedAt: number } | null = null;
+let activeSubmission: { operationId: string; logicalThreadId: string; fence: SubmissionDispatchFence; claimedAt: number } | null = null;
 let submissionRecoveryRequestedAt = -Infinity;
 let submissionReconcileInFlight = false;
+// When this page first saw the durable authority slot for its own in-flight
+// submission reported as SUPERSEDED. Null means the last reconcile did not
+// report that, so the window below restarts on the next sighting.
+let submissionAuthorityLossSince: number | null = null;
 // Bounded Continuation Run (assisted V0): the background coordinator owns the
 // durable run; this module projects it and drives round transitions.
 let bcrRun: ContinuationRun | null = null;
@@ -1542,6 +1548,7 @@ async function dispatchHumanGo(payload: string, context: PageContext, workItemId
   options.onResult?.(result.status);
   activeSubmission = {
     operationId: result.operation.operationId,
+    logicalThreadId: result.operation.logicalThreadId,
     fence: result.operation.dispatchFence ?? {
       providerConversationRef: observation.providerConversationRef,
       bindingEpoch: observation.sourceEpoch,
@@ -3224,7 +3231,7 @@ chrome.runtime?.onMessage?.addListener((message, sender, sendResponse) => {
     operation.dispatchFence.providerConversationRef !== current.providerConversationRef) {
     sendResponse({ ok: false }); return false;
   }
-  activeSubmission = { operationId: operation.operationId, fence: operation.dispatchFence, claimedAt: operation.dispatchClaimedAt };
+  activeSubmission = { operationId: operation.operationId, logicalThreadId: operation.logicalThreadId, fence: operation.dispatchFence, claimedAt: operation.dispatchClaimedAt };
   const composer = getChatComposer();
   if (!composer || !insertIntoChatInput(operation.payload, composer)) { sendResponse({ ok: false }); return false; }
   submitChatInput(composer).then(sent => {
@@ -3255,7 +3262,7 @@ chrome.runtime?.onMessage?.addListener((message, sender, sendResponse) => {
     operation.dispatchFence.providerConversationRef !== current.providerConversationRef) {
     sendResponse({ ok: false }); return false;
   }
-  activeSubmission = { operationId: operation.operationId, fence: operation.dispatchFence, claimedAt: operation.dispatchClaimedAt };
+  activeSubmission = { operationId: operation.operationId, logicalThreadId: operation.logicalThreadId, fence: operation.dispatchFence, claimedAt: operation.dispatchClaimedAt };
   const composer = getChatComposer();
   if (!composer || !insertIntoChatInput(operation.payload, composer)) { sendResponse({ ok: false }); return false; }
   submitChatInput(composer).then(sent => {
@@ -3318,6 +3325,26 @@ async function restoreActiveSubmission(observation: CarrierObservation): Promise
       mutation: { type: "list" }
     });
     if (!response?.ok || !Array.isArray(response.result)) return;
+    // A Run whose operation finished durably but never received its
+    // OPERATION_COMPLETED is invisible to the recovery path below, which lists
+    // execution-owning states only; nothing else would ever clear its pending id
+    // and the Run would wait on MAX_IN_FLIGHT forever. Converge it from the
+    // durable fact first, and leave the operation the recovery path owns alone.
+    if (bcrRun?.pendingSubmissionOperationId !== undefined) {
+      const completed = selectCompletedSubmissionToConverge({
+        operations: response.result,
+        observation,
+        run: bcrRun
+      });
+      if (completed) {
+        await applyContinuationRunEvent({
+          type: "OPERATION_COMPLETED",
+          operationId: completed.operationId,
+          turnRef: turnRefFromEvidence()
+        });
+        return;
+      }
+    }
     const candidates = response.result
       .filter(operation =>
         (operation.state === "DISPATCHING" || operation.state === "UNCERTAIN" || operation.state === "OBSERVED_ACCEPTED") &&
@@ -3366,6 +3393,7 @@ async function restoreActiveSubmission(observation: CarrierObservation): Promise
       recoveredFence.targetCarrierRef !== recoveryFence.targetCarrierRef) return;
     activeSubmission = {
       operationId: recoveredResponse.result.operationId,
+      logicalThreadId: recovered.logicalThreadId ?? `thread:${observation.providerConversationRef}`,
       fence: recoveredFence,
       claimedAt: recoveredResponse.result.dispatchClaimedAt ?? recoveredResponse.result.createdAt ?? Date.now()
     };
@@ -3382,7 +3410,7 @@ async function reconcileActiveSubmission(observation: CarrierObservation): Promi
   try {
     const response = await sendExtensionMessage<
       { type: "NOOS_SUBMISSION_MUTATION"; mutation: Record<string, unknown> },
-      { ok?: boolean; result?: { outcome?: string; operation?: { state?: string } } }
+      { ok?: boolean; result?: { outcome?: string; authority?: "OK" | "ABSENT" | "SUPERSEDED"; sameFence?: boolean; operation?: { state?: string } } }
     >({
       type: "NOOS_SUBMISSION_MUTATION",
       mutation: {
@@ -3405,8 +3433,32 @@ async function reconcileActiveSubmission(observation: CarrierObservation): Promi
     });
     const result = response?.result;
     if (!response?.ok || !result) return;
+    const authorityLoss = evaluateAuthorityLoss({
+      authority: result.authority,
+      sameFence: result.sameFence,
+      now: Date.now(),
+      windowMs: SUBMISSION_STABLE_WINDOW_MS,
+      since: submissionAuthorityLossSince,
+      active: { operationId: active.operationId, logicalThreadId: active.logicalThreadId },
+      run: bcrRun
+    });
+    submissionAuthorityLossSince = authorityLoss.since;
+    if (authorityLoss.fire) {
+      await captureBcrCandidate("RUN_ABORTED", "pending", "AUTHORITY_CHANGED");
+      await applyContinuationRunEvent({ type: "AUTHORITY_CHANGED" });
+      // Hand the orphaned operation back to the generic recovery path. Leaving it
+      // active keeps reconciling a superseded slot that no Run owns any more, and
+      // every one of those attempts rewrites the ledger and bumps the revision.
+      if (activeSubmission?.operationId === active.operationId) {
+        activeSubmission = null;
+      }
+      return;
+    }
     if (result.outcome === "PROVEN_NOT_ACCEPTED") {
-      if (activeSubmission?.operationId === active.operationId) activeSubmission = null;
+      if (activeSubmission?.operationId === active.operationId) {
+        activeSubmission = null;
+        submissionAuthorityLossSince = null;
+      }
       return;
     }
     if (result.outcome !== "PROVEN_ACCEPTED") return;
@@ -3430,6 +3482,7 @@ async function reconcileActiveSubmission(observation: CarrierObservation): Promi
     if (completed?.ok && completed.result?.state === "COMPLETED" &&
       activeSubmission?.operationId === active.operationId) {
       activeSubmission = null;
+      submissionAuthorityLossSince = null;
     }
     if (completed?.ok && completed.result?.state === "COMPLETED" &&
       bcrRun?.pendingSubmissionOperationId === active.operationId) {
@@ -3448,16 +3501,6 @@ async function reconcileActiveSubmission(observation: CarrierObservation): Promi
 function turnRefFromEvidence(): string | undefined {
   const fingerprint = readSubmissionMessageEvidence().lastAssistantMessageFingerprint;
   return fingerprint ? `turn:${fingerprint}` : undefined;
-}
-
-function isSubmissionFence(value: unknown): value is SubmissionDispatchFence {
-  if (!value || typeof value !== "object") return false;
-  const fence = value as Partial<SubmissionDispatchFence>;
-  return typeof fence.providerConversationRef === "string" &&
-    typeof fence.bindingEpoch === "number" &&
-    typeof fence.leaseGeneration === "number" &&
-    typeof fence.leaseOwnerRef === "string" &&
-    typeof fence.targetCarrierRef === "string";
 }
 
 function readSubmissionMessageEvidence(): Pick<SubmissionBaseline, "headFingerprint" | "lastUserMessageFingerprint" | "lastAssistantMessageFingerprint"> {
@@ -3507,6 +3550,7 @@ function isVisibleForObservation(element: HTMLElement): boolean {
 function resetForConversationChange(app: HTMLElement): void {
   cancelActiveWait();
   activeSubmission = null;
+  submissionAuthorityLossSince = null;
   submissionRecoveryRequestedAt = -Infinity;
   closePanels();
   // The run pins its provider conversation: a page-side conversation change

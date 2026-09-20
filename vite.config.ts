@@ -44,6 +44,7 @@ export default defineConfig({
   },
   test: {
     environment: "node",
+    setupFiles: ["./tests/setup-browser-locks.ts"],
     include: ["tests/**/*.test.ts"]
   }
 });

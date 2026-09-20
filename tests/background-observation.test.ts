@@ -154,6 +154,8 @@ describe("read-only observation carrier handshake", () => {
     }, { id: "extension-id", frameId: 0, tab: { id: 11 }, url: "https://chatgpt.com/c/conversation-a" }, reply);
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(reply).toHaveBeenLastCalledWith(expect.objectContaining({ ok: true, result: expect.objectContaining({ state: "DISPATCHING" }) }));
-    expect(backing.noosSubmissionAuthority).toEqual(expect.objectContaining({ logicalThreadId: "thread-1", providerConversationRef: "conversation-a" }));
+    expect(backing.noosSubmissionAuthority).toEqual(expect.objectContaining({
+      "thread-1": expect.objectContaining({ logicalThreadId: "thread-1", providerConversationRef: "conversation-a" })
+    }));
   });
 });
