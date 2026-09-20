@@ -128,3 +128,49 @@ describe("isChatbotGenerating", () => {
     );
   });
 });
+
+/**
+ * Narrowing the fallback is only safe while the exact-attribute pass stays
+ * unguarded: a provider-reported stop control must be detected even where the
+ * fallback's exclusions apply. Without these, removing a selector from
+ * `GENERATION_ACTIVE_SELECTORS` would silently turn a real generation into a
+ * false negative.
+ */
+describe("isChatbotGenerating — the exact-attribute pass is deliberately unguarded", () => {
+  it("detects an exact stop control that sits inside an assistant turn", () => {
+    withDom(
+      `<body>
+        <section data-turn="assistant" data-testid="conversation-turn-6">
+          <button type="button" data-testid="stop-button"></button>
+        </section>
+        ${COMPOSER}${COMPOSER_END}
+      </body>`,
+      () => {
+        expect(isChatbotGenerating()).toBe(true);
+      }
+    );
+  });
+
+  it("detects an exact aria-label stop control that sits inside an assistant turn", () => {
+    withDom(
+      `<body>
+        <section data-turn="assistant" data-testid="conversation-turn-6">
+          <button type="button" aria-label="停止回答"></button>
+        </section>
+        ${COMPOSER}${COMPOSER_END}
+      </body>`,
+      () => {
+        expect(isChatbotGenerating()).toBe(true);
+      }
+    );
+  });
+
+  it("detects an exact stop control that carries aria-expanded", () => {
+    withDom(
+      `<body>${COMPOSER}<button type="button" data-testid="stop-button" aria-expanded="false"></button>${COMPOSER_END}</body>`,
+      () => {
+        expect(isChatbotGenerating()).toBe(true);
+      }
+    );
+  });
+});
