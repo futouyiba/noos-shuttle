@@ -17,6 +17,26 @@ import type { NoosThread } from "../core/noos-thread";
 import { extractProviderConversationId } from "../shared/provider-identity";
 import { runGoalReanchorProbe } from "./goal-reanchor-runtime";
 import { runChildDeliveryProbe } from "./delivery-runtime";
+import {
+  OUTBOX_MAX_ATTEMPTS,
+  OUTBOX_STORE_KEY,
+  createOutboxReservation,
+  emptyOutboxQueueState,
+  extractOutboxQueueState,
+  headOutboxItem,
+  reduceOutboxQueue,
+  type OutboxMutation,
+  type OutboxMutationResult,
+  type OutboxQueueState,
+  type OutboxSubmissionOutcome
+} from "../core/outbox-queue";
+import {
+  classifyOutboxHead,
+  type OutboxGateCarrier,
+  type OutboxGateObservation,
+  type OutboxProbeInput,
+  type OutboxProbeState
+} from "./outbox-gate";
 import { adoptBrowserChildSpawn, requestBrowserChildSpawn } from "./spawn-runtime";
 import { ResultDeliveryLedger, createChromeResultDeliveryStore } from "../core/result-delivery";
 import { carrierTabQueryPatterns, type CarrierTabCandidate } from "../core/carrier-focus";
@@ -30,7 +50,7 @@ import {
 } from "./focus-runtime";
 import { ProviderExecutionJournal, createChromeExecutionJournalStore } from "../core/execution-journal";
 import { DurableOperationalStateReducer, createChromeOperationalStateReducerStore } from "../core/durable-operational-state-reducer";
-import { SubmissionOperationLedger, createChromeSubmissionStore, type SubmissionOperationMutation } from "../core/submission-operation";
+import { SubmissionOperationLedger, createChromeSubmissionStore, isSubmissionOperation, type SubmissionOperation, type SubmissionOperationMutation } from "../core/submission-operation";
 import {
   BCR_EXPERIMENTAL_MAX_BUDGET,
   CONTINUATION_RUN_STORE_KEY,
@@ -132,6 +152,231 @@ const workItemInbox = chrome.storage?.local
 let submissionOperationCoordinator: SubmissionOperationLedger | undefined;
 
 const CONTINUATION_RUN_LOCK = "noos-continuation-run-authority";
+const OUTBOX_LOCK = "noos-outbox-queue-authority";
+
+/**
+ * Outbox queue mutations. The queue is its own durable store — separate from
+ * Run state and from the Work Item Inbox — and is guarded by its own authority
+ * lock so a queue edit can never interleave with the probe that reserves (or
+ * records) a delivery.
+ */
+async function handleOutboxMutation(mutation: OutboxMutation): Promise<OutboxMutationResult> {
+  const storage = chrome.storage?.local;
+  if (!storage) return { ok: false, error: "storage_unavailable", state: emptyOutboxQueueState() };
+  if (!mutation || typeof mutation !== "object" || !isKnownOutboxMutation(mutation)) {
+    return { ok: false, error: "invalid_mutation", state: emptyOutboxQueueState() };
+  }
+  return navigator.locks.request(OUTBOX_LOCK, async () => {
+    const persisted = await storage.get(OUTBOX_STORE_KEY);
+    const state = extractOutboxQueueState(persisted);
+    const result = reduceOutboxQueue(state, mutation);
+    if (result.ok && result.state !== state) await storage.set({ [OUTBOX_STORE_KEY]: result.state });
+    return result;
+  });
+}
+
+function isKnownOutboxMutation(mutation: OutboxMutation): boolean {
+  switch (mutation.type) {
+    case "list":
+      return true;
+    case "enqueue":
+      return !!mutation.input && typeof mutation.input === "object" &&
+        isNonEmptyString(mutation.input.itemId) &&
+        isNonEmptyString(mutation.input.logicalThreadId) &&
+        isNonEmptyString(mutation.input.providerConversationRef) &&
+        typeof mutation.input.payload === "string" &&
+        isFiniteInteger(mutation.input.now);
+    case "edit":
+      return isOperationId(mutation.itemId) && isFiniteInteger(mutation.expectedRevision) &&
+        typeof mutation.payload === "string" && isFiniteInteger(mutation.now);
+    case "cancel":
+      return isOperationId(mutation.itemId) && isFiniteInteger(mutation.now);
+    case "pause":
+      return typeof mutation.paused === "boolean" && isFiniteInteger(mutation.now);
+    case "claim_dispatch":
+      return isOperationId(mutation.itemId) && !!mutation.input && typeof mutation.input === "object" &&
+        isOperationId(mutation.input.operationId) && isFiniteInteger(mutation.input.now);
+    case "record_submission":
+      return !!mutation.outcome && typeof mutation.outcome === "object" &&
+        isOperationId(mutation.outcome.operationId) &&
+        typeof mutation.outcome.state === "string" &&
+        isFiniteInteger(mutation.outcome.now);
+    case "release_attempt":
+      return isOperationId(mutation.itemId) && mutation.reason === "PROVEN_NOT_ACCEPTED" && isFiniteInteger(mutation.now);
+    default:
+      return false;
+  }
+}
+
+/**
+ * Every field of the carrier's half of a probe is re-checked here rather than
+ * assumed from the content script.
+ */
+function isOutboxGateCarrier(value: unknown): value is OutboxGateCarrier {
+  if (!isClaimContext(value)) return false;
+  const carrier = value as unknown as Record<string, unknown>;
+  return isFiniteInteger(carrier.sourceEpoch) && typeof carrier.leaseOwnerRef === "string";
+}
+
+function isOutboxGateObservation(value: unknown): value is OutboxGateObservation {
+  if (!value || typeof value !== "object") return false;
+  const observation = value as Record<string, unknown>;
+  return typeof observation.state === "string" &&
+    typeof observation.carrierIdentityState === "string" &&
+    (observation.providerConversationRef === undefined || typeof observation.providerConversationRef === "string") &&
+    typeof observation.routeRef === "string" &&
+    isFiniteInteger(observation.observedAt) &&
+    isFiniteInteger(observation.sourceEpoch) &&
+    (observation.quietSince === undefined || isFiniteInteger(observation.quietSince)) &&
+    typeof observation.assistantOutputMutating === "boolean" &&
+    typeof observation.stopGenerationControlPresent === "boolean" &&
+    typeof observation.providerErrorSurfacePresent === "boolean" &&
+    typeof observation.composerPresent === "boolean" &&
+    typeof observation.composerInteractive === "boolean" &&
+    typeof observation.composerEmpty === "boolean";
+}
+
+/** True when an execution-owning operation already holds this exact target. */
+function hasExecutionInFlight(operations: SubmissionOperation[], carrier: OutboxGateCarrier): boolean {
+  return operations.some(operation =>
+    (operation.state === "DISPATCHING" || operation.state === "UNCERTAIN" || operation.state === "OBSERVED_ACCEPTED") &&
+    operation.targetCarrierRef === carrier.targetCarrierRef &&
+    operation.providerConversationRef === carrier.providerConversationRef);
+}
+
+/**
+ * One outbox probe from the canonical carrier. Nothing is actuated here: a
+ * DISPATCH decision durably reserves the operation, and the carrier may then
+ * claim and deliver exactly that revision.
+ *
+ * Every ledger fact the gate reads — the thread's actuation authority, the
+ * execution-owning operations — is read from the durable store *here* rather
+ * than accepted from the wire, so a compromised or stale content script cannot
+ * talk the gate into believing this carrier holds a lease it does not.
+ */
+async function handleOutboxProbe(message: { carrier: unknown; observation: unknown; runId?: unknown }): Promise<Record<string, unknown>> {
+  const storage = chrome.storage?.local;
+  const submissions = getSubmissionOperationCoordinator();
+  if (!storage || !submissions) return { ok: false, error: "outbox_unavailable" };
+  if (!isOutboxGateCarrier(message.carrier) || !isOutboxGateObservation(message.observation)) {
+    return { ok: false, error: "invalid_probe" };
+  }
+  const carrier = message.carrier as OutboxGateCarrier;
+  const runId = typeof message.runId === "string" && message.runId.trim() !== "" ? message.runId : undefined;
+  // The queue's own identity: an item only ever actuates into the conversation
+  // and logical thread its record names, which is the carrier's own thread.
+  const logicalThreadId = carrier.logicalThreadId;
+  const operations = await submissions.list();
+  const authority = await submissions.authorityFor(logicalThreadId);
+  const outcome = await navigator.locks.request(OUTBOX_LOCK, async () => {
+    const state = extractOutboxQueueState(await storage.get(OUTBOX_STORE_KEY));
+    const probe = probeOutboxHead({
+      queue: state,
+      carrier,
+      observation: message.observation as OutboxGateObservation,
+      ledgers: { authority, executionInFlight: hasExecutionInFlight(operations, carrier), operations },
+      runId
+    });
+    if (probe.queue !== state) await storage.set({ [OUTBOX_STORE_KEY]: probe.queue });
+    // Fold the reserved operation's outcome in while still holding the lock, so
+    // a delivery can never be recorded twice or out of order.
+    const recorded = await recordOutboxOutcome(storage, submissions, probe.queue);
+    return { probe, queue: recorded.queue, recorded: recorded.recorded };
+  });
+  const recorded = outcome.recorded;
+  return {
+    ok: true,
+    status: outcome.probe.status,
+    queue: outcome.queue,
+    dispatch: outcome.probe.dispatch
+      ? {
+          itemId: outcome.probe.dispatch.item.itemId,
+          operationId: outcome.probe.dispatch.operationId,
+          payload: outcome.probe.dispatch.item.payload,
+          payloadFingerprint: outcome.probe.dispatch.item.payloadFingerprint,
+          revision: outcome.probe.dispatch.item.revision,
+          reservationRunId: outcome.probe.dispatch.reservationRunId
+        }
+      : undefined,
+    recorded
+  };
+}
+
+/**
+ * One probe's decision, plus the durable reservation it implies.
+ *
+ * The reservation lands inside the *same* durable record as the item's own
+ * identity, and the caller stores that record before the carrier is told it may
+ * claim anything. That ordering is exactly what makes the Run's expected-turn
+ * accounting provenance-bound: there is no instant at which a delivery is
+ * possible but the operation it will be proven by is not yet recorded.
+ *
+ * Lives here rather than in the gate module so the shared queue store is
+ * reachable from the content entry alone — the renderer otherwise promotes it to
+ * a chunk an MV3 content script cannot load.
+ */
+function probeOutboxHead(input: OutboxProbeInput, now = Date.now()): OutboxProbeState {
+  const head = headOutboxItem(input.queue);
+  if (!head) return { queue: input.queue, status: { kind: "IDLE" } };
+  const decision = classifyOutboxHead(head, input, now, {
+    maxAttempts: OUTBOX_MAX_ATTEMPTS,
+    // Deterministic per revision and attempt, and distinct across attempts: a
+    // retry after a proven-not-accepted dispatch must never reuse the id of an
+    // operation the ledger already retired.
+    mintOperationId: item => `outbox:${item.itemId}:r${item.revision}:a${item.attempts + 1}:${item.payloadFingerprint.slice(0, 8)}`
+  });
+  if (decision.kind !== "DISPATCH") return { queue: input.queue, status: decision };
+  const claimed = reduceOutboxQueue(input.queue, {
+    type: "claim_dispatch",
+    itemId: head.itemId,
+    input: { operationId: decision.operationId, reservation: createOutboxReservation(head, decision.operationId, input.runId), now }
+  });
+  if (!claimed.ok || !claimed.item) return { queue: input.queue, status: { kind: "WAIT", itemId: head.itemId, reason: "reservation_missing" } };
+  return {
+    queue: claimed.state,
+    status: { kind: "DISPATCH", itemId: head.itemId, operationId: decision.operationId },
+    dispatch: { item: claimed.item, operationId: decision.operationId, reservationRunId: input.runId }
+  };
+}
+
+/**
+ * Folds the reserved head operation's durable outcome into the queue.
+ *
+ * Only the two success-terminal states count as a delivery, and the item takes
+ * its accounting baseline from that operation's own pre-submit observation.
+ * A proven-not-accepted attempt releases the item for one more try (or parks it
+ * once the attempt cap is spent); a still-executing or ambiguous operation
+ * changes nothing at all, which is what keeps a failed dispatch from leaving a
+ * loose `+1` behind for the Run's accounting to lean on.
+ */
+async function recordOutboxOutcome(
+  storage: Pick<chrome.storage.StorageArea, "get" | "set">,
+  submissions: SubmissionOperationLedger,
+  queue: OutboxQueueState
+): Promise<{ queue: OutboxQueueState; recorded?: OutboxSubmissionOutcome }> {
+  const head = headOutboxItem(queue);
+  if (!head || head.state !== "DISPATCHING" || head.submissionOperationId === undefined) return { queue };
+  const operation = await submissions.get(head.submissionOperationId);
+  if (!operation || operation.operationKind !== "OUTBOX_MESSAGE") return { queue };
+  const terminal = operation.state === "OBSERVED_ACCEPTED" || operation.state === "COMPLETED" ||
+    operation.state === "UNCERTAIN" || operation.state === "FAILED_SAFE" || operation.state === "CANCELLED";
+  if (!terminal) return { queue };
+  const outcome: OutboxSubmissionOutcome = {
+    operationId: operation.operationId,
+    state: operation.state,
+    baselineUserMessageCount: operation.preSubmitBaseline.userMessageCount,
+    now: Date.now()
+  };
+  const applied = reduceOutboxQueue(queue, { type: "record_submission", outcome });
+  if (!applied.ok) return { queue };
+  let next = applied.state;
+  if (operation.state === "FAILED_SAFE") {
+    const released = reduceOutboxQueue(next, { type: "release_attempt", itemId: head.itemId, reason: "PROVEN_NOT_ACCEPTED", now: outcome.now });
+    if (released.ok) next = released.state;
+  }
+  await storage.set({ [OUTBOX_STORE_KEY]: next });
+  return { queue: next, recorded: outcome };
+}
 
 function isContinuationRunStoreShape(value: unknown): value is ContinuationRunStore {
   if (!value || typeof value !== "object") return false;
@@ -371,6 +616,42 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         ? { ok: true, run: result.run, budgetCap: BCR_EXPERIMENTAL_MAX_BUDGET }
         : { ok: false, error: result.error }))
       .catch((error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+    return true;
+  }
+
+  if (message?.type === "NOOS_SUBMISSION_AUTHORITY") {
+    const submissions = getSubmissionOperationCoordinator();
+    const logicalThreadId = (message as { logicalThreadId?: unknown }).logicalThreadId;
+    if (!submissions || !isAllowedProviderSender(sender) || !isNonEmptyString(logicalThreadId)) {
+      sendResponse({ ok: false });
+      return false;
+    }
+    submissions.authorityFor(logicalThreadId)
+      .then(authority => sendResponse({ ok: true, authority }))
+      .catch(() => sendResponse({ ok: false }));
+    return true;
+  }
+
+  if (message?.type === "NOOS_OUTBOX_MUTATION") {
+    if (sender.frameId !== 0 || !isAllowedProviderSender(sender)) {
+      sendResponse({ ok: false, error: "sender_not_allowed" });
+      return false;
+    }
+    handleOutboxMutation(message.mutation as OutboxMutation)
+      .then(result => sendResponse(result.ok ? { ok: true, item: result.item, queue: result.state } : { ok: false, error: result.error, queue: result.state }))
+      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+    return true;
+  }
+
+  if (message?.type === "NOOS_OUTBOX_PROBE") {
+    if (sender.frameId !== 0 || !Number.isSafeInteger(sender.tab?.id) || !isAllowedProviderSender(sender) ||
+      (message.carrier as { targetCarrierRef?: unknown } | undefined)?.targetCarrierRef !== `browser-tab:${sender.tab!.id}`) {
+      sendResponse({ ok: false, error: "sender_not_allowed" });
+      return false;
+    }
+    handleOutboxProbe(message)
+      .then(result => sendResponse(result))
+      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
     return true;
   }
 
@@ -774,7 +1055,7 @@ function isPrepareInput(value: unknown): boolean {
   if (!value || typeof value !== "object") return false;
   const input = value as Record<string, unknown>;
   return isOperationId(input.operationId) &&
-    ["GO", "REANCHOR_GOAL", "BOOTSTRAP", "REVIEW_DISPATCH", "SEDIMENT", "DELIVER_CHILD_RESULT"].includes(input.operationKind as string) &&
+    ["GO", "REANCHOR_GOAL", "BOOTSTRAP", "REVIEW_DISPATCH", "SEDIMENT", "DELIVER_CHILD_RESULT", "OUTBOX_MESSAGE"].includes(input.operationKind as string) &&
     isNonEmptyString(input.workItemId) &&
     isNonEmptyString(input.logicalThreadId) &&
     isNonEmptyString(input.targetCarrierRef) &&

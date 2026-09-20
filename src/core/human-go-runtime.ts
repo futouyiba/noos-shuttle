@@ -1,9 +1,11 @@
 import {
+  type SubmissionAuthority,
   type SubmissionBaseline,
   type SubmissionClaimContext,
   type SubmissionDispatchFence,
   type SubmissionObservation,
   type SubmissionOperation,
+  type SubmissionOperationKind,
   type SubmissionReconcileResult
 } from "./submission-operation";
 import type { SubmissionOperationLedger } from "./submission-operation";
@@ -29,6 +31,15 @@ export interface HumanGoRequest {
   explicitGo: boolean;
   sourceEpoch: number;
   sourceObservedAt: number;
+  /**
+   * Ledger kind this actuation compiles into. Defaults to `GO`, the governed
+   * continuation. The outbox compiles `OUTBOX_MESSAGE` here — the same
+   * prepare/claim/receipt/reconcile machinery under a kind that does not mean
+   * "continue the assistant's own next step".
+   */
+  operationKind?: SubmissionOperationKind;
+  /** Attribution for a governed or queued turn that belongs to a Run epoch. */
+  runId?: string;
   now?: number;
 }
 
@@ -44,6 +55,12 @@ export interface HumanGoRuntimeOptions {
 
 export interface HumanGoLedger {
   initializeAuthority(context: SubmissionClaimContext): Promise<void>;
+  /**
+   * Read-only lease check: is this thread's actuation authority currently held
+   * by the carrier asking? Used by the outbox delivery gate, which must never
+   * actuate under a sibling tab's authority.
+   */
+  authorityFor?(logicalThreadId: string): Promise<SubmissionAuthority | undefined>;
   prepare(input: Parameters<SubmissionOperationLedger["prepare"]>[0]): Promise<SubmissionOperation>;
   claim(operationId: string, context: SubmissionClaimContext, now?: number): Promise<SubmissionOperation | undefined>;
   get(operationId: string): Promise<SubmissionOperation | undefined>;
@@ -70,7 +87,7 @@ export class HumanGoRuntime {
     await this.ledger.initializeAuthority(context);
     const prepared = await this.ledger.prepare({
       operationId: request.operationId,
-      operationKind: "GO",
+      operationKind: request.operationKind ?? "GO",
       workItemId: request.workItemId,
       logicalThreadId: request.logicalThreadId,
       targetCarrierRef: request.targetCarrierRef,
@@ -78,6 +95,7 @@ export class HumanGoRuntime {
       dispatchFence: context,
       payloadFingerprint: request.payloadFingerprint,
       payload: request.payload,
+      runId: request.runId,
       preSubmitBaseline: request.preSubmitBaseline,
       now: request.now
     });

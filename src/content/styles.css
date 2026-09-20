@@ -1224,3 +1224,86 @@ button:disabled {
 .bcr-eval-input::placeholder {
   color: #8a978d;
 }
+
+/* Shuttle message queue (issue #63). Compact list inside the ChatGPT surface. */
+.outbox-panel {
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid rgba(25, 59, 45, 0.16);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.outbox-input,
+.outbox-edit-input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 48px;
+  padding: 6px 8px;
+  border: 1px solid rgba(25, 59, 45, 0.3);
+  border-radius: 6px;
+  background: #fff;
+  color: #193b2d;
+  font: 400 12px/1.4 system-ui, sans-serif;
+  resize: vertical;
+}
+
+.outbox-input::placeholder {
+  color: #8a978d;
+}
+
+.outbox-items {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.outbox-item {
+  padding: 6px 8px;
+  border: 1px solid rgba(25, 59, 45, 0.12);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.outbox-item[data-outbox-state="UNCERTAIN"],
+.outbox-item[data-outbox-state="BLOCKED"] {
+  border-color: rgba(176, 92, 32, 0.5);
+}
+
+.outbox-item-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 600 11px/1.4 system-ui, sans-serif;
+  color: #193b2d;
+}
+
+.outbox-item-rev {
+  margin-left: auto;
+  font-weight: 400;
+  color: #8a978d;
+}
+
+.outbox-item-body {
+  margin-top: 4px;
+  font: 400 12px/1.4 system-ui, sans-serif;
+  color: #33473c;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.outbox-item-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.outbox-warning {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(176, 92, 32, 0.12);
+  color: #8a4415;
+  font: 400 11px/1.4 system-ui, sans-serif;
+}
