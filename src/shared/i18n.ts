@@ -47,6 +47,8 @@ export interface ShuttleCopy {
   bcrReason: string;
   bcrGoalMayContinue: string;
   bcrCarrierNotReady: string;
+  bcrCarrierGenerating: string;
+  bcrCarrierStabilizing: string;
   bcrStartFailed: string;
   bcrRunActive: string;
   bcrDebugRun: string;
@@ -251,6 +253,8 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     bcrReason: "Reason",
     bcrGoalMayContinue: "Goal may still be in progress.",
     bcrCarrierNotReady: "Carrier not READY; cannot start the run.",
+    bcrCarrierGenerating: "The provider is still generating. Try again once this turn finishes.",
+    bcrCarrierStabilizing: "The carrier is still settling. Try again in a moment.",
     bcrStartFailed: "Run request rejected",
     bcrRunActive: "A bounded run is active; stop it before manual GO.",
     bcrDebugRun: "run",
@@ -447,6 +451,8 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     bcrReason: "原因",
     bcrGoalMayContinue: "Goal 可能仍在进行中。",
     bcrCarrierNotReady: "Carrier 未就绪，无法开始 Run。",
+    bcrCarrierGenerating: "provider 正在生成，请等本轮结束后再试。",
+    bcrCarrierStabilizing: "carrier 正在稳定，请稍后再试。",
     bcrStartFailed: "Run 请求被拒绝",
     bcrRunActive: "有界 Run 进行中，请先停止再做手动 GO。",
     bcrDebugRun: "run",
