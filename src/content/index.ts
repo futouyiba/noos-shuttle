@@ -17,6 +17,7 @@ import type {
   ContinuationRunMutation,
   ContinuationStopReason
 } from "../core/continuation-run";
+import { bcrStartGateMessage, recoverStartGateMessage } from "../core/bcr-start-copy";
 import { EXTENSION_CONTEXT_INVALID, sendExtensionMessage } from "../shared/extension-runtime";
 import { COPY, type ShuttleLocale, getStoredLocale, storeLocale } from "../shared/i18n";
 // Runtime import is content-side only: no other entry pulls this module, so
@@ -1702,8 +1703,7 @@ async function startBoundedRun(app: HTMLElement, budget: number): Promise<void> 
   if (bcrRun) return;
   const observation = await waitForReadyObservation();
   if (!observation?.providerConversationRef || observation.state !== "READY") {
-    viewState.message = copy.bcrCarrierNotReady;
-    render(app);
+    registerStartGateFailure(app);
     return;
   }
   // AUTO_X5 needs no user-authored goal: the evaluator's baseline is the
@@ -1733,13 +1733,25 @@ async function startBoundedRun(app: HTMLElement, budget: number): Promise<void> 
   await issueRunGo(app);
 }
 
+/**
+ * Report a failed start using the state the carrier is actually in (#80). The
+ * wait returning null means "not READY within the window", not "carrier is
+ * gone": a provider mid-generation is the common case, and saying "Carrier not
+ * READY" for it pointed the Human at the wrong subsystem. The message is
+ * cleared again by the observation loop once the carrier is READY, so a
+ * one-shot failure report never becomes a standing banner.
+ */
+function registerStartGateFailure(app: HTMLElement): void {
+  viewState.message = bcrStartGateMessage(runtimeObservationLedger.value, COPY[viewState.locale]);
+  render(app);
+}
+
 async function issueRunGo(app: HTMLElement): Promise<void> {
   const copy = COPY[viewState.locale];
   if (!bcrRun) return;
   const observation = await waitForReadyObservation();
   if (!observation?.providerConversationRef) {
-    viewState.message = copy.bcrCarrierNotReady;
-    render(app);
+    registerStartGateFailure(app);
     return;
   }
   if (observation.providerConversationRef !== bcrRun.providerConversationRef) {
@@ -3227,6 +3239,12 @@ function observeRuntimePage(context: PageContext): CarrierObservation {
         /error|unable to load|not found|出错|无法加载|找不到/i.test(element.textContent ?? "")),
     routeStable: now - observationRouteSince >= 2_000
   });
+  // A start-gate failure report describes the moment the Human clicked, not a
+  // standing condition. Clear it here, on the observation that says the
+  // carrier recovered, so the panel never keeps blaming a healthy carrier.
+  if (recoverStartGateMessage(viewState, COPY[viewState.locale], observation)) {
+    renderApp();
+  }
   if (activeSubmission && observation.providerConversationRef) {
     void reconcileActiveSubmission(observation);
   } else if (observation.carrierIdentityState === "browser-tab" && observation.providerConversationRef) {
