@@ -80,3 +80,33 @@ export function buildContinuationPayload(locale: ShuttleLocale, mode: Continuati
     definition.reanchor.footer
   ].join("\n");
 }
+
+export interface DispatchedPayloadRecord {
+  /** The round (1-based, `consumedContinuations + 1`) this payload was dispatched for. */
+  round: number;
+  locale: ShuttleLocale;
+  mode: ContinuationPayloadMode;
+  text: string;
+}
+
+/**
+ * Record a payload only when it actually reached the provider. `BLOCKED` means
+ * the dispatch never happened, and the first round is the dangerous one: the
+ * candidate index is clamped to 1, which collides with round 1, so a later Stop
+ * would otherwise claim a payload that was never sent. `UNCERTAIN` still counts
+ * — the payload was handed to the dispatcher, so it may have gone out.
+ */
+export function recordDispatchedPayload(
+  outcome: "DISPATCHED" | "UNCERTAIN" | "BLOCKED",
+  round: number,
+  locale: ShuttleLocale,
+  mode: ContinuationPayloadMode,
+  text: string
+): DispatchedPayloadRecord | null {
+  return outcome === "BLOCKED" ? null : { round, locale, mode, text };
+}
+
+/** The payload a candidate for `continuationIndex` may claim, or null. */
+export function claimedPayload(record: DispatchedPayloadRecord | null, continuationIndex: number): DispatchedPayloadRecord | null {
+  return record && record.round === continuationIndex ? record : null;
+}

@@ -262,7 +262,7 @@ export interface CandidateContinuationFixture {
   assistantTurnExcerpt?: string;
   decision: "HUMAN_CONTINUE" | "HUMAN_STOP" | "AUTO_CONTINUE" | "AUTO_STOP" | "BUDGET_ENDED" | "RUN_ABORTED";
   humanAction: "continued" | "stopped" | "intervened" | "pending";
-  continuationMode?: "PLAIN_GO" | "REANCHOR_GO";
+  continuationMode?: ContinuationPayloadMode;
   /**
    * Provider-facing payload actually dispatched for this round, recorded so
    * dogfood can compare stop/drift behaviour across the locale variants
@@ -322,7 +322,7 @@ export type ContinuationRunMutation =
       decision: CandidateContinuationFixture["decision"];
       humanAction: CandidateContinuationFixture["humanAction"];
       stopReason?: ContinuationStopReason;
-      continuationMode?: "PLAIN_GO" | "REANCHOR_GO";
+      continuationMode?: ContinuationPayloadMode;
       payloadLocale?: ShuttleLocale;
       payloadMode?: ContinuationPayloadMode;
       payloadText?: string;

@@ -21,7 +21,13 @@ import { EXTENSION_CONTEXT_INVALID, sendExtensionMessage } from "../shared/exten
 import { COPY, type ShuttleLocale, getStoredLocale, storeLocale } from "../shared/i18n";
 // Runtime import is content-side only: no other entry pulls this module, so
 // Rollup inlines it instead of emitting a chunk MV3 content scripts cannot load.
-import { buildContinuationPayload, type ContinuationPayloadMode } from "../core/continuation-payload";
+import {
+  buildContinuationPayload,
+  claimedPayload,
+  recordDispatchedPayload,
+  type ContinuationPayloadMode,
+  type DispatchedPayloadRecord
+} from "../core/continuation-payload";
 import { ClipboardAdapter } from "../storage/ClipboardAdapter";
 import { DownloadAdapter } from "../storage/DownloadAdapter";
 import { NoosVaultAdapter } from "../storage/NoosVaultAdapter";
@@ -242,7 +248,7 @@ let bcrLastDispatchReanchor = false;
  * source of truth: acceptance matches the ledger's fingerprint of the bytes
  * handed to the provider, not this copy.
  */
-let bcrLastDispatchPayload: { round: number; locale: ShuttleLocale; mode: ContinuationPayloadMode; text: string } | null = null;
+let bcrLastDispatchPayload: DispatchedPayloadRecord | null = null;
 // A Stop pressed while the auto-advance lock is held (evaluator round-trip or
 // dispatch) must not be lost: it is consumed at the next auto-advance boundary.
 let bcrStopRequested = false;
@@ -1774,13 +1780,17 @@ async function issueRunGo(app: HTMLElement): Promise<void> {
   const payloadLocale = getStoredLocale();
   const payloadMode: ContinuationPayloadMode = reanchor ? "REANCHOR_GO" : "PLAIN_GO";
   const payload = buildContinuationPayload(payloadLocale, payloadMode, bcrRun.goal);
-  bcrLastDispatchPayload = { round, locale: payloadLocale, mode: payloadMode, text: payload };
   const outcome: { status: "DISPATCHED" | "UNCERTAIN" | "BLOCKED" } = { status: "BLOCKED" };
   await dispatchHumanGo(payload, getPageContext(), "shuttle-bcr-run", {
     operationId,
     runLinked: true,
     onResult: reported => { outcome.status = reported; }
   });
+  // Record the payload only once it actually reached the provider. A BLOCKED
+  // outcome means nothing was sent, and the first round's index (the clamp at
+  // capture time) collides with round 1, so a later Stop would otherwise claim
+  // a payload that was never dispatched.
+  bcrLastDispatchPayload = recordDispatchedPayload(outcome.status, round, payloadLocale, payloadMode, payload);
   if (outcome.status === "DISPATCHED") {
     await applyContinuationRunEvent({ type: "DISPATCH_ISSUED", operationId, providerConversationRef: observation.providerConversationRef, bindingEpoch: bindingEpochAtDispatch });
   } else if (outcome.status === "UNCERTAIN") {
@@ -1925,7 +1935,7 @@ async function captureBcrCandidate(
   const continuationIndex = Math.max(run.consumedContinuations, 1);
   // Attach the dispatched payload only when the record names that same round;
   // a candidate captured without a matching dispatch carries no payload claim.
-  const dispatched = bcrLastDispatchPayload?.round === continuationIndex ? bcrLastDispatchPayload : null;
+  const dispatched = claimedPayload(bcrLastDispatchPayload, continuationIndex);
   await mutateContinuationRun({
     type: "record_round_evidence",
     runId: run.runId,
