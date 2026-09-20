@@ -115,7 +115,20 @@ function main(argv) {
   return result.ok ? 0 : 1;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+/**
+ * Entry detection must resolve symlinks the same way ESM resolves
+ * `import.meta.url`, or a repo reached through a symlinked path silently runs
+ * nothing and still exits 0 — which the skill reads as "lock acquired". That is
+ * the exact failure-reported-as-success class this lock exists to prevent.
+ */
+export function isEntryPoint(argv1, moduleUrl) {
+  if (typeof argv1 !== "string" || argv1 === "") return false;
+  let resolved;
+  try { resolved = fs.realpathSync(argv1); } catch { return false; }
+  return moduleUrl === pathToFileURL(resolved).href;
+}
+
+if (isEntryPoint(process.argv[1], import.meta.url)) {
   try { process.exitCode = main(process.argv.slice(2)); } catch (error) {
     process.stderr.write(`${error.message}\n`);
     process.exitCode = 2;

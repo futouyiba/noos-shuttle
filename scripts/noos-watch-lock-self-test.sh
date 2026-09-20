@@ -11,7 +11,7 @@ import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 const root = process.argv[2];
 const script = path.join(root, 'scripts/noos-watch-lock.mjs');
-const { operate, withMutationGuard, defaultLockPath } = await import(pathToFileURL(script));
+const { operate, withMutationGuard, defaultLockPath, isEntryPoint } = await import(pathToFileURL(script));
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'noos-watch-test-'));
 const lock = path.join(tmp, 'watch.lock');
 function cli(args, cwd = tmp) {
@@ -112,6 +112,32 @@ try {
     assert.equal(bogus.ok, false);
     assert.equal(bogus.outcome, 'unknown_command');
     assert.equal(fs.readFileSync(file, 'utf8'), before);
+  });
+  check('invoking through a symlinked path still runs; it must never exit 0 silently', () => {
+    // ESM derives import.meta.url from the real path, so entry detection has to
+    // resolve symlinks too. If it does not, the CLI does nothing and still exits
+    // 0 — and the skill reads exit 0 as "lock acquired".
+    const viaDir = path.join(tmp, 'via-symlink');
+    fs.mkdirSync(viaDir);
+    const via = path.join(viaDir, 'lock.mjs');
+    fs.symlinkSync(script, via);
+    assert.equal(isEntryPoint(via, pathToFileURL(fs.realpathSync(script)).href), true);
+    const file = path.join(tmp, 'symlink.lock');
+    // Invoke through the symlink itself; running `script` directly would not
+    // exercise the resolution the guard depends on.
+    const runVia = args => {
+      const r = spawnSync(process.execPath, [via, ...args], { cwd: tmp, encoding: 'utf8' });
+      return { code: r.status, data: r.stdout.trim() ? JSON.parse(r.stdout) : null };
+    };
+    const result = runVia(['acquire', '--lock-file', file]);
+    assert.equal(result.code, 0);
+    assert.notEqual(result.data, null, 'symlinked invocation produced no output');
+    assert.equal(result.data.outcome, 'acquired');
+    assert.ok(result.data.holderToken, 'exit 0 without a holder token is not ownership');
+    // The symlink must not open a second ownership lane around the same lock.
+    const rival = runVia(['acquire', '--lock-file', file]);
+    assert.equal(rival.code, 1);
+    assert.equal(rival.data.outcome, 'busy');
   });
   console.log('noos-watch-lock self-test: all checks passed');
 } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
