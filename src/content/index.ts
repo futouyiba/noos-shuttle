@@ -26,6 +26,7 @@ import { attachMarkdownFilesToChatInput, getChatComposer, getPageText, insertInt
 import { captureChatGptTranscriptWithScroll, captureRenderedChatGptTranscript } from "./chatgpt-transcript";
 import { RuntimeObservationLedger, type CarrierObservation } from "./runtime-observer";
 import { evaluateAuthorityLoss } from "./submission-authority-loss";
+import { isSubmissionFence, selectCompletedSubmissionToConverge } from "./submission-completion-convergence";
 import styles from "./styles.css?inline";
 
 const SUBMISSION_STABLE_WINDOW_MS = 2_000;
@@ -3324,6 +3325,26 @@ async function restoreActiveSubmission(observation: CarrierObservation): Promise
       mutation: { type: "list" }
     });
     if (!response?.ok || !Array.isArray(response.result)) return;
+    // A Run whose operation finished durably but never received its
+    // OPERATION_COMPLETED is invisible to the recovery path below, which lists
+    // execution-owning states only; nothing else would ever clear its pending id
+    // and the Run would wait on MAX_IN_FLIGHT forever. Converge it from the
+    // durable fact first, and leave the operation the recovery path owns alone.
+    if (bcrRun?.pendingSubmissionOperationId !== undefined) {
+      const completed = selectCompletedSubmissionToConverge({
+        operations: response.result,
+        observation,
+        run: bcrRun
+      });
+      if (completed) {
+        await applyContinuationRunEvent({
+          type: "OPERATION_COMPLETED",
+          operationId: completed.operationId,
+          turnRef: turnRefFromEvidence()
+        });
+        return;
+      }
+    }
     const candidates = response.result
       .filter(operation =>
         (operation.state === "DISPATCHING" || operation.state === "UNCERTAIN" || operation.state === "OBSERVED_ACCEPTED") &&
@@ -3480,16 +3501,6 @@ async function reconcileActiveSubmission(observation: CarrierObservation): Promi
 function turnRefFromEvidence(): string | undefined {
   const fingerprint = readSubmissionMessageEvidence().lastAssistantMessageFingerprint;
   return fingerprint ? `turn:${fingerprint}` : undefined;
-}
-
-function isSubmissionFence(value: unknown): value is SubmissionDispatchFence {
-  if (!value || typeof value !== "object") return false;
-  const fence = value as Partial<SubmissionDispatchFence>;
-  return typeof fence.providerConversationRef === "string" &&
-    typeof fence.bindingEpoch === "number" &&
-    typeof fence.leaseGeneration === "number" &&
-    typeof fence.leaseOwnerRef === "string" &&
-    typeof fence.targetCarrierRef === "string";
 }
 
 function readSubmissionMessageEvidence(): Pick<SubmissionBaseline, "headFingerprint" | "lastUserMessageFingerprint" | "lastAssistantMessageFingerprint"> {
