@@ -41,8 +41,8 @@ export interface EvaluatorInput {
   assistantTurnExcerpt: string;
 }
 
-/** The product-level continuation contract (Human decision, 2026-09-17): the harness exists to let the assistant execute its own declared next step, so this — not a user-authored goal — is the default evaluation basis. */
-export const DEFAULT_CONTINUATION_GOAL = "Continue the assistant's own stated next step: the harness sends a plain 'go' so the assistant executes its own declared direction. Do not expand scope. Report any human decision, review/evidence/external wait, completed work, or scope expansion faithfully as the matching stop condition.";
+/** The product-level continuation contract (Human decision, 2026-09-17): the harness exists to let the assistant execute its own declared next step, so this — not a user-authored goal — is the default evaluation basis. The dispatched token is locale-selected (see `continuation-payload.ts`), not a fixed literal. */
+export const DEFAULT_CONTINUATION_GOAL = "Continue the assistant's own stated next step: the harness sends a locale-selected continuation token (zh '继续', en 'go on') so the assistant executes its own declared direction. Do not expand scope. Report any human decision, review/evidence/external wait, completed work, or scope expansion faithfully as the matching stop condition.";
 
 export interface EvaluatorVerdict {
   decision: ContinuationDecision;
