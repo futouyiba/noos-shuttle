@@ -116,16 +116,19 @@ function main(argv) {
 }
 
 /**
- * Entry detection must resolve symlinks the same way ESM resolves
- * `import.meta.url`, or a repo reached through a symlinked path silently runs
- * nothing and still exits 0 — which the skill reads as "lock acquired". That is
- * the exact failure-reported-as-success class this lock exists to prevent.
+ * Entry detection must recognise this module under either path resolution ESM
+ * may use, or a repo reached through a symlinked path silently runs nothing and
+ * still exits 0 — which the skill reads as "lock acquired". Node resolves
+ * symlinks by default, but `--preserve-symlinks-main` keeps the literal path,
+ * so accept both. The only remaining false branch is "argv[1] is some other
+ * file", i.e. the genuine import case, which must stay quiet.
  */
 export function isEntryPoint(argv1, moduleUrl) {
   if (typeof argv1 !== "string" || argv1 === "") return false;
   let resolved;
   try { resolved = fs.realpathSync(argv1); } catch { return false; }
-  return moduleUrl === pathToFileURL(resolved).href;
+  return moduleUrl === pathToFileURL(resolved).href
+    || moduleUrl === pathToFileURL(path.resolve(argv1)).href;
 }
 
 if (isEntryPoint(process.argv[1], import.meta.url)) {

@@ -122,6 +122,11 @@ try {
     const via = path.join(viaDir, 'lock.mjs');
     fs.symlinkSync(script, via);
     assert.equal(isEntryPoint(via, pathToFileURL(fs.realpathSync(script)).href), true);
+    // Node keeps the literal path under --preserve-symlinks-main; both
+    // resolutions must be recognised, or that flag silently disables the lock.
+    assert.equal(isEntryPoint(via, pathToFileURL(path.resolve(via)).href), true);
+    // A genuinely different file is still not this entry point.
+    assert.equal(isEntryPoint(path.join(tmp, 'other.mjs'), pathToFileURL(fs.realpathSync(script)).href), false);
     const file = path.join(tmp, 'symlink.lock');
     // Invoke through the symlink itself; running `script` directly would not
     // exercise the resolution the guard depends on.
