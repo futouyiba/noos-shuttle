@@ -15,14 +15,27 @@ const SEND_BUTTON_SELECTORS = [
   "form button[type='submit']"
 ];
 
+// Exact-attribute matches only. Anything looser risks reading a *converged*
+// generation's disclosure control as an active one (see the fallback below).
 const GENERATION_ACTIVE_SELECTORS = [
   "[data-testid='stop-button']",
   "[data-testid='composer-stop-button']",
+  "button[aria-label='Stop']",
   "button[aria-label='Stop generating']",
   "button[aria-label='Stop streaming']",
+  "button[aria-label='停止']",
   "button[aria-label='停止生成']",
-  "button[aria-label='停止']"
+  "button[aria-label='停止回答']"
 ];
+
+// A turn whose stream was interrupted keeps a re-rendered disclosure toggle
+// describing the *finished* generation ("已停止思考" / "Stopped thinking"). It
+// contains 停止/stop but means the opposite, so it must never read as active.
+const CONVERGED_GENERATION_LABEL = /已停止|停止思考|stopped\s+(?:thinking|reasoning|responding|generating)/i;
+
+// Assistant turns re-render history and host their own controls; the provider's
+// live stop control only ever lives in the composer region.
+const CONVERSATION_TURN_SELECTOR = "[data-message-author-role], [data-turn], [data-testid^='conversation-turn']";
 
 const FILE_INPUT_SELECTORS = [
   "input[type='file']",
@@ -179,10 +192,23 @@ function findGenerationActiveButton(): HTMLButtonElement | null {
   const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>("button"));
   return (
     buttons.find((button) => {
-      const label = `${button.getAttribute("aria-label") ?? ""} ${button.textContent ?? ""}`.trim();
-      return isVisible(button) && /stop|停止/i.test(label);
+      return isVisible(button) && isActiveGenerationStopControl(button);
     }) ?? null
   );
+}
+
+/**
+ * Last-resort classification for a button whose label merely mentions stopping.
+ * A converged turn's disclosure toggle says 停止/Stop while describing a
+ * *finished* generation, so it is excluded rather than read as active.
+ */
+function isActiveGenerationStopControl(button: HTMLButtonElement): boolean {
+  if (button.closest(CONVERSATION_TURN_SELECTOR)) return false;
+  // A disclosure toggle is not an action; it only expands text already rendered.
+  if (button.hasAttribute("aria-expanded")) return false;
+
+  const label = `${button.getAttribute("aria-label") ?? ""} ${button.textContent ?? ""}`.trim();
+  return /stop|停止/i.test(label) && !CONVERGED_GENERATION_LABEL.test(label);
 }
 
 function waitForComposerUpdate(): Promise<void> {
