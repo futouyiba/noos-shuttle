@@ -309,6 +309,8 @@ The harness itself is a read-only Node script: it opens no new dependencies, sen
 | 1 | independent reviewer, read-only toolset, model `fable` | `REQUEST_CHANGES` (6 findings, all `NON_BLOCKING`) | `45d4ed04b0a15ff55f7a95b3db90ba90b15271d0` | §0/§5 causal claim tightened to match §3; **M1b added** (`AUTHORITY_CHANGED` is dead code, now the first Phase B candidate); §7 table corrected to three `lock`-injecting files and the two runs' differing file sets stated; M3 counterexample bullet (a) corrected against `index.ts:1709`; §10 content-disclosure scoped to the new harness and `state-dump.txt` disclosed; §0 refined so authority takeover requires an active claim, not activity |
 | 2 | same reviewer (incremental, diff-only) | `APPROVE` | `fce66ae8bbc2b7ce98b3af68260ec0ab4c210059` | all 6 findings confirmed resolved; 2 cosmetic notes raised — the M4 confirmation rewritten as the two-step account, and the stale `§9`→`§10` cross-reference in this row corrected |
 
+| 3 | independent reviewer, read-only toolset, model `fable` | `REQUEST_CHANGES` (1 `BLOCKING`, 2 `NIT`) | `5d18d80f70dc1a236058f08348e5e6fd0fdb4be6` | §11 post-disposition status table's slice (c) row said "Not started" while PR #78 had already merged — corrected to `Landed — PR #78 merged 2f60da8` and the "State as of" date advanced to 2026-09-20; three transcription drift points restored to the source comment's exact wording (M1 `should not solve` / `The required delta remains:`, M1b `the event must be grounded in`, M2 `remains pre-OPERATION_COMPLETED`, and the M3 clause that came from Required delta #4 rather than the M3 answer) |
+
 Round 1's own verified/unverified breakdown: the M1 code chain, M2, M3 (four `issueRunGo` sites, none durable-state-driven; only `EVALUATING` auto-resumes on load), the `LIVE` capture from the saved logs, the M4 counts and the typecheck result were independently re-derived and confirmed. The reviewer could not re-drive Chrome (no re-execution of the foreground experiment) and did not re-run the `navigator.locks` confirmation or the build.
 
 ---
@@ -352,19 +354,19 @@ The designer's own framing, quoted: *"PR #58 adds useful live evidence, but it d
 
 **1. M1 — may the steady-state reconcile path re-claim authority (recency takeover)?**
 
-**OBSOLETE AS AN OPEN DESIGN QUESTION.** #57 already decided that submission authority is scoped per logical thread / Run, not one browser-global slot. Steady-state `reconcile` therefore must not solve this symptom by letting an unrelated Run steal a global authority record by recency. The required delta is the one already authorized: remove the cross-Run global contention while preserving **one authorized actuator within a Run** and the existing lease/fence checks.
+**OBSOLETE AS AN OPEN DESIGN QUESTION.** #57 already decided that submission authority is scoped per logical thread / Run, not one browser-global slot. Therefore steady-state `reconcile` should not solve this symptom by allowing unrelated Runs to steal one global authority record by recency. The required delta remains: remove the cross-Run global contention while preserving **one authorized actuator within a Run** and existing lease/fence checks.
 
 **2. M1b — may the content script emit `AUTHORITY_CHANGED` when reconcile is refused on a foreign authority?**
 
-**REJECT** as the primary fix for foreign authority under the current global-slot implementation. **ACCEPT** `AUTHORITY_CHANGED` **only** for a real authority loss within the same Run / authorization scope. Emitting it merely because another unrelated Run won today's browser-global slot would convert an implementation artifact into a semantic fail-safe and terminate an otherwise valid Run. After authority is correctly scoped, the event may be emitted when the Run's own previously valid authority/lease/fence is actually superseded or lost and reconciliation cannot legally continue. Exact debounce and observation timeout are implementation-local; the *condition* must be same-Run authority loss, not unrelated activity.
+**REJECT** as the primary fix for foreign authority under the current global-slot implementation. **ACCEPT** `AUTHORITY_CHANGED` **only** for a real authority loss within the same Run / authorization scope. Emitting it merely because another unrelated Run won today's browser-global slot would convert an implementation artifact into a semantic fail-safe and terminate an otherwise valid Run. After authority is correctly scoped, the event may be emitted when the Run's own previously valid authority/lease/fence is actually superseded or lost and reconciliation cannot legally continue. Exact debounce and observation timeout are implementation-local; the event must be grounded in same-Run authority loss, not unrelated activity.
 
 **3. M2 — is "op `COMPLETED` + run still pending" a case reconciliation must repair, or impossible by construction?**
 
-**ACCEPT, as reconciliation responsibility, with no new architecture.** A crash window between durable operation completion and Run-event application is a normal reducer/recovery case and may not be assumed impossible. When a durable `SubmissionOperation` for the Run is already `COMPLETED` with sufficient persisted acceptance evidence while the Run still records that operation as pending, recovery must converge the Run projection **exactly once**, reusing the existing operation identity and evidence. It must not send another provider message and must not consume the round twice.
+**ACCEPT, as reconciliation responsibility, with no new architecture.** A crash window between durable operation completion and Run-event application is a normal reducer/recovery case and may not be assumed impossible. When a durable `SubmissionOperation` for the Run is already `COMPLETED` with sufficient persisted acceptance evidence while the Run still records that operation as pending / remains pre-`OPERATION_COMPLETED`, recovery must converge the Run projection **exactly once**, reusing the existing operation identity and evidence. It must not send another provider message and must not consume the round twice.
 
 **4. M3 — may `READY_TO_GO` carry a durable AUTO authorization marker (a new epoch)?**
 
-**PARTIAL_ACCEPT, bounded by #57 Q4.** A durable AUTO continuation authorization may exist only as evidence that the existing continuation policy/evaluator/budget **already authorized a specific next round/epoch**. It must be round/epoch-bound, single-consumption (idempotent), and invalidated by Human intervention, scope/goal/authority change, stop, or a newer evaluation. `READY_TO_GO` alone remains insufficient to authorize a send. This is not permission to treat watcher presence as resend authority; ambiguous or failed dispatch recovery stays under #54 semantics.
+**PARTIAL_ACCEPT, bounded by #57 Q4.** A durable AUTO continuation authorization may exist only as evidence that the existing continuation policy/evaluator/budget **already authorized a specific next round/epoch**. It must be single-consumption/idempotent and invalidated by Human intervention, scope/goal/authority change, stop, or a newer evaluation. `READY_TO_GO` alone remains insufficient to authorize a send. This is not permission to treat watcher presence as resend authority; ambiguous or failed dispatch recovery stays under #54 semantics.
 
 ### Required delta
 
@@ -388,11 +390,11 @@ PR #58 may remain the approved research artifact, but it is not itself a runtime
 
 ### Post-disposition status of the mandated slices
 
-Recorded for accuracy; **not** part of the disposition text above. State as of 2026-09-19.
+Recorded for accuracy; **not** part of the disposition text above. State as of 2026-09-20.
 
 | Slice | Status |
 |---|---|
 | (a) M4 test infrastructure | **Landed** — PR #64 merged `8bd9e2f`; `tests/setup-browser-locks.ts` now supplies `navigator.locks` to the root suite; Issue #62 closed. |
 | (b) per-Run authority + same-Run `AUTHORITY_CHANGED` convergence | **Landed** — PR #67 merged `d970727`; Issue #65 closed after accepting the two-Run split evidence. |
-| (c) M2 completion reconciliation | **Not started.** |
+| (c) M2 completion reconciliation | **Landed** — PR #78 merged `2f60da8`; Issue #74 closed. |
 | M3 durable AUTO authorization | **Not started**; must be a separate slice with explicit #54 compatibility. |
