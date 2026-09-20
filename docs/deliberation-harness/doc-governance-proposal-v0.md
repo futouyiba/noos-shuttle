@@ -3,8 +3,9 @@
 > Authority-Level: Candidate
 > Owns: DocGovernance
 >
-> 提案，不是契约。**Epic Designer 已裁定 `PARTIAL_ACCEPT`**（记录见**附录 D**）；本版即对该裁定的
-> resume condition 的回应，**下一步是新 head 上的独立复审**。**裁定通过前不实施。**
+> 提案，不是契约。**Epic Designer 已裁定 `PARTIAL_ACCEPT`，命名补充裁定为 `ACCEPT`**（见**附录 D**）；
+> 本版回应两条裁定的 resume condition，**修订尚待新 exact head 上的独立复审**。
+> **本提案仍为 Candidate；裁定与文档收录均不自动授权晋升、实施或合并。**
 > 任务 issue：`noos-shuttle#76`。参考模型：中鱼升级项目 Notion 文档治理（经人类指定）。
 > **本提案不改变任何既有文档的内容与结构**；它提议的是一套规则，落地另行切片。
 >
@@ -161,9 +162,9 @@
 | 既有机制 | 本提案如何处理 |
 | --- | --- |
 | 六份文档的 `SUPERSEDED — do not use as current design input` | **采纳为规范形态**；既有文档**无需重写**（§6 grandfather） |
-| v3 的 `provenance tombstone` 用词 | **采纳**为该状态的正式名 |
+| v3 的 `provenance tombstone` 用词 | 保留为 `Historical` 下可选的保留形态，**不是顶层生命周期状态** |
 | `v1-adjudication-record.md` | **取其结构**为裁决登记蓝本，**并补上它缺的 §2.3 字段**（该记录正文是转述，**无逐字引用块**，本身不满足 §2.3 —— 见第一轮 m3） |
-| 规范 §2.1 不删除条款 | 作为退休规则依据——**注意：原文只针对「proposal 文档」**，本提案对其作泛化推广（§7 已标注） |
+| 规范 §2.1 不删除条款 | 保持原范围：**被裁定引用的 proposal 文档**；扩至所有文档的主张未获裁定，**本轮 defer，不纳入规则或实施切片**（§7、§11） |
 | 规范 §2.3 裁定记录格式 | 裁决登记的条目格式 |
 | 规范 §1.4 的「Authority 文件」 | **本提案的正面依据**：为该既有类别提供声明形式 |
 | 规范 §6 的「不得演化为第二真源」 | **类推适用**（§1.3 已标明这是主张而非既有条文） |
@@ -196,9 +197,12 @@
 | 值 | 含义 | 作权威读？ |
 | --- | --- | --- |
 | `Current` | 该概念的权威读取路径 | 是 |
-| `Tombstone` | 已退役的权威：仍可读作 provenance，但**不是当前设计输入** | 否 |
+| `Historical` | 已退役的权威：仍可读作 provenance，但**不是当前设计输入** | 否 |
 | `Candidate` | 非权威；须经裁定才晋升 | 否 |
 | `Frozen` | 可冻结数值/证据，**永不成 Current** | 否 |
+
+`Historical` 可保留全文，也可采用 tombstone（最小 provenance 壳）形态；
+tombstone **不是第五个 Authority-Level，也不是第二个权威轴**。不引入 `Historical-Complete` 状态。
 
 > **与 §1.4 审核深度的关系（经 designer 裁定）**：**不接受四值与 §1.4 审核深度档的直接等价**。
 > designer 原文：「Authority level describes semantic status; review depth is determined by the canonical
@@ -238,9 +242,9 @@
 **可检出性**（这一条是它优于一句原则的地方）：同一概念被两份 `Current` 声明 `Owns:` ＝ **可机械检出的冲突**。
 检出时：
 
-- Router 已指明归属 → 以 Router 指向者为准；
-- Router 未列或指向不明 → **视为治理缺陷**，须补 Router，**不得让 agent 自行判断**；
-- **两者都声称且无法消解 → fail closed**（见 §3.1：不得按新旧/文件名/详细度/目录深度裁决）。
+- **两份 `Current` 声明重叠即 fail closed**，无论 Router 当前指向谁；Router **不能裁决或消解冲突**。
+- Router 只导航至相关文档和裁定 provenance；归属须由**显式授权的裁定**解决，再同步文档与索引。
+- Router 未列或指向不明也属治理缺陷，**不得让 agent 自行判断**；不得按新旧/文件名/详细度/目录深度裁决。
 
 ### 3.3 Router
 
@@ -276,10 +280,12 @@
 ```markdown
 # D-20260919-001
 
-- Status: in-force | pending-incorporation | superseded-by: D-xxx
+- Decision: <源裁定的结论>
+- Decision status: in-force | superseded-by: <source URL/id；可附 D-xxx>
+- Incorporation: pending-incorporation | incorporated | no-current-delta
 - 交付来源：<谁、在何处交付>
 - Exact target：`<path>@<sha>`
-- 来源评论：<link>
+- 来源评论：<URL + comment id>
 - Provenance：<如 des: via connector>
 - 决定性表述（原文引用，逐字；禁止转述改义）：
   > ...
@@ -354,19 +360,20 @@
 以**评论正文逐字照录**；规范 §2.3 禁止转述改义或代拟 designer 结论。必记：`source:`（URL + comment id）、
 `exact target:`（裁定锚定的 SHA；designer 裁定自带，如 `5711118315` 锚 `bd3c7af`）、`provenance:`。
 
-**（3）在效状态与取代链**
+**（3）裁定在效、文档收录与取代链**
 
-`Status: in-force | pending-incorporation | superseded-by: D-xxx`。**被取代时只标注、不改写正文**。
+`Decision status` 记录裁定是否仍在效；`Incorporation` 单独记录文档收录进度。
+**`in-force` 与 `pending-incorporation` 可以同时成立**。被取代时保留正文、补记来源裁定的取代指针；
+档案中的状态记录不创造、暂停或撤销源裁定的权威。
 
-**与文档 `Authority-Level:` 是两个不同的轴**，不可混用：
-
-| 轴 | 取值 | 回答的问题 |
+| 字段 | 取值 | 回答的问题 |
 | --- | --- | --- |
-| 文档 | `Current` / `Tombstone` / `Candidate` / `Frozen` | 这份**文档**现在算不算权威 |
-| 裁定条目 | `in-force` / `pending-incorporation` / `superseded-by` | 这条**裁定**现在还有效吗 |
+| 文档 `Authority-Level` | `Current` / `Historical` / `Candidate` / `Frozen` | 这份**文档**现在算不算权威 |
+| 裁定 `Decision status` | `in-force` / `superseded-by` | 这条**裁定**现在还有效吗 |
+| 收录 `Incorporation` | `pending-incorporation` / `incorporated` / `no-current-delta` | canonical 文档阅读路径是否已吸收裁定，或不需 Current delta |
 
 一条裁定可以「作为事件已成为历史」，而其**内容**仍活在某个 `Current` 里。
-**分开两个轴，正是为了避免用 `Tombstone` 去描述一条仍在生效的裁定。**
+**文档的 `Historical` 不表示其记录的裁定失效；收录待补也不表示裁定失效。**
 
 （例：`#67` 的 disposition 至今有效，宜作 `in-force` 轴的示例；**注**：它是 `PARTIAL_ACCEPT` 且**附 Required delta**，
 严格说其要求尚未满足——故它同时是「in-force 但未完成」的样本，不是「已落地」的样本。）
@@ -421,8 +428,9 @@
 **（5）与既有条款的关系**
 
 规范 **§2.1**（**注意：不是 `AGENTS.md` §2.3——该出处确为规范 §2.1，`AGENTS.md` 无编号小节；
-派单中引作出处有误，此项经复审独立确认为正确勘误**）规定 proposal 不得删除。裁决登记与之对齐：
-退休只能是标注，不得删除。
+派单中引作出处有误，此项经复审独立确认为正确勘误**）规定被裁定引用的 proposal 不得删除；
+如需清理，先以 commit SHA 引用固化。**不据此推导所有文档或登记条目的普遍禁删规则**；
+该扩展未获裁定，本轮 defer（§7、§11）。
 
 **（6）谁有权写——本版重写（第一轮 M4）**
 
@@ -457,7 +465,7 @@
 docs/README.md ………………………… Router（只说去哪读，不存结论）
   │
   ├─→ *-contract-*.md ……………… Current（`Authority-Level: Current` + `Owns:`）
-  │     └─ Supersedes → v0/v1/v2 等 … Tombstone（既有 SUPERSEDED 措辞，grandfathered）
+  │     └─ Supersedes → v0/v1/v2 等 … Historical（既有 SUPERSEDED / provenance tombstone，grandfathered）
   │
   ├─→ rulings/D-*.md ……………… 裁定逐字存档（§2.3 记录的落点）
   ├─→ pitfalls/P-*.md …………… 反设计登记
@@ -487,7 +495,8 @@ Router → 1 份 Current →（仅当需要依据时）1 份 ruling/pitfall → 
 
 - **不重写**任何既有文档的内容。
 - **Grandfather 条款**：六份已用 `SUPERSEDED — do not use as current design input` 的文档，
-  视为已满足 `Authority-Level: Tombstone`，**无需改写**；该旧写法**对新文档关闭**。
+  视为已满足 `Authority-Level: Historical` 的退役语义，既有 `provenance tombstone` 保留形态也无需改写；
+  新文档使用 `Historical`，不为采用新名称批量重写旧文档。
 - 头与登记条目**按需增量**添加（该文档下次因实质原因被改动时）。
 - Router **一次性编写**覆盖既有集合。
 - 唯一允许的批量动作是**加头**（纯增行、不动正文），须独立成 PR。**但注意**：按 §1.4，
@@ -497,20 +506,19 @@ Router → 1 份 Current →（仅当需要依据时）1 份 ruling/pitfall → 
 
 **总则（designer 裁定）**：
 
-> `Candidate → Current` 与 `Current → Tombstone/historical` 的转换**需要一次显式授权的裁定与 provenance**；
+> `Candidate → Current` 与 `Current → Historical` 的转换**需要一次显式授权的裁定与 provenance**；
 > **绝不**从合并时间、文件名，或「出现了更新的文档」**推断**。
 > **晋升还必须解决重叠的 `Owns:` 声明**（见 §3.1 的 fail-closed）。
 
 | 从 | 到 | 条件 |
 | --- | --- | --- |
 | `Candidate` | `Current` | 须有**显式授权的裁定** + provenance；且须先消解重叠 `Owns:` |
-| `Current` | `Tombstone` | 被新的 `Current` 完整吸收时——同样须显式授权，不因新文档出现而自动发生；文件保留，头改 `Tombstone`，`Supersedes` 反向指回 |
-| 任何 | **删除** | 仅限规范 §2.1 允许的路径：先以 commit SHA 固化引用 |
+| `Current` | `Historical` | 被新的 `Current` 完整吸收时——同样须显式授权，不因新文档出现而自动发生；旧文档保留全文或 provenance 壳，头改 `Historical`；新 Current 的 `Supersedes` 指向退役文档，退役文档保留继任者与裁定指针 |
 
-> **范围声明（第一轮 m2）**：规范 §2.1 的不可删除条款**原文只针对「proposal 文档」**。
-> 本表把它推广到**所有**文档，**这是本提案的推广，不是法条原义**。该推广须经裁定。
-> （**designer 的裁定未涉及本项推广**——附录 D 的 8 行处置表与「接受的部分」均未提它。
-> 故它与 §11 的表述一致：**仍待人裁**。）
+> **范围声明**：规范 §2.1 的不可删除条款只针对**被裁定引用的 proposal 文档**，
+> 如需清理，先以 commit SHA 引用固化。推广到所有文档的主张**未获两条源裁定授权，本轮 defer**，
+> 不纳入本提案的规则或 §9 实施切片；若重启，须另行明确范围并取得裁定与规范侧授权。
+> 上述退役保留要求不等于所有文档永久禁删。
 
 ## 8. 验证用例走查
 
@@ -547,7 +555,9 @@ Router → 1 份 Current →（仅当需要依据时）1 份 ruling/pitfall → 
 ### 8.4 本提案自身（自指检验）
 
 **本版已补上头部**（见文首）：`Authority-Level: Candidate` + `Owns: DocGovernance`。
-裁定通过后依 §7 晋升为 `Current`，并引用该裁定的 `D-` 编号。
+仍需依 §7 取得**明确授权本提案晋升**的裁定与 provenance，并消解重叠 `Owns:`；
+**`PARTIAL_ACCEPT`、仅命名的 `ACCEPT`、复审通过或合并均不自动晋升本文**。
+可自愿引用 `D-` 编号，但它不替代源裁定，也不是新增门禁。
 
 > **第一轮 m6 已采纳**：初稿只在 §8.4 里**声称**应有该头，而**文件本身没有**，属纸面推演。
 > 本版实际写入，自指检验由「论证」变为「演示」。
@@ -570,10 +580,9 @@ Router → 1 份 Current →（仅当需要依据时）1 份 ruling/pitfall → 
 4. **「一个概念」的边界**：只在出现实际冲突时才去界定，不预先给清单。
 5. **Non-retroactive 与批量加头的张力**：边界是「加头可、改正文不可」；但按 §1.4 加头仍需全项审核（§6 末段）。
 6. **Grandfather 的代价**：旧散文 / 新字段两种写法并存，校验要认两种。
-7. **`Tombstone` vs `Historical` 的用词——designer 明示保留给人类（`NEEDS_HUMAN`）**。
-   本提案用既有词 `Tombstone`；反对理由是「生命周期极性不同」并举 `#67` 为反例。
-   §3.6(3) 已给出轴分离的解释（文档权威 vs 裁定在效是两个轴）。
-   **该命名选择不阻塞其余 delta 的实施或复审**（designer 原文）。
+7. **命名已结清**：人类决定由补充裁定 `5743870374` 记录（`ACCEPT`，见附录 D）。
+   使用 `Historical` 作为公共生命周期 / `Authority-Level` 名；tombstone 仅为其可选保留形态。
+   此补充只解决命名，**不扩大此前 `PARTIAL_ACCEPT` 的范围，不授权晋升或合并**。
 8. ~~`candidates/` 的原状~~ → **已由 designer 裁定并结清**：**拒绝作为治理要求**。
    Candidate 是**语义状态，不是文件系统位置**；晋升**不得依赖移动文件**。§4 已从拓扑移除该目录（见该节）。
 
@@ -584,7 +593,7 @@ Router → 1 份 Current →（仅当需要依据时）1 份 ruling/pitfall → 
 | 提议 | 触及 | 状态 / 理由 |
 | --- | --- | --- |
 | 「实施裁定的 PR 须引用 `D-` 编号」 | 规范 §1.3 | **designer 裁定 DEFER**：在规范明确采纳前**不主张也不强制**；本提案**只提议**该上游变更，并**自愿**示范。**`noos-shuttle` 不得制造第二套合并策略**。任何对 `noos_docs` 的修改都需要它自己经显式授权的 Work Item |
-| §7 的不可删除推广到所有文档 | 规范 §2.1 | 原文只针对 proposal 文档；**推广仍待人裁**——**附录 D 的裁定未涉及本项**（其处置表与「接受的部分」均未提） |
+| §7 的不可删除推广到所有文档 | 规范 §2.1 | **本轮 defer，移出规则与实施范围**：源裁定未涉及此扩展，不推定批准；若重启须另行裁定与规范侧授权 |
 | §3.6(6) 对「固化裁定」审核深度的重新指派（引用核对而非全项） | 规范 §1.4 | 该节规定触及 Authority 文件的改动不得以文档路径降级；本条**主张** `rulings/` 的逐字转录属可降级情形。**须由规范侧确认**；确认前按 §1.4 从严执行 |
 | ~~§3.1 的取值与 §1.4 审核深度档的映射~~ | 规范 §1.4 | **designer 已明确拒绝**该直接等价（见 §3.1）——**已从待议项中移除** |
 
@@ -596,7 +605,7 @@ Router → 1 份 Current →（仅当需要依据时）1 份 ruling/pitfall → 
 | --- | --- | --- |
 | Router | **采纳** | 对应缺口 3 |
 | Semantic Owner（一概念一语义源） | **采纳（计为新增概念）** | 缺口 2 的正解；**本版已按复审 M3 更正归类** |
-| Historical | **采纳但用既有词 `Tombstone`** | 避免同一概念两个名字 |
+| Historical | **采纳为公共生命周期名** | 人类命名决定已记录；tombstone 仅为 Historical 下可选保留形态（附录 D） |
 | Validation-Frozen | **采纳** | 对应既有 `evidence/` |
 | Candidate | **采纳为语义状态；拒绝为目录要求** | designer：Candidate 是**语义状态不是文件系统位置**，晋升不得依赖移动文件 |
 | Pitfall Registry | **采纳** | 对应缺口 4 |
@@ -630,9 +639,9 @@ Router → 1 份 Current →（仅当需要依据时）1 份 ruling/pitfall → 
 8. **写权分级**（§3.6(6) 修正版）：固化裁定可降级为「引用核对但**仍须一次独立 APPROVE**」，
    改 Current 走 1.2 全项——是否认可？
 9. **§7 的推广**（不可删除扩展到所有文档）与 **§10 第 8 条**（`candidates/` 新建还是沿用命名）如何定？
-   → **`candidates/` 已由 designer REJECT（§10 第 8 条结清）**；**§7 的推广 designer 未涉及，仍待人裁**。
+   → **`candidates/` 已由 designer REJECT（§10 第 8 条结清）**；**§7 的推广未获裁定，本轮 defer，不纳入规则或实施范围**。
 
-**另一项由人类单独裁定**：`Tombstone` vs `Historical` 用词（§10 第 7 条）。不影响其余条款。
+**人类单独命名决定已完成**：使用 `Historical`（§10 第 7 条、附录 D 补充裁定）；tombstone 为可选保留形态。
 
 ## 附录 C：本版相对初稿的修订记录（回应复审 `REQUEST_CHANGES`）
 
@@ -865,10 +874,27 @@ cea4071 §8 逐字转录的确实是 `5717432171`、后两条为「被指向」�
 | 7 | `Owns:` 是**冲突检测的语义所有权**，非排他写权限 | §3.1 |
 | 8 | 晋升/退休**绝不**从合并时间/文件名/更新文档推断 | §7 |
 
-### 保留给人类
+### 人类保留的命名决定——已完成
 
-**`Tombstone` vs `Historical` 的命名**（`NEEDS_HUMAN`）——designer 明示不猜，
-且**该选择不阻塞其余 delta 的实施或复审**。
+**Exact target**：`docs/deliberation-harness/doc-governance-proposal-v0.md` @ `bbbd7d366ffffc00484fa2cd11f4c5801ec1f72e`
+**Decision**：`ACCEPT`　**event**：`pr77-human-historical-naming`
+**来源**：PR #77 评论 **`5743870374`**（https://github.com/futouyiba/noos-shuttle/pull/77#issuecomment-5743870374 ，
+2026-09-19T17:21:42Z）；Primary Design 经 ChatGPT Codex Connector 记录人类命名决定。
+本补充与前述主裁定均以源评论为准，不由本文收录创造权威。
+
+**决定性原文（命名及边界，逐字节选）**：
+
+> Use **`Historical` as the public lifecycle / `Authority-Level` name** for a document that has exited `Current` but remains readable for provenance and historical interpretation.
+>
+> Treat **`Tombstone` as a narrower retention form under `Historical`**, not as a peer top-level lifecycle state. A Historical artifact may retain its full historical content, or may be reduced to a provenance-oriented tombstone when only the supersession/provenance shell needs to remain prominent.
+
+> - This addendum resolves **only** the `Tombstone` vs `Historical` naming choice reserved for Human.
+> - It does not broaden or replace the earlier `PARTIAL_ACCEPT` disposition on PR #77.
+> - It does not authorize editing `futouyiba/noos_docs`.
+> - It does not authorize merge, promotion, deployment, or Issue closure.
+> - It does not require retroactive bulk rewriting of existing superseded documents.
+
+§3.1、§6、§7、§10 与附录 A/B 已同步；既有 `SUPERSEDED` / provenance tombstone 文档仍 grandfathered。
 
 ### 边界（designer 明示）
 
