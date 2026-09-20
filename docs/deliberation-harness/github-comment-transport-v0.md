@@ -100,11 +100,14 @@ watcher 曾经**静默失效 2.5 天而无人察觉**。两层原因：失败被
 与「没新评论」不可区分。因此状态文件带：
 
 ```json
-"health": { "lastStartedAt": "...", "lastSuccessfulAdvanceAt": "...", "consecutiveInterruptions": 0, "lastError": null }
+"health": { "lastStartedAt": "...", "lastSuccessfulAdvanceAt": "...", "lastCompletedPollAt": "...", "activeRun": null, "consecutiveInterruptions": 0, "lastError": null }
 ```
 
-- `lastStartedAt` 每次开跑即更新（**先落心跳后干活**）；`lastSuccessfulAdvanceAt` 只在真正
-  推进水位时更新。**两者长期不一起前进＝故障信号。**
+- `lastStartedAt` 每次开跑即更新（**先落心跳后干活**）；`lastCompletedPollAt` 在本轮完整拉取并
+  记账后更新——**无新评论同样更新**。二者一起前进才说明「轮询跑完了」。
+- `lastSuccessfulAdvanceAt` **只在真正推进水位时**更新。**不得用「水位没动」判断中断**：
+  长期没有新评论时它本来就不动，那是正常。中断由 `activeRun` 判定——取得锁后若读到上一个
+  运行留下的非空 `activeRun`，说明前一轮没走到收尾，`consecutiveInterruptions += 1`。
 - 简报必须显式区分三态：**无新评论** / **有新评论但未全部投递成功** /
   **本轮未完成（异常或被中断）**。只有第一种允许一行带过。
 - **不得把「本轮未完成」表述成「无新评论」。**
@@ -148,8 +151,10 @@ impl: fix PR#53
 | --- | --- | --- |
 | **静默丢包** | 裁定发出但无人被唤醒，无任何告警 | 未分类必上报（§4.4）；健康信号区分三态（§4.5） |
 | **重复取件** | 同一评论被两个 watcher 各路由一次 | 单实例锁（§4.1）；先认领后动作（§4.2） |
-| **丢失更新** | 并发写状态互相覆盖 | 写回前重读并按并集合并（既有实现） |
+| **丢失更新** | 并发写状态互相覆盖 | **所有状态写入必须持有同一个锁**（手动运行也一样）；并集合并不是并发写保护 |
 | **水位越项** | 投递失败的消息被水位越过，只留在 pending | 水位只推进到已处理/已记账处（§4.3） |
+| **重放** | 水位被欠账钉住时，claim 去重记录被裁掉，旧评论重读后重发 | 不截断 `ROUTED`、不删除 `CLAIMED`；本版不做自动 GC |
+| **永久阻塞** | 崩溃遗留的锁或 `.mutation` guard 无人能清，watcher 一直跳过 | fail closed 是有意的：简报显式报「锁被占用，必要时人工恢复」，且 `lastCompletedPollAt` 停走使阻塞可见；恢复须人工确认全部运行已停止 |
 | **过期取件** | 旧信封在状态已变后被重新读到 | 信封带 exact ref（head/SHA），收件方先核 ref 是否仍是当前 |
 | **权威走私** | 一条看起来像 verdict 但不是权威角色发的评论 | B.3「委派记录先于结论标记」的 provenance 链——这是本总线的**防伪机制**，不是形式主义 |
 | **无人在场** | 无人值守运行时需批准的工具调用被停，运行跑不完 | 减少批准需求（allow-list）；健康信号暴露「启动了没推进」 |
