@@ -1,10 +1,10 @@
 # Agent 授权边界与急停（v0）——提案
 
 > 提案，不是契约。本文件把 2026-09-19 讨论中人类已定的决定与随之而来的设计写下来。
-> **Epic Designer 已裁定 `NEEDS_REVISION`**（记录见**附录 A**）；本版即其 7 项 required revision 的回应。
-> **下一步是同一 exact head 上的 narrow re-adjudication**；裁定通过前不实施。
-> 涉及规范（noos_docs 附录 B / §4）的部分属规范级变更，须以规范本体为准；
-> **在规范侧落地之前，本提案涉及的 canonical 级条款均无强制力。**
+> **当前裁定为 `PARTIAL_ACCEPT`**；§7.6 权限门另获 **Human `ACCEPT`**（精确来源见 §9），不扩大前述裁定。
+> 本版吸收窄 delta；下一步须形成**新 exact head 并取得该 head 的 fresh independent review**，再进行 promotion/integration 检查。
+> 涉及规范（noos_docs 附录 B / §4）的部分属规范级变更；没有 `futouyiba/noos_docs` 的**独立显式 Work Item**，不修改规范。
+> **本提案不授权任何 implementation slice、merge、deploy、Issue closure 或运行时启用；在规范侧落地之前，canonical 级条款均无强制力。**
 
 ## 1. 背景
 
@@ -69,8 +69,6 @@
 - push tag → 可能触发不可逆的发布。
 
 （designer 原文认可这一区分：「后果可以进入 skill / execution context，**作为判断材料，而不是新的治理规则**」。）
-
-**建议一项机制（非治理条文）**：main 用分支保护直接禁掉直推。机制比纪律可靠，且不占篇幅。
 
 **建议一项机制（非治理条文）**：main 用分支保护直接禁掉直推。机制比纪律可靠，且不占篇幅。
 
@@ -312,14 +310,20 @@ label：`noos:hold`。
 （`127.0.0.1:17642`）」的既有通道（`carrier-focus` 即此类）；本机 `gh` 的 token 已含
 `repo` scope，**今天就能发评论、加 label**，无需新凭证。
 
-### 7.6 权限扩张（须知悉）
+### 7.6 权限扩张（**已获人类授权**）
 
 `github.com` 目前**不在** `public/manifest.json` 的 `host_permissions`，也不在
 `content_scripts.matches`。工作台需要两者都加——**这是权限扩张，用户更新时会看到提示**，
-且意味着扩展可读写所有 GitHub 页面。请在实现前确认可接受。
+且意味着扩展可读写所有 GitHub 页面。
 
-若不可接受，退化方案：面板只**生成并复制**标记文本 + 深链到评论框，由人粘贴。
-（这仍比手打强，但没达到「一键」。）
+**人类已于 2026-09-20 明确 ACCEPT 该权限扩张**（narrow re-adjudication 中唯一被保留为
+`NEEDS_HUMAN` 的门，已闭合；裁定记录见**附录 B**）。授权的射程以裁定原文为准：
+
+- 仅限本 Work Item 的工作台 / HOLD 交互面**实际所需的 GitHub 面**（`github.com` 加入
+  `host_permissions` ＋ 对应 `content_scripts` 覆盖）；
+- **不得**据此一般化为更宽的 host 覆盖——更宽需新的授权；
+- 该授权**只解决权限面问题**，不激活 delegated auto-merge、HOLD 强制、canonical workflow
+  变更、部署或任何实现切片；实现 PR 仍走各自 exact-head 复审与晋升门。
 
 ### 7.7 边界
 
@@ -356,7 +360,7 @@ label：`noos:hold`。
 
 ## 9. 待裁定 / 待实现
 
-**需 Epic Designer 裁定 —— 已于 2026-09-20 裁定 `NEEDS_REVISION`**（裁定记录见**附录 A**）：
+**需 Epic Designer 裁定 —— 已于 2026-09-20 裁定 `NEEDS_REVISION`**（裁定记录见**附录 A**；其后同 head 的 narrow re-adjudication `PARTIAL_ACCEPT` 与人类 §7.6 授权见**附录 B**）：
 
 1. 三条规范级变更是否成立 → **1(a) push：PARTIAL_ACCEPT 但必须修订**（删去 canonical 层豁免）；
    **1(b) 合并授权：ACCEPT，但须由规范侧显式落地**；**1(c) HOLD 入 B.3：接受概念，精确语义已修订**。
@@ -365,15 +369,17 @@ label：`noos:hold`。
 
 **需人类确认**：
 
-4. §7.6 的权限扩张是否可接受（`github.com` 加入 host_permissions 与 content_scripts）。**仍待人类确认。**
+4. ~~§7.6 的权限扩张是否可接受~~ → **已确认：ACCEPT（2026-09-20）**，见 §7.6 与附录 B。
 
-**实现切片（裁定后由 orchestrator 拆）**：
+**实现切片（裁定后由 orchestrator 拆；narrow re-adjudication 要求每个切片显式标注其所属层）**：
 
-- 切片 1：`HOLD` / `HOLD_CLEARED` 的识别与 integrator 前置检查（skill + AGENTS.md）
-- 切片 2：watcher 遇 HOLD 抑制合并交接
-- 切片 3：Hub 的 GitHub 写通道（评论 + label）
-- 切片 4：工作台面板 v0（github.com 内容脚本 + 急停区）
-- 切片 5：自动通道 label 与 integrator 的自动合并流程
+- 切片 1：`HOLD` / `HOLD_CLEARED` 的识别与 integrator 前置检查（skill + AGENTS.md）——*repo-local projection*
+- 切片 2：watcher 遇 HOLD 抑制合并交接——*repo-local projection / 优化*
+- 切片 3：Hub 的 GitHub 写通道（评论 + label）——*Shuttle/Hub implementation*
+- 切片 4：工作台面板 v0（github.com 内容脚本 + 急停区）——*Shuttle implementation，含 §7.6 已授权的权限面*
+- 切片 5：自动通道 label 与 integrator 的自动合并流程——**canonical authorization change，前置＝`noos_docs` 显式 Work Item**
+
+不得用一个仓库层 merge 同时「激活」多层（narrow re-adjudication required delta #5）。
 
 ## 10. 未决与风险
 
@@ -418,3 +424,41 @@ label：`noos:hold`。
 > **不需要重新讨论**已由 Human 固定的分层、CI、凭据风险、两层开启、永久切换或 label opt-in 决定。
 
 **本版即对该 resume condition 的回应；下一步是那个新 head 上的 narrow re-adjudication。**
+
+## 附录 B：narrow re-adjudication ＋ 人类权限授权（记录）
+
+对附录 A resume condition 的回应已获裁定。本附录**转录**两轮裁定原文要点；不重开任何已裁事项。
+
+**Provenance**
+
+| 轮次 | Decision | Exact target | 来源 | Governor event |
+| --- | --- | --- | --- | --- |
+| narrow re-adjudication（2026-09-19T23:49Z） | **`PARTIAL_ACCEPT`** | 本文档 @ `a2b5d650a7e42826827929bf17ac98dd07783a87`（PR #79） | PR #79 评论 | `event=pr79-narrow-readjudication head=a2b5d650… action=primary-design-disposition` |
+| Human permission authorization addendum（2026-09-20T00:36Z） | **`ACCEPT`**（仅 §7.6 权限门） | 同上 | PR #79 评论 | `event=pr79-human-github-permission-accept head=a2b5d650… action=human-permission-authorization` |
+
+**narrow re-adjudication 认定成立的修订方向**（designer 原文要点，转录）：
+feature-branch push 豁免未被升格为 canonical allowlist；delegated auto-merge 被正确识别为
+canonical authorization model change；delegated lane 的 `INTEGRATED` 须留「为何判为常规」的
+可审计 rationale（未扩张到 Human 显式 merge）；`HOLD`/`HOLD_CLEARED` 正确收敛为 Human
+control latch；PR-scoped HOLD 的 SHA 是 assertion/provenance anchor 而非 expiry boundary；
+HOLD marker 是 durable control record、label 只是投影；watcher 抑制只是优化而非 correctness
+dependency。**但 proposal 尚未获得实施授权**——delegated merge/HOLD 的强制语义仍需
+`noos_docs` canonical protocol 的独立 Work Item 正式落地。
+
+**Required delta（5 条，转录）与本版处置**
+
+| # | designer 要求 | 本版处置 |
+| --- | --- | --- |
+| 1 | 保持 7 项修订，不重新引入 repo-local merge authority、push allowlist 或 label-as-authority | 保持（§5/§6/§8 未回退） |
+| 2 | 删除 §4 重复出现的同一句「main 用分支保护直接禁掉直推」 | **本版已删**（纯文档卫生） |
+| 3 | §7.6 权限扩张保持 explicit `NEEDS_HUMAN` gate，Human 授权前不得写成已决定 | 该门已被下一轮 Human addendum 闭合 → §7.6 改记**已授权**并录 provenance |
+| 4 | canonical workflow 的 delegated merge/HOLD 条款只能作 proposal 输出；无 `noos_docs` 显式 Work Item 不得修改 noos_docs、不得声称已生效 | §8「规范先改」与「落地前无强制力」原句保持 |
+| 5 | implementation slices 须区分 canonical / repo-local projection / Shuttle 实现，不得一个 repo-local merge 同时激活三层 | §9 切片表逐条标注所属层 |
+
+**Human addendum（2026-09-20）确认**：人类明确 ACCEPT §7.6 的 `github.com`
+`host_permissions` + `content_scripts` 扩张（仅限本 Work Item 所需的 GitHub 面）。该授权
+**只**解决权限面；不激活 delegated auto-merge、HOLD 强制、canonical 变更、部署或实现切片。
+
+**Resume condition（两轮合成，转录）**：proposal 吸收窄 delta ＋ 人类授权形成**新 exact
+head**，随后取得该新 head 的 **fresh independent review**，方可进入任何 promotion /
+integration 检查。**本版即该新 head 的载体。**
