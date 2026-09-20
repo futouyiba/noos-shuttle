@@ -87,6 +87,32 @@ try {
     assert.equal(cli(['status', '--lock-file', 'relative.lock']).code, 2);
     assert.equal(cli(['acquire'], tmp).code, 2); // cannot silently choose cwd
   });
+  check('unreadable lock path is occupied, not an error exit, and is left untouched', () => {
+    // A directory at the lock path can never hold a usable record. Every shape
+    // that cannot be read must fail closed as "occupied" (exit 1), so the
+    // watcher skips the round instead of dying with an unhandled read error.
+    const asDir = path.join(tmp, 'lock-is-a-directory');
+    fs.mkdirSync(asDir);
+    fs.writeFileSync(path.join(asDir, 'keep'), 'x');
+    const acquired = cli(['acquire', '--lock-file', asDir]);
+    assert.equal(acquired.code, 1);
+    assert.equal(acquired.data.ok, false);
+    assert.equal(acquired.data.outcome, 'busy');
+    assert.equal(fs.readFileSync(path.join(asDir, 'keep'), 'utf8'), 'x');
+    assert.deepEqual(fs.readdirSync(asDir), ['keep']);
+    const released = cli(['release', '--lock-file', asDir, '--token', 'any']);
+    assert.equal(released.code, 1);
+    assert.equal(released.data.outcome, 'not_held_or_invalid');
+  });
+  check('an unrecognised command never mutates the lock', () => {
+    const file = path.join(tmp, 'unknown-command.lock');
+    const owner = operate('acquire', file);
+    const before = fs.readFileSync(file, 'utf8');
+    const bogus = operate('bogus', file, { token: owner.holderToken });
+    assert.equal(bogus.ok, false);
+    assert.equal(bogus.outcome, 'unknown_command');
+    assert.equal(fs.readFileSync(file, 'utf8'), before);
+  });
   console.log('noos-watch-lock self-test: all checks passed');
 } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 JS

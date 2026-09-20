@@ -34,9 +34,12 @@ function readLock(lockPath) {
     const record = JSON.parse(fs.readFileSync(lockPath, "utf8"));
     return record && typeof record.holderToken === "string" && record.holderToken.length > 0
       && typeof record.startedAt === "string" && Number.isFinite(Date.parse(record.startedAt)) ? record : null;
-  } catch (error) {
-    if (error.code === "ENOENT" || error instanceof SyntaxError) return null;
-    throw error;
+  } catch {
+    // Absent, unparseable, and unreadable (a directory, EACCES) all mean the
+    // same thing to the caller: no usable lock record. Returning null keeps the
+    // outcome "occupied/invalid" instead of an error exit, so every unreadable
+    // shape fails closed rather than being mistaken for a free lock.
+    return null;
   }
 }
 
@@ -81,6 +84,7 @@ export function operate(command, lockPath, { token, ttlMinutes = 10, sessionRef 
       fs.unlinkSync(lockPath);
       return { ok: true, outcome: "released", lock: lockPath };
     }
+    if (command !== "refresh") return { ok: false, outcome: "unknown_command", lock: lockPath };
     const next = { ...existing, startedAt: new Date().toISOString() };
     // Guard excludes release/acquire during validation + replacement. An interrupted
     // write leaves the guard in place; nobody interprets the partial write as free.

@@ -52,7 +52,8 @@ integrator。完整条款见规范本体。
   （`gh api issues/comments?since=`），按 verdict 与 provenance
   角色路由唤醒对应会话；无 watcher 在运行时，标记仅为持久邮箱。
   watcher 永不执行合并等敏感动作。其状态文件为主 checkout 下
-  `.tmp/watcher-state.json`。
+  `.tmp/watcher-state.json`；单实例锁为同目录下 `.tmp/noos-watch.lock`
+  （取不到锁即整轮跳过，锁只由人工确认停跑后清理）。
 
 ## 工作原则
 

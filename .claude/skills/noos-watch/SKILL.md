@@ -146,6 +146,10 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
        不是默认兜底地址。缺失、多个候选或关系不确定时不发评论，保留 CLAIMED
        并报「canonical task issue 未确认」。记录目标 issue URL，暗号仍引用原 PR。
        首通道投递结果未知/超时时也不走兜底，避免两条通道重复投递。
+     - 第二行的 `（watch: relay）` 是**传输注记**，不是 B.3 的 provenance 标记：
+       `watch` 不在规范的角色枚举（orch / impl / rev / des / intg）内，本行也不用
+       `委派:` 字段。首行是**暗号**而非输出标记，因此不参与 B.3 的推导链，也不会
+       被误读为某个角色的结论。若将来规范为传输层定义角色，再改用该枚举值。
      - `role:` 用 `orch` / `impl` / `rev` / `des` / `intg`；**不用 `@role`**。
      - 评论**不得**附带解释、总结、建议或任何自由文本——它不是分析，
        只是把唤醒信号放进规范定义的持久邮箱，由人或其他会话转达。
