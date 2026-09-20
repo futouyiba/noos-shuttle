@@ -15,9 +15,9 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
   暗号与写状态文件。通知类动作（投递暗号、send_message 交接、
   投递兜底评论）不是敏感动作，直接执行、无需向人请示。
 - **gh 写入仅限投递兜底**：本 skill 对 GitHub 只做只读拉取，唯一
-  例外是步骤 5 的兜底评论（`send_message` 不可用时，在对应线程留
+  例外是步骤 5 的兜底评论（`send_message` 不可用时，在已确认的 canonical task issue 留
   一条只含暗号 + provenance 的评论）。不得用该通道写任何其他内容。
-- **单实例**：一轮运行必须先取得 `.tmp/noos-watch.lock`。取不到锁
+- **单实例**：一轮运行必须先取得主 checkout 的 `.tmp/noos-watch.lock`。取不到锁
   即**立即退出**，不拉评论、不路由、不写状态。同一时刻只允许一轮
   watcher 存在——这是「重复取件」的结构性防线。
 - **先认领后动作**：路由任何一条评论之前，必须先把该评论以
@@ -38,16 +38,24 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
    node scripts/noos-watch-lock.mjs acquire --session-ref "<本轮标识>"
    ```
 
-   退出码 `1` ＝ 已有活着的运行在持有锁 → **直接结束本轮，不产生任何
-   副作用**，简报只写一行「上一轮仍在运行，本轮跳过」。退出码 `0`
-   时输出里有 `holderToken`，**记下它**，步骤 7 要用。
+   helper 用 `git worktree list --porcelain -z` 定位主 checkout；从主目录、
+   linked worktree 或子目录启动都使用同一个锁。不能定位时退出码 `2`，停止。
+   退出码 `1` 表示锁或 mutation guard 已占用（**不代表原运行仍活着**），
+   立即结束，不拉评论、不写状态。简报写「锁被占用，本轮跳过；必要时人工恢复」。
+   退出码 `0` 时记下 `holderToken` 和返回的 canonical 绝对路径 `lock`。
+   **后续所有调用必须传同一个 `--lock-file "<lock>"`**，不得随 cwd 重算路径。
 
-   锁的 TTL 默认 10 分钟（一次运行远超此值即属异常）。若本轮确实
-   需要更久，用 `refresh` 续期：
+   TTL 默认 10 分钟，**仅供诊断，永不自动接管**，暂停的运行可能恢复。
+   空、半写、损坏锁与遗留 `<lock>.mutation` 也一律阻塞，不覆盖、不删除。
+   `refresh` 只更新诊断时间；任何失败都停止后续路由/状态写入：
 
    ```bash
-   node scripts/noos-watch-lock.mjs refresh --token "<holderToken>"
+   node scripts/noos-watch-lock.mjs refresh --lock-file "<lock>" --token "<holderToken>"
    ```
+
+   恢复必须由人确认**所有使用该路径的运行和 helper 均已停止、不会恢复**，
+   然后才可人工移除锁及 mutation guard；仅 TTL 过期或 acquiring helper 已退出
+   不足以证明。未确认则保持阻塞。本 skill 不自动执行恢复。
 
 1. 读状态文件（主 checkout 下 `.tmp/watcher-state.json`，路径见
    AGENTS.md 环境注记；主 checkout 根不可定位时**立即报错退出**，
@@ -60,7 +68,7 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
      "claims": { "<commentId>": { "state": "CLAIMED|ROUTED|UNROUTED", "action": "...", "claimedAt": "ISO8601", "routedAt": "ISO8601", "note": "..." } },
      "pending": [],
      "stages": [],
-     "health": { "lastStartedAt": "ISO8601", "lastSuccessfulAdvanceAt": "ISO8601|null", "consecutiveInterruptions": 0, "lastError": "string|null" }
+     "health": { "lastStartedAt": "ISO8601", "lastSuccessfulAdvanceAt": "ISO8601|null", "lastCompletedPollAt": "ISO8601|null", "activeRun": null, "consecutiveInterruptions": 0, "lastError": "string|null" }
    }
    ```
 
@@ -69,7 +77,12 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
    `{ "state": "ROUTED", "note": "migrated from v1 processed" }`，
    保留既有事实，不重放历史评论。
 
-   写入 `health.lastStartedAt = now` 并落盘（**先落心跳后干活**）。
+   旧 health 缺字段时，补 `lastCompletedPollAt = null`、`activeRun = null`；
+   不凭旧时间差推断中断。取得锁后若读到旧的非空 `activeRun`（人工恢复后），
+   将 `consecutiveInterruptions += 1`，`lastError` 记「前轮未完成」，再设置
+   `activeRun = holderToken`、`lastStartedAt = now` 并落盘（先落心跳后干活）。
+   正常完成清空 activeRun；可捕获异常时计数加一并清空 activeRun，避免下轮重复计数。
+   硬中断来不及写账，只能在人工确认停跑并恢复后由下一轮识别旧 activeRun。
 
 2. `gh api "repos/futouyiba/noos-shuttle/issues/comments?since=<watermark>&per_page=100"`
    拉取新评论（覆盖 issue 与 PR 评论）；返回满页时续页拉取
@@ -122,14 +135,17 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
 
    - **首通道 `send_message`**：按步骤 4 解析到的会话直投。成功记
      `deliveredVia: "session"`。
-   - **兜底（`send_message` 不可用或返回不可用）**：在**该标记所在的
-     线程**留一条评论，内容**只含** `role:` 前缀的暗号与 provenance 行：
+   - **兜底（`send_message` 不可用或返回不可用）**：在**canonical task issue** 留一条评论，内容**只含** `role:` 前缀的暗号与 provenance 行：
 
      ```
      impl: fix PR#53
      （watch: relay）
      ```
 
+     - 先从 PR/任务的明确关联或委派记录确定 canonical task issue；来源 PR
+       不是默认兜底地址。缺失、多个候选或关系不确定时不发评论，保留 CLAIMED
+       并报「canonical task issue 未确认」。记录目标 issue URL，暗号仍引用原 PR。
+       首通道投递结果未知/超时时也不走兜底，避免两条通道重复投递。
      - `role:` 用 `orch` / `impl` / `rev` / `des` / `intg`；**不用 `@role`**。
      - 评论**不得**附带解释、总结、建议或任何自由文本——它不是分析，
        只是把唤醒信号放进规范定义的持久邮箱，由人或其他会话转达。
@@ -152,19 +168,22 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
    - `watermark` 只推进到**最后一个已成功处理（`ROUTED`）或已显式
      记入 `pending` 的评论时间**——**不得越过未投递项**。无法判定
      时保持原值，宁可下轮重读也不吞掉未处理消息。
-   - `claims` 追加，`ROUTED` 条目截断保留最近 500 条。
-   - 写回前重新读取并按并集合并（防与手动运行重叠丢更新）。
-   - 成功推进后更新 `health.lastSuccessfulAdvanceAt = now`、
-     `health.consecutiveInterruptions = 0`、`health.lastError = null`；
-     若本轮有任何未完成项，`health.lastError` 记明原因。
+   - `claims` 追加，**不截断 ROUTED，也不删除 CLAIMED**。水位被欠账钉住时，
+     最近 500 条截断会让旧已投递评论重读后重发。本版本不做自动 GC。
+   - 所有状态写入必须持有同一个锁，手动运行也一样；并集合并不是并发写保护。
+   - 完整拉取并完成本轮处理/记账后，更新 `lastCompletedPollAt = now`，
+     清空 `activeRun`，重置 `consecutiveInterruptions = 0`；**无新评论同样更新**。
+     只有实际推进水位才更新 `lastSuccessfulAdvanceAt`。有 pending/CLAIMED
+     的已完成轮询仍算完成，但 `lastError` 记欠账原因；没有欠账才清空错误。
+     异常提前结束不更新完成/推进时间，按步骤 1 计中断。
    - 释放锁：
 
      ```bash
-     node scripts/noos-watch-lock.mjs release --token "<holderToken>"
+     node scripts/noos-watch-lock.mjs release --lock-file "<lock>" --token "<holderToken>"
      ```
 
      本轮因故提前结束（异常、无法定位主 checkout）时**同样要释放**，
-     不要靠 TTL 兜底。
+     释放失败要显式报告并停止；没有 TTL 自动清理。
 
 8. 输出简报。**必须显式区分三态**，只有第一种允许静默：
 
@@ -184,8 +203,9 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
 watcher 曾经静默失效 2.5 天而无人察觉，原因有两层：一是失败被报成
 成功，二是「启动了但没推进」与「没新评论」不可区分。因此：
 
-- `health.lastStartedAt` 在每次开跑时更新，`health.lastSuccessfulAdvanceAt`
-  只在真正推进水位时更新。**两者长期不一起前进即是故障信号。**
-- 被中断的运行不写 `lastSuccessfulAdvanceAt`，但 `lastStartedAt` 已前进；
-  连续多次只前进前者，说明无人值守下跑不完——这是需要人介入的形态。
-- 简报不得把「本轮未完成」表述成「无新评论」。
+- `lastStartedAt` 与 `lastCompletedPollAt` 区分启动和完整轮询；完成时间长期不前进
+  才需排查（无新评论也会更新完成时间），不能用水位是否前进判断中断。
+- `lastSuccessfulAdvanceAt` 只表示水位推进；pending 钉住水位不等于轮询中断。
+- `activeRun` 与中断计数按步骤 1/7 更新；锁阻塞时不得写共享状态，报告阻塞即可。
+- 简报不得把「本轮未完成」表述成「无新评论」。这些健康规则由 skill 执行，
+  不是独立 watchdog；硬中断后的自动恢复和外部告警不在本版本保证内。

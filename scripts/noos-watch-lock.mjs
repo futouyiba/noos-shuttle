@@ -1,217 +1,119 @@
 #!/usr/bin/env node
 /**
- * Single-instance lock for the noos-shuttle comment watcher (transport hardening L0).
- *
- * Why this exists: the watcher's idempotency guard was a post-hoc `processed`
- * array in `.tmp/watcher-state.json`. Two watcher sessions starting concurrently
- * both read the same watermark, both see the same "unprocessed" comments, and both
- * route them — the union-merge on write-back prevents a *lost update* but does
- * nothing about a *duplicate side effect*. Serializing the watcher removes the
- * concurrent-reader precondition entirely.
- *
- * Ownership model: the lock represents a **run**, not a process. The caller is a
- * short-lived helper invocation, so pid liveness is meaningless here (the acquiring
- * process exits immediately). Ownership is therefore carried by a holder *token*
- * that the caller passes back to `refresh`/`release`, and staleness is decided by
- * the TTL alone. A run killed mid-flight cannot clean up, so the TTL is the backstop.
- *
- * Acquisition is atomic: the lock file is created with O_EXCL, so exactly one
- * caller can win, including under simultaneous starts.
- *
- * Boundary: this only serializes watcher invocations. It performs no routing and no
- * sensitive action, and it is not an authority of any kind.
- *
- * Usage:
- *   node scripts/noos-watch-lock.mjs acquire [--lock <path>] [--ttl-minutes N] [--session-ref <ref>]
- *   node scripts/noos-watch-lock.mjs refresh --token <token> [--lock <path>]
- *   node scripts/noos-watch-lock.mjs release --token <token> [--lock <path>]
- *   node scripts/noos-watch-lock.mjs status  [--lock <path>]
- *
- * Exit codes: 0 = acquired / released / refreshed / inspected; 1 = held elsewhere or token mismatch; 2 = error.
+ * Cooperative run lock, not a process lease. TTL is advisory only: a paused run
+ * can resume, so no command reclaims an existing lock, even malformed/empty ones.
+ * All mutations use an exclusive mkdir guard; a crashed guard also fails closed.
+ * Recovery is manual, only after ALL runs/helpers using this path are confirmed
+ * stopped. This does not fence non-cooperating writers or external file removal.
+ * Exit: 0 success/status, 1 occupied/token mismatch, 2 error.
  */
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 
-const DEFAULT_LOCK = path.join(".tmp", "noos-watch.lock");
-/** A watcher run is bounded by the ~10 minute poll interval; a lock older than this is a dead run. */
-const DEFAULT_TTL_MINUTES = 10;
-
-function usage(exitCode = 0) {
-  process.stdout.write(`Usage:
-  node scripts/noos-watch-lock.mjs acquire [--lock <path>] [--ttl-minutes N] [--session-ref <ref>]
-  node scripts/noos-watch-lock.mjs refresh --token <token> [--lock <path>]
-  node scripts/noos-watch-lock.mjs release --token <token> [--lock <path>]
-  node scripts/noos-watch-lock.mjs status  [--lock <path>]
-`);
-  process.exit(exitCode);
+function canonicalPath(input) {
+  const absolute = path.resolve(input);
+  if (fs.existsSync(absolute)) return fs.realpathSync(absolute);
+  const parent = path.dirname(absolute);
+  return path.join(parent === absolute ? parent : canonicalPath(parent), path.basename(absolute));
 }
 
-function fail(message, exitCode = 2) {
-  process.stderr.write(`${message}\n`);
-  process.exit(exitCode);
-}
-
-function parseArgs(argv) {
-  const [command, ...rest] = argv;
-  const values = {};
-  for (let index = 0; index < rest.length; index += 1) {
-    const token = rest[index];
-    if (!token.startsWith("--")) fail(`Unexpected argument: ${token}`);
-    const next = rest[index + 1];
-    if (next === undefined || next.startsWith("--")) fail(`Flag --${token.slice(2)} requires a value`);
-    values[token.slice(2)] = next;
-    index += 1;
-  }
-  return { command, values };
+export function defaultLockPath(cwd = process.cwd()) {
+  // git's first worktree entry is the main checkout, even from a linked worktree.
+  const listing = execFileSync("git", ["worktree", "list", "--porcelain", "-z"], { cwd, encoding: "utf8" });
+  const first = listing.split("\0")[0];
+  if (!first.startsWith("worktree ") || !path.isAbsolute(first.slice(9))) throw new Error("Cannot locate main checkout");
+  return canonicalPath(path.join(first.slice(9), ".tmp", "noos-watch.lock"));
 }
 
 function readLock(lockPath) {
   try {
-    const parsed = JSON.parse(fs.readFileSync(lockPath, "utf8"));
-    return parsed && typeof parsed === "object" ? parsed : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/** Staleness is TTL-only: the holder is a run, and a run that died cannot release. */
-function lockIsStale(record, ttlMs) {
-  if (!record || typeof record.startedAt !== "string") return true;
-  const startedAt = Date.parse(record.startedAt);
-  if (!Number.isFinite(startedAt)) return true;
-  return Date.now() - startedAt > ttlMs;
-}
-
-function writeLock(lockPath, record) {
-  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-  const handle = fs.openSync(lockPath, "wx");
-  try {
-    fs.writeFileSync(handle, `${JSON.stringify(record, null, 2)}\n`, "utf8");
-  } finally {
-    fs.closeSync(handle);
-  }
-}
-
-function tryCreate(lockPath, record) {
-  try {
-    writeLock(lockPath, record);
-    return true;
+    const record = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+    return record && typeof record.holderToken === "string" && record.holderToken.length > 0
+      && typeof record.startedAt === "string" && Number.isFinite(Date.parse(record.startedAt)) ? record : null;
   } catch (error) {
-    if (error?.code === "EEXIST") return false;
-    fail(`Failed to create lock ${lockPath}: ${error.message}`);
-    return false;
+    if (error.code === "ENOENT" || error instanceof SyntaxError) return null;
+    throw error;
   }
 }
 
-function emit(payload) {
-  process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+// Exported primitive allows deterministic tests to hold the guard at the exact
+// read/mutate boundary while other real CLI processes attempt every operation.
+export function withMutationGuard(lockPath, mutate) {
+  const guard = `${lockPath}.mutation`;
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  try { fs.mkdirSync(guard); } catch (error) {
+    if (error.code === "EEXIST") return { ok: false, outcome: "mutation_busy", lock: lockPath };
+    throw error;
+  }
+  try { return mutate(); } finally { fs.rmdirSync(guard); }
 }
 
-function acquire(lockPath, ttlMs, sessionRef) {
-  const holderToken = crypto.randomUUID();
-  const record = {
-    holderToken,
-    sessionRef: sessionRef ?? null,
-    host: os.hostname(),
-    startedAt: new Date().toISOString()
+export function operate(command, lockPath, { token, ttlMinutes = 10, sessionRef } = {}) {
+  const inspect = () => {
+    const present = fs.existsSync(lockPath);
+    const holder = readLock(lockPath);
+    return { ok: true, outcome: present ? (holder ? "held" : "invalid") : "free", lock: lockPath,
+      holder, stale: holder ? Date.now() - Date.parse(holder.startedAt) > ttlMinutes * 60000 : null,
+      mutationBlocked: fs.existsSync(`${lockPath}.mutation`) };
   };
-
-  if (tryCreate(lockPath, record)) {
-    emit({ ok: true, outcome: "acquired", lock: lockPath, ...record });
-    return 0;
-  }
-
-  const existing = readLock(lockPath);
-  if (!lockIsStale(existing, ttlMs)) {
-    emit({ ok: false, outcome: "busy", lock: lockPath, holder: existing ?? null });
-    return 1;
-  }
-
-  // Stale: drop and race once for the creation. Losing that race is a normal outcome.
-  try {
-    fs.rmSync(lockPath, { force: true });
-  } catch {
-    /* Another process may have removed it already; the retry below decides. */
-  }
-  if (!tryCreate(lockPath, record)) {
-    emit({ ok: false, outcome: "busy", lock: lockPath, holder: readLock(lockPath) ?? null });
-    return 1;
-  }
-  // Confirm we still own what is on disk: a concurrent reclaimer could have
-  // replaced our record between create and verify.
-  const confirmed = readLock(lockPath);
-  if (confirmed?.holderToken !== holderToken) {
-    emit({ ok: false, outcome: "busy", lock: lockPath, holder: confirmed ?? null });
-    return 1;
-  }
-  emit({ ok: true, outcome: "acquired_after_stale", lock: lockPath, reclaimedFrom: existing ?? null, ...record });
-  return 0;
-}
-
-function requireToken(values) {
-  const token = values.token;
-  if (typeof token !== "string" || token.trim() === "") fail("--token is required for this command", 2);
-  return token;
-}
-
-function mutateOwned(lockPath, token, mutate) {
-  const existing = readLock(lockPath);
-  if (!existing) {
-    emit({ ok: false, outcome: "not_held", lock: lockPath });
-    return 1;
-  }
-  if (existing.holderToken !== token) {
-    emit({ ok: false, outcome: "token_mismatch", lock: lockPath, holder: existing });
-    return 1;
-  }
-  return mutate(existing);
-}
-
-function refresh(lockPath, token) {
-  return mutateOwned(lockPath, token, existing => {
+  if (command === "status") return inspect(); // advisory snapshot, never grants ownership
+  return withMutationGuard(lockPath, () => {
+    if (command === "acquire") {
+      const record = { holderToken: crypto.randomUUID(), sessionRef: sessionRef ?? null,
+        host: os.hostname(), startedAt: new Date().toISOString() };
+      let fd;
+      try { fd = fs.openSync(lockPath, "wx"); } catch (error) {
+        if (error.code === "EEXIST") return { ...inspect(), ok: false, outcome: "busy" };
+        throw error;
+      }
+      try { fs.writeFileSync(fd, `${JSON.stringify(record, null, 2)}\n`); } finally { fs.closeSync(fd); }
+      return { ok: true, outcome: "acquired", lock: lockPath, ...record };
+    }
+    const existing = readLock(lockPath);
+    if (!existing || existing.holderToken !== token) {
+      return { ok: false, outcome: existing ? "token_mismatch" : "not_held_or_invalid", lock: lockPath };
+    }
+    if (command === "release") {
+      fs.unlinkSync(lockPath);
+      return { ok: true, outcome: "released", lock: lockPath };
+    }
     const next = { ...existing, startedAt: new Date().toISOString() };
-    fs.writeFileSync(lockPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
-    emit({ ok: true, outcome: "refreshed", lock: lockPath, ...next });
-    return 0;
+    // Guard excludes release/acquire during validation + replacement. An interrupted
+    // write leaves the guard in place; nobody interprets the partial write as free.
+    fs.writeFileSync(lockPath, `${JSON.stringify(next, null, 2)}\n`);
+    return { ok: true, outcome: "refreshed", lock: lockPath, ...next };
   });
-}
-
-function release(lockPath, token) {
-  return mutateOwned(lockPath, token, existing => {
-    fs.rmSync(lockPath, { force: true });
-    emit({ ok: true, outcome: "released", lock: lockPath, releasedFrom: existing });
-    return 0;
-  });
-}
-
-function status(lockPath, ttlMs) {
-  const existing = readLock(lockPath);
-  emit({
-    ok: true,
-    outcome: existing ? "held" : "free",
-    lock: lockPath,
-    holder: existing ?? null,
-    stale: existing ? lockIsStale(existing, ttlMs) : false
-  });
-  return 0;
 }
 
 function main(argv) {
-  const { command, values } = parseArgs(argv);
-  if (!command || command === "help" || command === "--help") usage(command ? 0 : 1);
-  const lockPath = path.resolve(values.lock ?? DEFAULT_LOCK);
-  const ttlMinutes = values["ttl-minutes"] === undefined ? DEFAULT_TTL_MINUTES : Number(values["ttl-minutes"]);
-  if (!Number.isFinite(ttlMinutes) || ttlMinutes <= 0) fail("--ttl-minutes must be a positive number");
-  const ttlMs = ttlMinutes * 60 * 1000;
-
-  if (command === "acquire") return acquire(lockPath, ttlMs, values["session-ref"]);
-  if (command === "refresh") return refresh(lockPath, requireToken(values));
-  if (command === "release") return release(lockPath, requireToken(values));
-  if (command === "status") return status(lockPath, ttlMs);
-  usage(1);
-  return 2;
+  const [command, ...rest] = argv;
+  if (!["acquire", "refresh", "release", "status"].includes(command)) throw new Error(
+    "Usage: noos-watch-lock.mjs acquire|refresh|release|status [--lock-file <absolute-path>] [--token <token>] [--ttl-minutes N] [--session-ref <ref>]");
+  const values = {};
+  for (let i = 0; i < rest.length; i += 2) {
+    const flag = rest[i];
+    if (!["--lock-file", "--lock", "--token", "--ttl-minutes", "--session-ref"].includes(flag)
+      || !rest[i + 1] || rest[i + 1].startsWith("--") || values[flag] !== undefined) throw new Error(`Invalid flag: ${flag}`);
+    values[flag] = rest[i + 1];
+  }
+  if (values["--lock-file"] && !path.isAbsolute(values["--lock-file"])) throw new Error("--lock-file must be absolute");
+  if (values["--lock-file"] && values["--lock"]) throw new Error("Use only --lock-file (or legacy --lock)");
+  const lockPath = canonicalPath(values["--lock-file"] ?? values["--lock"] ?? defaultLockPath());
+  const ttlMinutes = Number(values["--ttl-minutes"] ?? 10);
+  if (!Number.isFinite(ttlMinutes) || ttlMinutes <= 0) throw new Error("--ttl-minutes must be positive");
+  if (["refresh", "release"].includes(command) && !values["--token"]?.trim()) throw new Error("--token is required");
+  const result = operate(command, lockPath, { token: values["--token"], ttlMinutes, sessionRef: values["--session-ref"] });
+  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  return result.ok ? 0 : 1;
 }
 
-process.exit(main(process.argv.slice(2)));
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  try { process.exitCode = main(process.argv.slice(2)); } catch (error) {
+    process.stderr.write(`${error.message}\n`);
+    process.exitCode = 2;
+  }
+}
