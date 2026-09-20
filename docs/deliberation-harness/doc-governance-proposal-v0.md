@@ -9,7 +9,7 @@
 > 任务 issue：`noos-shuttle#76`。参考模型：中鱼升级项目 Notion 文档治理（经人类指定）。
 > **本提案不改变任何既有文档的内容与结构**；它提议的是一套规则，落地另行切片。
 >
-> 修订记录：**附录 C**（十轮独立复审，按轮次逐条处置）＋ **附录 D**（designer 裁定与逐条处置）。
+> 修订记录：**附录 C**（独立复审逐轮处置）＋ **附录 D**（designer 裁定与逐条处置）。
 >
 > > 自指检验（§8.4）：本文件按自身规则携带 `Authority-Level: Candidate` + `Owns: DocGovernance`。
 > > **该字段目前仍是唯一一处以「本提案的规则」书写的权威声明**——其余既有文档尚未加头（Non-retroactive）。
@@ -351,7 +351,8 @@ tombstone **不是第五个 Authority-Level，也不是第二个权威轴**。�
 > 「Do not claim or enforce "implementation PR must cite a D-number" as repository policy until the canonical
 > workflow specification explicitly adopts it. … `noos-shuttle` must not manufacture a second merge policy.」
 
-**在规范侧落地前，责任人按约定确定**：由**执行该裁定的实现方**在其实施 PR 中固化；
+**在规范侧落地前，责任人按约定确定**：由**执行该裁定的实现方**自愿在其 PR 中完成 **Leg A 记录**
+（这是归档责任，**不是合并门禁**——门禁那一条已 DEFER）；
 若无人执行该裁定（`#57`/`#58` 正是此形态），则由 **watcher 上报**（其「未分类必上报」已覆盖 designer 原生裁定），
 由人类或 orchestrator 决定是否立任务。**上报不等于归档，但至少不再静默。**
 
@@ -858,7 +859,7 @@ cea4071 §8 逐字转录的确实是 `5717432171`、后两条为「被指向」�
 ### 裁定接受的部分
 
 权威声明头 + `Owns:`（窄）、一概念一语义源（不变量）、Router（索引而非第二 Current）、
-裁决登记（**作为 provenance 投影而非替代权威**）、两条腿写入路径（**Leg A 记录、Leg B 改变阅读路径**）、
+裁决登记（**部分接受**：作为 provenance 投影而非替代权威）、两条腿写入路径（**Leg A 记录、Leg B 改变阅读路径**）、
 晋升/退休须显式授权、**三条机械卫生作为「作者检查」而非治理概念**。
 
 ### 裁定推翻或收紧的部分（本版已改）
