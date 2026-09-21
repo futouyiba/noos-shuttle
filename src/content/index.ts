@@ -33,8 +33,9 @@ import {
 import { ClipboardAdapter } from "../storage/ClipboardAdapter";
 import { DownloadAdapter } from "../storage/DownloadAdapter";
 import { NoosVaultAdapter } from "../storage/NoosVaultAdapter";
-import { attachMarkdownFilesToChatInput, getChatComposer, getPageText, insertIntoChatInput, isChatComposerEmpty, isChatbotGenerating, submitChatInput } from "./chatgpt-dom";
+import { attachMarkdownFilesToChatInput, getPageText, insertIntoChatInput, isChatComposerEmpty, isChatbotGenerating } from "./chatgpt-dom";
 import { handleBackgroundDispatch } from "./background-dispatch";
+import { actuateGovernedPayload } from "./governed-dispatch";
 import { captureChatGptTranscriptWithScroll, captureRenderedChatGptTranscript } from "./chatgpt-transcript";
 import { RuntimeObservationLedger, type CarrierObservation } from "./runtime-observer";
 import { createOutboxClient, observationForGate, type OutboxClient } from "./outbox-client";
@@ -1666,6 +1667,21 @@ async function dispatchHumanGo(payload: string, context: PageContext, workItemId
   }
   if (!observation || observation.state !== "READY" || !observation.providerConversationRef ||
     observation.carrierIdentityState !== "browser-tab") return false;
+  // Issue #106: the Human's unsent draft outranks a generated payload, and it
+  // has to be decided *here*, before anything is claimed. Refusing after the
+  // claim would park the transport as `UNCERTAIN`, which nothing in the ledger
+  // can resolve — no dispatch receipt is ever written, and `FAILED_SAFE` cannot
+  // be recorded directly — so the Run would wedge instead of yielding (the trap
+  // issue #98 documented on the listener lanes). Nothing is claimed on this
+  // path, so the refusal costs nothing to unwind and the next GO simply tries
+  // again. Reaching here without a Human action is normal: `autoAdvanceRound`
+  // (AUTO_X5) drives this function too.
+  if (!isChatComposerEmpty()) {
+    viewState.message = COPY[viewState.locale].outboxWaitComposerNotEmpty;
+    options.onResult?.("BLOCKED");
+    renderApp();
+    return false;
+  }
   const now = Date.now();
   const baseline: SubmissionBaseline = {
     conversationRef: observation.providerConversationRef,
@@ -1687,14 +1703,15 @@ async function dispatchHumanGo(payload: string, context: PageContext, workItemId
         return toHumanGoCarrierSnapshot(current);
       },
       dispatch: async (dispatchPayload, fence) => {
-        const current = observeRuntimePage(getPageContext());
-        const composer = getChatComposer();
-        if (!composer || !isCurrentSubmissionObservation(current, observation, fence)) {
-          throw new Error("chatgpt_composer_unavailable");
-        }
-        if (!insertIntoChatInput(dispatchPayload, composer) || !(await submitChatInput(composer))) {
-          throw new Error("chatgpt_composer_unavailable");
-        }
+        // A fresh *reading*, never a full observer tick (issues #104, #106): a
+        // tick would fire `probeOutbox`/`probeGoalReanchor`/`probeChildDelivery`
+        // from inside this actuation, so a second writer would reach the same
+        // composer while this one is still mid-insert. Same reasoning that gave
+        // the outbox probe its own `readLiveCarrier` (issue #102).
+        await actuateGovernedPayload(dispatchPayload, {
+          readCurrent: () => readRuntimeObservation(getPageContext()),
+          isFenceCurrent: current => isCurrentSubmissionObservation(current, observation, fence)
+        });
       }
     }
   );
