@@ -62,6 +62,17 @@ jobs:
           if [ "$failed" != "0" ]; then exit 1; fi
           echo "content.js and service-worker.js import no sibling chunks."
 
+      # The smoke suite drives the built content script inside a real Chromium
+      # against an in-page mock ChatGPT: a local fixture with a stubbed chrome
+      # API, no provider, no Hub, no network. Pin the browser rather than using
+      # the runner image's Chrome so the Playwright version and the browser
+      # version move together.
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium
+
+      - name: Test content script smoke in a browser
+        run: npm test -- tests/content-ui-smoke.test.ts
+
       - name: Install Hub dependencies
         run: npm --prefix apps/noos-hub ci
 
@@ -76,3 +87,55 @@ jobs:
 
       - name: Test LLM Wiki (mocked)
         run: npm run wiki:test
+
+  # Separate job on purpose: the Rust crates take minutes to compile and need a
+  # Linux Tauri toolchain, so they must not sit in the required `Verify` job's
+  # critical path. Nothing here touches a provider, a real LLM, or a live Hub —
+  # these are pure unit tests over local state.
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      # Mirror of the deps the vendored LLM Wiki workflow installs
+      # (apps/llm-wiki/.github/workflows/ci.yml): webkit2gtk/gtk for Tauri,
+      # protobuf-compiler for lance/lancedb's build scripts.
+      - name: Install Linux Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf protobuf-compiler
+
+      - name: Install root dependencies
+        run: npm ci
+
+      # `tauri-build` refuses the Hub crate while `resources/noos-shuttle-extension`
+      # is missing, so the extension has to be built and copied into the crate
+      # before a single Hub test can compile. This is the same preparation the Hub
+      # bundle script performs.
+      - name: Build the extension bundle the Hub crate embeds
+        run: npm run hub:prepare-extension
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            apps/noos-hub/src-tauri
+            apps/llm-wiki/src-tauri
+
+      - name: Report the Rust toolchain
+        run: cargo --version
+
+      - name: Test Hub (Rust)
+        run: cargo test --manifest-path apps/noos-hub/src-tauri/Cargo.toml
+
+      - name: Test LLM Wiki (Rust)
+        run: cargo test --manifest-path apps/llm-wiki/src-tauri/Cargo.toml
