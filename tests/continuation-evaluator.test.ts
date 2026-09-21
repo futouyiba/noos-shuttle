@@ -1,14 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   BCR_EVALUATOR_ALLOWED_HOST,
+  BCR_MIN_EVALUATOR_EXCERPT_CHARS,
   buildEvaluatorMessages,
   evaluateContinuation,
+  isEvaluatorExcerptUsable,
   mapStopReason,
   normalizeEvaluatorConfig,
   stopVetoHit,
   type ContinuationEvaluatorConfig
 } from "../src/core/continuation-evaluator";
-import type { ContinuationAssessment } from "../src/core/continuation-eligibility";
+import { decideContinuation, type ContinuationAssessment } from "../src/core/continuation-eligibility";
 
 const config: ContinuationEvaluatorConfig = { baseUrl: `https://${BCR_EVALUATOR_ALLOWED_HOST}`, apiKey: "sk-test", model: "deepseek-chat" };
 
@@ -56,6 +58,26 @@ describe("stopVetoHit", () => {
   });
 });
 
+describe("isEvaluatorExcerptUsable", () => {
+  it("refuses an excerpt with no material to judge", () => {
+    // The observed degenerate reads: an unrendered node, or a near-empty one.
+    for (const excerpt of [undefined, "", "  \n ", "OK", "Done.", "已经完成"]) {
+      expect(isEvaluatorExcerptUsable(excerpt), JSON.stringify(excerpt)).toBe(false);
+    }
+  });
+
+  it("accepts a normal turn and ignores surrounding whitespace", () => {
+    expect(isEvaluatorExcerptUsable("x".repeat(BCR_MIN_EVALUATOR_EXCERPT_CHARS))).toBe(true);
+    expect(isEvaluatorExcerptUsable(`\n\n${"x".repeat(BCR_MIN_EVALUATOR_EXCERPT_CHARS - 1)}\n`)).toBe(false);
+    expect(isEvaluatorExcerptUsable(`  ${"x".repeat(BCR_MIN_EVALUATOR_EXCERPT_CHARS)}  `)).toBe(true);
+  });
+
+  it("keeps the threshold above the observed degenerate reads and below the veto window", () => {
+    expect(BCR_MIN_EVALUATOR_EXCERPT_CHARS).toBeGreaterThan(19);
+    expect(BCR_MIN_EVALUATOR_EXCERPT_CHARS).toBeLessThanOrEqual(400);
+  });
+});
+
 describe("mapStopReason", () => {
   it("maps every stop-relevant field faithfully", () => {
     expect(mapStopReason(assessment({ goal_status: "SATISFIED" }))).toBe("GOAL_SATISFIED");
@@ -66,8 +88,36 @@ describe("mapStopReason", () => {
     expect(mapStopReason(assessment({ dependency: "NEEDS_EVIDENCE" }))).toBe("WAIT_EVIDENCE");
     expect(mapStopReason(assessment({ dependency: "NEEDS_EXTERNAL" }))).toBe("WAIT_EXTERNAL");
     expect(mapStopReason(assessment({ focus_status: "STALLED_SUSPECTED" }))).toBe("STALLED");
-    expect(mapStopReason(assessment({ confidence: "MEDIUM" }))).toBe("WAIT_HUMAN");
-    expect(mapStopReason(assessment({ goal_status: "UNCERTAIN" }))).toBe("WAIT_HUMAN");
+  });
+
+  // The reported reason must name the term that actually blocked the gate, so a
+  // confidence-blocked stop no longer reads as "the model asked for a Human".
+  it("names the blocking gate term instead of folding it into WAIT_HUMAN", () => {
+    expect(mapStopReason(assessment({ confidence: "LOW" }))).toBe("CONFIDENCE_TOO_LOW");
+    expect(mapStopReason(assessment({ goal_status: "UNCERTAIN" }))).toBe("ASSESSMENT_UNCERTAIN");
+    expect(mapStopReason(assessment({ scope_relation: "UNCERTAIN" }))).toBe("ASSESSMENT_UNCERTAIN");
+    expect(mapStopReason(assessment({ dependency: "UNCERTAIN" }))).toBe("ASSESSMENT_UNCERTAIN");
+    expect(mapStopReason(assessment({ focus_status: "UNCERTAIN" }))).toBe("ASSESSMENT_UNCERTAIN");
+    expect(mapStopReason(assessment({ focus_status: "BLOCKED" }))).toBe("FOCUS_NOT_ADVANCING");
+    expect(mapStopReason(assessment({ focus_status: "SATISFIED" }))).toBe("FOCUS_NOT_ADVANCING");
+  });
+
+  // issue #85 (ACCEPT 2026-09-21) widened the gate from HIGH alone to HIGH | MEDIUM.
+  // The reason is therefore named for "below what the gate accepts", not for HIGH:
+  // a fully green MEDIUM reading is authorized and never reaches the mapping, and
+  // pinning both halves here keeps the vocabulary honest if the gate moves again.
+  it("keeps the confidence reason tied to the levels the gate accepts", () => {
+    expect(decideContinuation(assessment({ confidence: "HIGH" }))).toBe("WOULD_CONTINUE");
+    expect(decideContinuation(assessment({ confidence: "MEDIUM" }))).toBe("WOULD_CONTINUE");
+    expect(decideContinuation(assessment({ confidence: "LOW" }))).toBe("WOULD_STOP");
+    expect(mapStopReason(assessment({ confidence: "LOW" }))).toBe("CONFIDENCE_TOO_LOW");
+  });
+
+  it("keeps the named conditions ahead of the generic ones", () => {
+    // Two terms can block at once; the vocabulary's own named condition wins.
+    expect(mapStopReason(assessment({ goal_status: "SATISFIED", confidence: "LOW" }))).toBe("GOAL_SATISFIED");
+    expect(mapStopReason(assessment({ dependency: "NEEDS_REVIEW", confidence: "LOW" }))).toBe("WAIT_REVIEW");
+    expect(mapStopReason(assessment({ scope_relation: "OUT_OF_SCOPE", focus_status: "BLOCKED" }))).toBe("SCOPE_DRIFT");
   });
 });
 
@@ -115,11 +165,20 @@ describe("evaluateContinuation", () => {
     expect(verdict.decision).toBe("WOULD_CONTINUE");
   });
 
+  // LOW is the one confidence level the gate still rejects: issue #85 widened the
+  // accepted set to HIGH | MEDIUM, and the MEDIUM-continues case is pinned below.
   it("stops on low confidence even when every other field looks continuable", async () => {
     const fetchImpl = vi.fn(async () => chatResponse(JSON.stringify(assessment({ confidence: "LOW" }))));
     const verdict = await evaluateContinuation({ goal: "g", scope: "s", assistantTurnExcerpt: "advanced" }, config, fetchImpl as unknown as typeof fetch);
     expect(verdict.decision).toBe("WOULD_STOP");
-    expect(verdict.stopReason).toBe("WAIT_HUMAN");
+    expect(verdict.stopReason).toBe("CONFIDENCE_TOO_LOW");
+  });
+
+  it("reports a model that declined to judge as its own reason, not as a Human wait", async () => {
+    const fetchImpl = vi.fn(async () => chatResponse(JSON.stringify(assessment({ goal_status: "UNCERTAIN", dependency: "UNCERTAIN" }))));
+    const verdict = await evaluateContinuation({ goal: "g", scope: "s", assistantTurnExcerpt: "advanced" }, config, fetchImpl as unknown as typeof fetch);
+    expect(verdict.decision).toBe("WOULD_STOP");
+    expect(verdict.stopReason).toBe("ASSESSMENT_UNCERTAIN");
   });
 
   it("lets the deterministic veto override an LLM continue", async () => {
@@ -128,6 +187,25 @@ describe("evaluateContinuation", () => {
     expect(verdict.decision).toBe("WOULD_STOP");
     expect(verdict.stopReason).toBe("WAIT_HUMAN");
     expect(verdict.vetoHit).toBe(true);
+  });
+
+  // The all-green assessment the veto flips is exactly the input that used to be
+  // indistinguishable from a model-authored stop once it reached the durable
+  // candidate pool: the verdict carries vetoHit, and the round record must keep it.
+  it("hands the veto flag to the caller alongside an all-green assessment", async () => {
+    const fetchImpl = vi.fn(async () => chatResponse(JSON.stringify(assessment())));
+    const verdict = await evaluateContinuation({ goal: "g", scope: "s", assistantTurnExcerpt: "推进完成。下一步你需要选择 A 还是 B。" }, config, fetchImpl as unknown as typeof fetch);
+    expect(verdict.assessment).toEqual(assessment());
+    expect(verdict.decision).toBe("WOULD_STOP");
+    expect(verdict.stopReason).toBe("WAIT_HUMAN");
+    expect(verdict.vetoHit).toBe(true);
+  });
+
+  it("leaves the veto flag unset when no veto evaluation ran", async () => {
+    const failing = vi.fn(async () => { throw new Error("network down"); });
+    const denied = await evaluateContinuation({ goal: "g", scope: "s", assistantTurnExcerpt: "x" }, config, failing as unknown as typeof fetch);
+    expect(denied.stopReason).toBe("EVALUATOR_UNAVAILABLE");
+    expect(denied.vetoHit).toBeUndefined();
   });
 
   it("fails closed on invalid JSON, HTTP errors, and transport failures", async () => {

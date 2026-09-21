@@ -34,6 +34,27 @@ const BCR_STOP_VETO_PATTERNS: readonly RegExp[] = [
 ];
 const VETO_TAIL_CHARS = 400;
 
+/**
+ * Minimum assistant-turn excerpt the evaluator may judge on. A near-empty node
+ * (one that has not rendered yet, or was read before the turn settled) carries
+ * no material: the model can only answer UNCERTAIN/LOW, and that "nothing to
+ * judge" report would then be displayed as if it were a stop the model had
+ * decided. Fail closed instead — do not call the evaluator at all.
+ *
+ * 200 chars: the observed degenerate excerpts were 2/3/6/19 chars, while a turn
+ * carrying a stated next step or a stop-boundary phrase is several sentences.
+ * It sits below the 400-char veto window (so a usable excerpt still fills it)
+ * and far above anything a single word or an unrendered node can produce. The
+ * cost of being too high is a fail-closed stop with an explicit reason; the
+ * cost of being too low is a fabricated stop reported as the model's judgment.
+ */
+export const BCR_MIN_EVALUATOR_EXCERPT_CHARS = 200;
+
+/** Whether there is enough of the completed assistant turn to evaluate at all. */
+export function isEvaluatorExcerptUsable(excerpt: string | undefined): boolean {
+  return typeof excerpt === "string" && excerpt.trim().length >= BCR_MIN_EVALUATOR_EXCERPT_CHARS;
+}
+
 export interface EvaluatorInput {
   /** Optional: when absent the built-in "continue its own stated next step" contract is the goal. */
   goal?: string;
@@ -76,6 +97,20 @@ export function stopVetoHit(assistantTurnExcerpt: string): boolean {
   return BCR_STOP_VETO_PATTERNS.some(pattern => pattern.test(tail));
 }
 
+/**
+ * The sentence for a stop, chosen by the term that actually blocked it.
+ *
+ * Named stop conditions come first, in the vocabulary's own order: an
+ * assessment that reports one of them is described by it. Everything the gate
+ * can still reject on is then reported as itself — the model's own uncertainty,
+ * a focus that is not advancing, or the model's certainty sitting below the level
+ * the gate accepts. The previous version collapsed all of those into WAIT_HUMAN,
+ * so a confidence-blocked continue and an explicit "ask the Human" were
+ * indistinguishable.
+ *
+ * Reporting only: the caller invokes this after `decideContinuation` has already
+ * decided to stop, so no value returned here can change a decision.
+ */
 export function mapStopReason(assessment: ContinuationAssessment): ContinuationStopReason {
   if (assessment.goal_status === "SATISFIED") return "GOAL_SATISFIED";
   if (assessment.scope_relation === "OUT_OF_SCOPE") return "SCOPE_DRIFT";
@@ -87,7 +122,15 @@ export function mapStopReason(assessment: ContinuationAssessment): ContinuationS
     case "NEEDS_EXTERNAL": return "WAIT_EXTERNAL";
   }
   if (assessment.focus_status === "STALLED_SUSPECTED") return "STALLED";
-  return "WAIT_HUMAN";
+  // No named condition above matched: describe the blocking gate term itself.
+  if (assessment.goal_status === "UNCERTAIN" || assessment.focus_status === "UNCERTAIN" ||
+    assessment.scope_relation === "UNCERTAIN" || assessment.dependency === "UNCERTAIN") return "ASSESSMENT_UNCERTAIN";
+  if (assessment.focus_status !== "OPEN_ADVANCING" && assessment.focus_status !== "REFINED") return "FOCUS_NOT_ADVANCING";
+  // Every other gate term is satisfied, so confidence is the one left. The gate
+  // accepts HIGH and MEDIUM (issue #85 widened it from HIGH alone), and the
+  // caller only maps a reason after the gate rejected the reading — so the value
+  // reached here is below the accepted level, whatever that level is.
+  return "CONFIDENCE_TOO_LOW";
 }
 
 export function buildEvaluatorMessages(input: EvaluatorInput): ReadonlyArray<{ role: "system" | "user"; content: string }> {
