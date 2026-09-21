@@ -131,10 +131,15 @@ describe("isChatbotGenerating", () => {
 
 /**
  * Narrowing the fallback is only safe while the exact-attribute pass stays
- * unguarded: a provider-reported stop control must be detected even where the
- * fallback's exclusions apply. Without these, removing a selector from
- * `GENERATION_ACTIVE_SELECTORS` would silently turn a real generation into a
+ * unguarded, so these pin the ways a later change could quietly reintroduce a
  * false negative.
+ *
+ * Placement matters more than the assertion: a fixture the fallback would
+ * catch anyway pins nothing. So the fixtures that pin a *selector* are
+ * turn-scoped, where only the exact pass can reach them — a composer-scoped
+ * `停止生成` fixture would pass even with that selector deleted. The
+ * `aria-expanded` fixture is composer-scoped on purpose; it pins a different
+ * property, that neither new guard is extended to the exact pass.
  */
 describe("isChatbotGenerating — the exact-attribute pass is deliberately unguarded", () => {
   it("detects an exact stop control that sits inside an assistant turn", () => {
@@ -168,6 +173,38 @@ describe("isChatbotGenerating — the exact-attribute pass is deliberately ungua
   it("detects an exact stop control that carries aria-expanded", () => {
     withDom(
       `<body>${COMPOSER}<button type="button" data-testid="stop-button" aria-expanded="false"></button>${COMPOSER_END}</body>`,
+      () => {
+        expect(isChatbotGenerating()).toBe(true);
+      }
+    );
+  });
+
+  it("detects a stop control whose only signal is the aria-label='停止生成' selector", () => {
+    // Turn-scoped so the fallback excludes it: without the selector this
+    // control is invisible to the module.
+    withDom(
+      `<body>
+        <section data-turn="assistant" data-testid="conversation-turn-6">
+          <button type="button" aria-label="停止生成"></button>
+        </section>
+        ${COMPOSER}${COMPOSER_END}
+      </body>`,
+      () => {
+        expect(isChatbotGenerating()).toBe(true);
+      }
+    );
+  });
+
+  it("detects a stop control identified in turn by the aria-label='停止' selector", () => {
+    // Same shape as above — the fallback excludes turn-scoped controls, so this
+    // can only be reached through the exact pass.
+    withDom(
+      `<body>
+        <section data-turn="assistant" data-testid="conversation-turn-6">
+          <button type="button" aria-label="停止"></button>
+        </section>
+        ${COMPOSER}${COMPOSER_END}
+      </body>`,
       () => {
         expect(isChatbotGenerating()).toBe(true);
       }
