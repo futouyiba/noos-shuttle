@@ -1740,9 +1740,16 @@ async function startBoundedRun(app: HTMLElement, budget: number): Promise<void> 
  * READY" for it pointed the Human at the wrong subsystem. The message is
  * cleared again by the observation loop once the carrier is READY, so a
  * one-shot failure report never becomes a standing banner.
+ *
+ * The ledger is sampled here, at the instant the copy is chosen, rather than
+ * from the observation the wait timed out on: a carrier that turned READY in
+ * the tick the deadline expired reads as READY, and is not reported as a
+ * fault. Only the copy moves with this sample — the wait has already decided
+ * the run will not start.
  */
 function registerStartGateFailure(app: HTMLElement): void {
-  viewState.message = bcrStartGateMessage(runtimeObservationLedger.value, COPY[viewState.locale]);
+  const latest = runtimeObservationLedger.value;
+  viewState.message = bcrStartGateMessage(latest, COPY[viewState.locale]);
   render(app);
 }
 
