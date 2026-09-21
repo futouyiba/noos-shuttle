@@ -35,6 +35,33 @@ jobs:
       - name: Test root
         run: npm test -- --exclude tests/content-ui-smoke.test.ts
 
+      - name: Build extension bundle
+        run: npm run build
+
+      # The root build has no gate of its own, and the MV3 two-entry constraint
+      # fails *silently*: rollup promotes any module both entries import into a
+      # shared chunk, the build stays green, and the extension then fails to load
+      # because an MV3 content script is a classic script and cannot import a
+      # sibling chunk. Assert the constraint instead of assuming it.
+      - name: Assert the extension bundle is self-contained
+        run: |
+          failed=0
+          for entry in content service-worker; do
+            file="dist/assets/$entry.js"
+            if [ ! -f "$file" ]; then
+              echo "::error::$file was not emitted by the build"
+              failed=1
+              continue
+            fi
+            siblings=$(grep -cE '(from|import)"\./' "$file") || true
+            if [ "$siblings" != "0" ]; then
+              echo "::error file=$file::$entry.js imports $siblings sibling module(s); an MV3 content script cannot load a shared chunk"
+              failed=1
+            fi
+          done
+          if [ "$failed" != "0" ]; then exit 1; fi
+          echo "content.js and service-worker.js import no sibling chunks."
+
       - name: Install Hub dependencies
         run: npm --prefix apps/noos-hub ci
 
