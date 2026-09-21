@@ -65,9 +65,17 @@ export function readChatComposerDraft(): string | null {
 
 /**
  * True only when a usable composer is present and carries no draft text.
- * Deliberately strict: whitespace-only content counts as a draft, and a
- * composer Shuttle itself wrote into on an earlier attempt is still "not
- * empty" — until an explicit cancel the safe reading is the strict one.
+ *
+ * "No draft text" means no non-whitespace content: `"   "` reads as **empty**,
+ * because there is nothing in it for the Human to lose. The rest of the reading
+ * is strict — an absent composer is not empty (there is nothing to write into),
+ * and a composer Shuttle itself wrote into on an earlier attempt still counts as
+ * "not empty" until an explicit cancel.
+ *
+ * An earlier version of this comment claimed the opposite for whitespace, that
+ * only the strict reading was safe. The behaviour has always been the above,
+ * three delivery paths depend on it, and issue #105 settled the disagreement in
+ * favour of the code rather than changing what four call sites observe.
  */
 export function isChatComposerEmpty(): boolean {
   const draft = readChatComposerDraft();

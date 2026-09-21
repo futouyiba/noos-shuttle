@@ -33,8 +33,9 @@ import {
 import { ClipboardAdapter } from "../storage/ClipboardAdapter";
 import { DownloadAdapter } from "../storage/DownloadAdapter";
 import { NoosVaultAdapter } from "../storage/NoosVaultAdapter";
-import { attachMarkdownFilesToChatInput, getChatComposer, getPageText, insertIntoChatInput, isChatComposerEmpty, isChatbotGenerating, submitChatInput } from "./chatgpt-dom";
+import { attachMarkdownFilesToChatInput, getPageText, insertIntoChatInput, isChatComposerEmpty, isChatbotGenerating } from "./chatgpt-dom";
 import { handleBackgroundDispatch } from "./background-dispatch";
+import { actuateGovernedPayload } from "./governed-dispatch";
 import { captureChatGptTranscriptWithScroll, captureRenderedChatGptTranscript } from "./chatgpt-transcript";
 import { RuntimeObservationLedger, type CarrierObservation } from "./runtime-observer";
 import { createOutboxClient, observationForGate, type OutboxClient } from "./outbox-client";
@@ -1666,6 +1667,21 @@ async function dispatchHumanGo(payload: string, context: PageContext, workItemId
   }
   if (!observation || observation.state !== "READY" || !observation.providerConversationRef ||
     observation.carrierIdentityState !== "browser-tab") return false;
+  // Issue #106: the Human's unsent draft outranks a generated payload, and it
+  // has to be decided *here*, before anything is claimed. Refusing after the
+  // claim would park the transport as `UNCERTAIN`, which nothing in the ledger
+  // can resolve — no dispatch receipt is ever written, and `FAILED_SAFE` cannot
+  // be recorded directly — so the Run would wedge instead of yielding (the trap
+  // issue #98 documented on the listener lanes). Nothing is claimed on this
+  // path, so the refusal costs nothing to unwind and the next GO simply tries
+  // again. Reaching here without a Human action is normal: `autoAdvanceRound`
+  // (AUTO_X5) drives this function too.
+  if (!isChatComposerEmpty()) {
+    viewState.message = COPY[viewState.locale].outboxWaitComposerNotEmpty;
+    options.onResult?.("BLOCKED");
+    renderApp();
+    return false;
+  }
   const now = Date.now();
   const baseline: SubmissionBaseline = {
     conversationRef: observation.providerConversationRef,
@@ -1687,14 +1703,15 @@ async function dispatchHumanGo(payload: string, context: PageContext, workItemId
         return toHumanGoCarrierSnapshot(current);
       },
       dispatch: async (dispatchPayload, fence) => {
-        const current = observeRuntimePage(getPageContext());
-        const composer = getChatComposer();
-        if (!composer || !isCurrentSubmissionObservation(current, observation, fence)) {
-          throw new Error("chatgpt_composer_unavailable");
-        }
-        if (!insertIntoChatInput(dispatchPayload, composer) || !(await submitChatInput(composer))) {
-          throw new Error("chatgpt_composer_unavailable");
-        }
+        // A fresh *reading*, never a full observer tick (issues #104, #106): a
+        // tick would fire `probeOutbox`/`probeGoalReanchor`/`probeChildDelivery`
+        // from inside this actuation, so a second writer would reach the same
+        // composer while this one is still mid-insert. Same reasoning that gave
+        // the outbox probe its own `readLiveCarrier` (issue #102).
+        await actuateGovernedPayload(dispatchPayload, {
+          readCurrent: () => readRuntimeObservation(getPageContext()),
+          isFenceCurrent: current => isCurrentSubmissionObservation(current, observation, fence)
+        });
       }
     }
   );
@@ -3485,13 +3502,29 @@ function checkPageContext(app: HTMLElement): void {
 }
 
 /**
- * Reads the page and advances the observation ledger. A *pure* read: no probes,
- * no render, no reconciliation.
+ * Reads the page and advances the observation ledger.
  *
- * Split out of `observeRuntimePage` because an actuation needs a fresh reading
- * at the instant it touches the provider, and must not re-enter the observer
- * loop's side effects from inside an actuation — `probeOutbox` in particular
- * would otherwise run while a dispatch is mid-flight (issue #99).
+ * This is **not** a pure read, and an earlier version of this comment was wrong
+ * to call it one (issue #105). It writes five pieces of shared state:
+ *
+ *   - the ledger, through `runtimeObservationLedger.observe(...)` below;
+ *   - the four module-level heartbeats — `observationRoute`,
+ *     `observationRouteSince`, `observationOutputFingerprint` and
+ *     `observationOutputChangedAt` — from the route / output-fingerprint
+ *     comparison at the top of the function.
+ *
+ * Those writes are the price of a reading that can be trusted at the instant of
+ * an actuation: the heartbeats are what `assistantOutputMutating` and
+ * `routeStable` are derived from, and advancing the ledger is what makes this
+ * the current reading rather than a snapshot of an older one. A caller that
+ * wants no side effects at all wants a different function.
+ *
+ * What it deliberately omits is the observer loop's *reacting* half: no probes,
+ * no render, no reconciliation. That split — not purity — is the point. An
+ * actuation needs a fresh reading as it touches the provider and must not
+ * re-enter the loop's side effects from inside an actuation, because
+ * `probeOutbox` would otherwise run while a dispatch is mid-flight and reach a
+ * second writer for the same composer (issues #99, #104).
  */
 function readRuntimeObservation(context: PageContext): CarrierObservation {
   const now = Date.now();
