@@ -65,16 +65,41 @@ integrator。完整条款见规范本体。
 
 ## 跨分支 / Worktree Intake
 
+本节管的是**尚未走过常规 PR 复审通道的改动**如何进入 main：他人的分支、
+worktree、本地 commit，或刚拉取的远端改动。触发条件是**被迁入对象的来源**，
+不是「合并」这个动作本身——这类改动还没有一个带独立 APPROVE、引用被审
+exact head 的 PR，才需要用 intake 报告代替那层复审。
+
+**不在本节射程内**：已经过独立 APPROVE、PR body 引用被审 exact head 的常规
+PR 合并——它走既有的 `merge PR#N` 通道，门禁与授权由规范本体与 `noos-merge`
+skill 规定。对这类 PR，**分支落后 main 本身不构成「必须窄迁移」的理由**。
+（本次只澄清**落地方式**这一条的射程；本节其余条目射程不变：hygiene 条在两条
+通道都适用，push 条的射程另案处理。）
+
 当用户要求审查、迁入、合并其他分支、worktree、commit 或刚拉取的远端改动时，先运行 review intake 获取只读报告，再决定落地方式，而不是直接 `git merge`。
 
 - 优先使用已安装的 `noos-review-intake` skill；未安装时运行
   `npm run review:intake -- --source <source> --base main`。
 - 审查报告里的 relation、source status、merge feasibility、risk flags、
   changed files 和 suggested checks，再决定落地方式。
-- source 落后 main 或不能 fast-forward 时，不要把整个分支 merge 进
-  main；优先对已审查的具体提交 cherry-pick 或手工迁移。
-- 如果 main/source dirty、包含 transfer-only handoff、生成物、签名材料
-  或无关 active handoff，先停止并说明，不要顺手带入。
+- **本节通道内（ad-hoc 迁入）**：source 落后 main 或不能 fast-forward 时，
+  不要把整个分支 merge 进 main；优先对已审查的具体提交 cherry-pick 或手工迁移。
+- **常规 PR 通道内**：分支落后 main 时，整支合并与窄迁移都是可选的落地方式，由
+  执行合并的 integrator 判断——本句只界分落地方式，不涉及谁有权合并，也不改变
+  合并授权。判据是**可判定条件**：测分支相对 merge-base 的净 delta，与 main 自
+  同一 merge-base 起的改动路径，**交集为空**时整支合并不会回退 main 侧已合并的
+  内容（git 三方合并以 merge-base 为共同祖先，两侧路径不相交即互不覆盖），可沿用
+  仓库现行 merge-commit 方式；**交集非空**时该条件不成立，须先实际核对合并结果
+  （无冲突，且未回退 main 侧改动）再合并，或改走窄迁移。
+- 偏好整支合并的理由：它保住 B.3 的三方 head 一致（reviewed head ＝ PR body 记录的
+  head ＝ 实际合并 head）；窄迁移会落到一个**没有任何 reviewer 审过的新 SHA**，只能
+  靠内容等价补链。故在交集为空时改用窄迁移，等于白丢锚点而不换取安全增量。据此
+  **建议**在 `INTEGRATED` 附一句本轮实测的 delta 与交集，便于事后复核——这是本节的
+  仓库层披露建议，不构成合并门，也不等同、不提前激活
+  `docs/deliberation-harness/agent-authority-and-halt-v0.md` §5 中 canonical 级的
+  「delegated auto-merge 须记录判为常规的依据」。
+- **两条通道都适用**：如果 main/source dirty、包含 transfer-only handoff、生成物、
+  签名材料或无关 active handoff，先停止并说明，不要顺手带入。
 - push 只在用户明确要求 push、publish、发布或更新远端时执行。
 - 该 intake 报告同时满足统一工作流规范 §1.3 的 review 证据要求
   （报告链接 + 被审 exact head）。
