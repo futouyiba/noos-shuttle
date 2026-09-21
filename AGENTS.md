@@ -70,9 +70,17 @@ worktree、本地 commit，或刚拉取的远端改动。触发条件是**被迁
 不是「合并」这个动作本身——这类改动还没有一个带独立 APPROVE、引用被审
 exact head 的 PR，才需要用 intake 报告代替那层复审。
 
-**不在本节射程内**：已经过独立 APPROVE、PR body 引用被审 exact head 的常规
-PR 合并——它走既有的 `merge PR#N` 通道，门禁与授权由规范本体与 `noos-merge`
-skill 规定。对这类 PR，**分支落后 main 本身不构成「必须窄迁移」的理由**。
+**不在本节射程内**：已经进入常规 PR review / integration 通道的合并——它走既有
+的 `merge PR#N` 通道（展开见 `.claude/skills/noos-merge`）。**source 分支落后
+main 这一事实本身，不构成把该 PR 强制降级为 ad-hoc cherry-pick / 手工迁移路径
+的理由。**
+
+> 本节**只界定上面这一条落地方式的射程**，**不定义「常规 PR」的完整合并资格**。
+> 合并所需的全部门禁（exact-head review、CI/status、blocking disposition、验收、
+> 合并授权，以及对实际 merge 结果的核验）由规范本体与该通道各 skill 规定；
+> **本节不新增、不替代、不放松其中任何一项**。若这些来源之间仍有矛盾，应另开
+> 一个有界的 policy reconciliation 任务，**不要**在 intake 段就地造一条新的合并门。
+
 （本次只澄清**落地方式**这一条的射程；本节其余条目射程不变：hygiene 条在两条
 通道都适用，push 条的射程另案处理。）
 
@@ -85,19 +93,19 @@ skill 规定。对这类 PR，**分支落后 main 本身不构成「必须窄迁
 - **本节通道内（ad-hoc 迁入）**：source 落后 main 或不能 fast-forward 时，
   不要把整个分支 merge 进 main；优先对已审查的具体提交 cherry-pick 或手工迁移。
 - **常规 PR 通道内**：分支落后 main 时，整支合并与窄迁移都是可选的落地方式，由
-  执行合并的 integrator 判断——本句只界分落地方式，不涉及谁有权合并，也不改变
-  合并授权。判据是**可判定条件**：测分支相对 merge-base 的净 delta，与 main 自
-  同一 merge-base 起的改动路径，**交集为空**时整支合并不会回退 main 侧已合并的
-  内容（git 三方合并以 merge-base 为共同祖先，两侧路径不相交即互不覆盖），可沿用
-  仓库现行 merge-commit 方式；**交集非空**时该条件不成立，须先实际核对合并结果
-  （无冲突，且未回退 main 侧改动）再合并，或改走窄迁移。
-- 偏好整支合并的理由：它保住 B.3 的三方 head 一致（reviewed head ＝ PR body 记录的
-  head ＝ 实际合并 head）；窄迁移会落到一个**没有任何 reviewer 审过的新 SHA**，只能
-  靠内容等价补链。故在交集为空时改用窄迁移，等于白丢锚点而不换取安全增量。据此
-  **建议**在 `INTEGRATED` 附一句本轮实测的 delta 与交集，便于事后复核——这是本节的
-  仓库层披露建议，不构成合并门，也不等同、不提前激活
-  `docs/deliberation-harness/agent-authority-and-halt-v0.md` §5 中 canonical 级的
-  「delegated auto-merge 须记录判为常规的依据」。
+  执行合并的 integrator 判断——本句只界分落地方式，**不涉及谁有权合并，也不改变
+  合并授权**，更不构成合并资格。
+- **路径交集检查是「证据 / 风险信号」，不是门**：比较分支相对 merge-base 的净
+  delta 与 main 自同一 merge-base 起的改动路径，**交集为空**是「整支合并不会回退
+  main 侧已合并内容」的一条**有利证据**（git 三方合并以 merge-base 为共同祖先，
+  两侧路径不相交即互不覆盖）。**它仅是证据**——**不构成合并资格判定，也不替代**
+  exact-head review、CI/status、blocking disposition、验收、合并授权，以及对实际
+  merge 结果与语义／权限耦合面的核验。**交集非空**同样是信号（提示存在语义耦合
+  面），须核对合并结果或改走窄迁移；**两者都不改变上列任何一道门禁**。
+- 之所以关注锚点：B.3 的三方 head 一致（reviewed head ＝ PR body 记录的 head ＝
+  实际合并 head）会被窄迁移削弱——窄迁移落到一个**没有任何 reviewer 审过的新
+  SHA**，只能靠内容等价补链。这是**落地方式的取舍材料，不是合并的依据**；两条
+  路径的实测读数（delta 与交集）可在 `INTEGRATED` 附记，属记录、不构成门。
 - **两条通道都适用**：如果 main/source dirty、包含 transfer-only handoff、生成物、
   签名材料或无关 active handoff，先停止并说明，不要顺手带入。
 - push 只在用户明确要求 push、publish、发布或更新远端时执行。
