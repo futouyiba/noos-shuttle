@@ -10,7 +10,7 @@ import {
   stopVetoHit,
   type ContinuationEvaluatorConfig
 } from "../src/core/continuation-evaluator";
-import type { ContinuationAssessment } from "../src/core/continuation-eligibility";
+import { decideContinuation, type ContinuationAssessment } from "../src/core/continuation-eligibility";
 
 const config: ContinuationEvaluatorConfig = { baseUrl: `https://${BCR_EVALUATOR_ALLOWED_HOST}`, apiKey: "sk-test", model: "deepseek-chat" };
 
@@ -90,17 +90,27 @@ describe("mapStopReason", () => {
     expect(mapStopReason(assessment({ focus_status: "STALLED_SUSPECTED" }))).toBe("STALLED");
   });
 
-  // The reported reason must name the term that actually blocked the gate, so
-  // a MEDIUM-confidence continue no longer reads as "the model asked for a Human".
+  // The reported reason must name the term that actually blocked the gate, so a
+  // confidence-blocked stop no longer reads as "the model asked for a Human".
   it("names the blocking gate term instead of folding it into WAIT_HUMAN", () => {
-    expect(mapStopReason(assessment({ confidence: "MEDIUM" }))).toBe("CONFIDENCE_BELOW_HIGH");
-    expect(mapStopReason(assessment({ confidence: "LOW" }))).toBe("CONFIDENCE_BELOW_HIGH");
+    expect(mapStopReason(assessment({ confidence: "LOW" }))).toBe("CONFIDENCE_TOO_LOW");
     expect(mapStopReason(assessment({ goal_status: "UNCERTAIN" }))).toBe("ASSESSMENT_UNCERTAIN");
     expect(mapStopReason(assessment({ scope_relation: "UNCERTAIN" }))).toBe("ASSESSMENT_UNCERTAIN");
     expect(mapStopReason(assessment({ dependency: "UNCERTAIN" }))).toBe("ASSESSMENT_UNCERTAIN");
     expect(mapStopReason(assessment({ focus_status: "UNCERTAIN" }))).toBe("ASSESSMENT_UNCERTAIN");
     expect(mapStopReason(assessment({ focus_status: "BLOCKED" }))).toBe("FOCUS_NOT_ADVANCING");
     expect(mapStopReason(assessment({ focus_status: "SATISFIED" }))).toBe("FOCUS_NOT_ADVANCING");
+  });
+
+  // issue #85 (ACCEPT 2026-09-21) widened the gate from HIGH alone to HIGH | MEDIUM.
+  // The reason is therefore named for "below what the gate accepts", not for HIGH:
+  // a fully green MEDIUM reading is authorized and never reaches the mapping, and
+  // pinning both halves here keeps the vocabulary honest if the gate moves again.
+  it("keeps the confidence reason tied to the levels the gate accepts", () => {
+    expect(decideContinuation(assessment({ confidence: "HIGH" }))).toBe("WOULD_CONTINUE");
+    expect(decideContinuation(assessment({ confidence: "MEDIUM" }))).toBe("WOULD_CONTINUE");
+    expect(decideContinuation(assessment({ confidence: "LOW" }))).toBe("WOULD_STOP");
+    expect(mapStopReason(assessment({ confidence: "LOW" }))).toBe("CONFIDENCE_TOO_LOW");
   });
 
   it("keeps the named conditions ahead of the generic ones", () => {
@@ -155,11 +165,13 @@ describe("evaluateContinuation", () => {
     expect(verdict.decision).toBe("WOULD_CONTINUE");
   });
 
+  // LOW is the one confidence level the gate still rejects: issue #85 widened the
+  // accepted set to HIGH | MEDIUM, and the MEDIUM-continues case is pinned below.
   it("stops on low confidence even when every other field looks continuable", async () => {
     const fetchImpl = vi.fn(async () => chatResponse(JSON.stringify(assessment({ confidence: "LOW" }))));
     const verdict = await evaluateContinuation({ goal: "g", scope: "s", assistantTurnExcerpt: "advanced" }, config, fetchImpl as unknown as typeof fetch);
     expect(verdict.decision).toBe("WOULD_STOP");
-    expect(verdict.stopReason).toBe("CONFIDENCE_BELOW_HIGH");
+    expect(verdict.stopReason).toBe("CONFIDENCE_TOO_LOW");
   });
 
   it("reports a model that declined to judge as its own reason, not as a Human wait", async () => {

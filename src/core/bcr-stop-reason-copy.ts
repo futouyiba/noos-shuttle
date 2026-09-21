@@ -35,7 +35,7 @@ const STOP_REASON_COPY_KEYS: Record<ContinuationStopReason, StopReasonCopyKey> =
   SCOPE_DRIFT: "bcrStopReasonScopeDrift",
   STALLED: "bcrStopReasonStalled",
   ASSESSMENT_UNCERTAIN: "bcrStopReasonAssessmentUncertain",
-  CONFIDENCE_BELOW_HIGH: "bcrStopReasonConfidenceBelowHigh",
+  CONFIDENCE_TOO_LOW: "bcrStopReasonConfidenceTooLow",
   FOCUS_NOT_ADVANCING: "bcrStopReasonFocusNotAdvancing",
   EXCERPT_UNAVAILABLE: "bcrStopReasonExcerptUnavailable",
   USER_CANCELLED: "bcrStopReasonUserCancelled",

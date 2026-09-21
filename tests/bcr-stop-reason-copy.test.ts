@@ -28,7 +28,7 @@ describe("bcrStopReasonLabel", () => {
 
   it("separates the three causes that used to all read as WAIT_HUMAN", () => {
     for (const copy of Object.values(COPY)) {
-      const [waited, uncertain, confidence, noExcerpt] = ["WAIT_HUMAN", "ASSESSMENT_UNCERTAIN", "CONFIDENCE_BELOW_HIGH", "EXCERPT_UNAVAILABLE"]
+      const [waited, uncertain, confidence, noExcerpt] = ["WAIT_HUMAN", "ASSESSMENT_UNCERTAIN", "CONFIDENCE_TOO_LOW", "EXCERPT_UNAVAILABLE"]
         .map(reason => bcrStopReasonLabel(reason, copy));
       expect(new Set([waited, uncertain, confidence, noExcerpt]).size).toBe(4);
     }

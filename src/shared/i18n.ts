@@ -55,7 +55,7 @@ export interface ShuttleCopy {
   bcrStopReasonScopeDrift: string;
   bcrStopReasonStalled: string;
   bcrStopReasonAssessmentUncertain: string;
-  bcrStopReasonConfidenceBelowHigh: string;
+  bcrStopReasonConfidenceTooLow: string;
   bcrStopReasonFocusNotAdvancing: string;
   bcrStopReasonExcerptUnavailable: string;
   bcrStopReasonUserCancelled: string;
@@ -281,7 +281,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     bcrStopReasonScopeDrift: "Scope drift",
     bcrStopReasonStalled: "Progress suspected stalled",
     bcrStopReasonAssessmentUncertain: "The evaluator reported uncertainty instead of a verdict",
-    bcrStopReasonConfidenceBelowHigh: "Evaluator confidence below HIGH",
+    bcrStopReasonConfidenceTooLow: "Evaluator confidence below the level the gate accepts",
     bcrStopReasonFocusNotAdvancing: "The current focus is not advancing",
     bcrStopReasonExcerptUnavailable: "No usable assistant turn text; the round was not evaluated",
     bcrStopReasonUserCancelled: "Stopped by you",
@@ -499,7 +499,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     bcrStopReasonScopeDrift: "范围漂移",
     bcrStopReasonStalled: "疑似停滞",
     bcrStopReasonAssessmentUncertain: "评估器自陈不确定，未给出判断",
-    bcrStopReasonConfidenceBelowHigh: "评估器置信度未达 HIGH",
+    bcrStopReasonConfidenceTooLow: "评估器置信度低于门接受的档位",
     bcrStopReasonFocusNotAdvancing: "当前焦点未在推进",
     bcrStopReasonExcerptUnavailable: "未取到可用的 assistant 正文，本轮未评估",
     bcrStopReasonUserCancelled: "你已停止",

@@ -103,9 +103,10 @@ export function stopVetoHit(assistantTurnExcerpt: string): boolean {
  * Named stop conditions come first, in the vocabulary's own order: an
  * assessment that reports one of them is described by it. Everything the gate
  * can still reject on is then reported as itself — the model's own uncertainty,
- * a focus that is not advancing, or a confidence below HIGH. The previous
- * version collapsed all of those into WAIT_HUMAN, so a MEDIUM-confidence
- * continue and an explicit "ask the Human" were indistinguishable.
+ * a focus that is not advancing, or the model's certainty sitting below the level
+ * the gate accepts. The previous version collapsed all of those into WAIT_HUMAN,
+ * so a confidence-blocked continue and an explicit "ask the Human" were
+ * indistinguishable.
  *
  * Reporting only: the caller invokes this after `decideContinuation` has already
  * decided to stop, so no value returned here can change a decision.
@@ -125,10 +126,11 @@ export function mapStopReason(assessment: ContinuationAssessment): ContinuationS
   if (assessment.goal_status === "UNCERTAIN" || assessment.focus_status === "UNCERTAIN" ||
     assessment.scope_relation === "UNCERTAIN" || assessment.dependency === "UNCERTAIN") return "ASSESSMENT_UNCERTAIN";
   if (assessment.focus_status !== "OPEN_ADVANCING" && assessment.focus_status !== "REFINED") return "FOCUS_NOT_ADVANCING";
-  // Every other gate term is now satisfied, so confidence is the one left below
-  // HIGH. Reached with a fully green assessment only if this is called outside
-  // the stop path, where it is never called.
-  return "CONFIDENCE_BELOW_HIGH";
+  // Every other gate term is satisfied, so confidence is the one left. The gate
+  // accepts HIGH and MEDIUM (issue #85 widened it from HIGH alone), and the
+  // caller only maps a reason after the gate rejected the reading — so the value
+  // reached here is below the accepted level, whatever that level is.
+  return "CONFIDENCE_TOO_LOW";
 }
 
 export function buildEvaluatorMessages(input: EvaluatorInput): ReadonlyArray<{ role: "system" | "user"; content: string }> {

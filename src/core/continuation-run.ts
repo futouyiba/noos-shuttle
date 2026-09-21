@@ -18,12 +18,14 @@ export type ContinuationStopReason =
   /**
    * The evaluator's remaining blocking terms, each reported as itself. They
    * used to collapse into WAIT_HUMAN, which made "the model asked for a Human",
-   * "the model reported MEDIUM confidence", "the model declined to judge", and
-   * "there was no text to judge" read identically. Splitting the reason is a
-   * reporting fix only: the gate that produces the stop is unchanged.
+   * "the model declined to judge", "the focus is not advancing", and "the model's
+   * own certainty was below the level the gate accepts" read identically.
+   * Splitting the reason is a reporting fix only: the gate that produces the
+   * stop is unchanged.
    */
   | "ASSESSMENT_UNCERTAIN"
-  | "CONFIDENCE_BELOW_HIGH"
+  /** Named for the level the gate requires, not for a fixed enum value: issue #85 widened the accepted confidence to HIGH | MEDIUM, so only LOW reaches this. */
+  | "CONFIDENCE_TOO_LOW"
   | "FOCUS_NOT_ADVANCING"
   /** No usable assistant-turn text to evaluate: the evaluator was never called and no verdict exists. */
   | "EXCERPT_UNAVAILABLE"
