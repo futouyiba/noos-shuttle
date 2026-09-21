@@ -19,7 +19,7 @@ import type {
   SubmissionBaseline,
   SubmissionOperation
 } from "../core/submission-operation";
-import { HumanGoRuntime, type HumanGoLedger } from "../core/human-go-runtime";
+import { HumanGoRuntime, type HumanGoCarrierSnapshot, type HumanGoLedger } from "../core/human-go-runtime";
 import type { CarrierObservation } from "./runtime-observer";
 import { getChatComposer, isChatComposerEmpty, insertIntoChatInput, submitChatInput } from "./chatgpt-dom";
 
@@ -54,9 +54,22 @@ export type OutboxDispatchResult =
   /** The reservation is not this outbox's to act on. */
   | { status: "NOT_RESERVED" };
 
-export interface OutboxDispatchDeps {
+export interface OutboxLedgerDeps {
   /** The carrier's own ledger instance. Supplied by the caller, never built here. */
   ledger: HumanGoLedger;
+}
+
+export interface OutboxDispatchDeps extends OutboxLedgerDeps {
+  /**
+   * A fresh reading of the page, taken at the instant it is called.
+   *
+   * Supplied by the content entry rather than reached for here: this module is
+   * deliberately free of the observer loop, and the read has to be the *same*
+   * authoritative read the observer uses rather than a private second cache —
+   * a second cache would answer "what did we last hear" while claiming to answer
+   * "what is true now", which is the whole defect (issue #99).
+   */
+  readLiveCarrier(): { observation: CarrierObservation; carrier: HumanGoCarrierSnapshot };
 }
 
 /**
@@ -85,7 +98,7 @@ const EXECUTION_OWNING = new Set<SubmissionOperation["state"]>(["DISPATCHING", "
  */
 export async function reconcileOutboxReservation(
   request: OutboxReconcileRequest,
-  deps: OutboxDispatchDeps
+  deps: OutboxLedgerDeps
 ): Promise<OutboxDispatchResult> {
   const operation = await deps.ledger.get(request.operationId);
   if (!operation) return { status: "NOT_RESERVED" };
@@ -163,25 +176,22 @@ export async function dispatchOutboxMessage(
   };
 
   const humanGo = new HumanGoRuntime(ledger, {
-    readCurrentCarrier: async () => {
-      // Re-read the live observation: a fence captured before the probe must not
-      // be trusted if the page moved underneath it.
-      const current = observation;
-      return {
-        logicalThreadId,
-        providerConversationRef: current.providerConversationRef ?? "",
-        bindingEpoch: current.sourceEpoch,
-        leaseGeneration: current.sourceEpoch,
-        leaseOwnerRef: current.executionInstanceRef,
-        targetCarrierRef: current.carrierRef,
-        carrierState: "READY" as const,
-        logicalControl: "CONTINUE" as const,
-        explicitGo: true,
-        sourceEpoch: current.sourceEpoch,
-        sourceObservedAt: current.observedAt
-      };
-    },
+    // Actually re-reads the page. The fence the probe captured is a claim about
+    // a moment that has already passed by the time anything is inserted, so the
+    // runtime asks again here and again at the insertion itself.
+    readCurrentCarrier: async () => deps.readLiveCarrier().carrier,
     dispatch: async payload => {
+      // The gap between the probe and this line is the async-submit window: a
+      // claim round-trip to the background sits inside it, and the page can
+      // navigate anywhere in that window. Everything below is judged against a
+      // reading taken *now*, never against the reading that got us here.
+      const live = deps.readLiveCarrier().observation;
+      if (!isLiveIdentityCurrent(live, context)) {
+        // Includes the cross-conversation case (issue #99): the probe read
+        // conversation A, the SPA moved to B, and B's composer is empty — so the
+        // composer check alone would have passed and delivered into B.
+        throw new Error("chatgpt_carrier_moved");
+      }
       const composer = getChatComposer();
       // Hard gate, re-checked at the composer itself: a draft that appeared
       // between the probe and this instant is never overwritten (#63 C2).
@@ -286,6 +296,24 @@ async function completeIfTurnFinished(
   if (evidence.lastUserMessageFingerprint !== undefined && evidence.lastUserMessageFingerprint !== acceptedFingerprint) return operation;
   const completed = await ledger.record(operation.operationId, "COMPLETED", { now: observation.observedAt });
   return completed?.state === "COMPLETED" ? completed : operation;
+}
+
+/**
+ * Is this reading still the carrier the claim was made against?
+ *
+ * Compares the four identities that together say "the same page, the same
+ * conversation, the same execution, the same epoch" — the fence's
+ * `bindingEpoch`/`leaseGeneration` are both derived from `sourceEpoch` at claim
+ * time, so epoch equality covers them. Mirrors `isCurrentSubmissionObservation`
+ * in the content entry, which guards the manual GO path the same way.
+ */
+function isLiveIdentityCurrent(live: CarrierObservation, claim: SubmissionClaimContext): boolean {
+  return live.carrierIdentityState === "browser-tab" &&
+    live.state === "READY" &&
+    live.providerConversationRef === claim.providerConversationRef &&
+    live.carrierRef === claim.targetCarrierRef &&
+    live.executionInstanceRef === claim.leaseOwnerRef &&
+    live.sourceEpoch === claim.sourceEpoch;
 }
 
 /** The claim context this observation licenses. Identity is never asserted here. */

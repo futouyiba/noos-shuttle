@@ -2171,6 +2171,12 @@ function createOutboxClientIfAvailable(): OutboxClient | null {
   if (!globalThis.chrome?.runtime?.sendMessage) return null;
   outboxClient = createOutboxClient({
     ledger: createContentSubmissionLedger(),
+    // The same authoritative read the observer loop uses, taken on demand. Not a
+    // cache: the point is that the actuation sees the page as it is *now*.
+    readLiveCarrier: () => {
+      const observation = readRuntimeObservation(getPageContext());
+      return { observation, carrier: toHumanGoCarrierSnapshot(observation) };
+    },
     sendMessage: <TResponse,>(message: Record<string, unknown>) =>
       sendExtensionMessage<Record<string, unknown>, TResponse>(message),
     readContext: observation => ({
@@ -3477,7 +3483,16 @@ function checkPageContext(app: HTMLElement): void {
   resetForConversationChange(app);
 }
 
-function observeRuntimePage(context: PageContext): CarrierObservation {
+/**
+ * Reads the page and advances the observation ledger. A *pure* read: no probes,
+ * no render, no reconciliation.
+ *
+ * Split out of `observeRuntimePage` because an actuation needs a fresh reading
+ * at the instant it touches the provider, and must not re-enter the observer
+ * loop's side effects from inside an actuation — `probeOutbox` in particular
+ * would otherwise run while a dispatch is mid-flight (issue #99).
+ */
+function readRuntimeObservation(context: PageContext): CarrierObservation {
   const now = Date.now();
   const route = `${context.origin}${context.pathname}`;
   // Output change is sampled from the tail only: mutation records are the
@@ -3525,6 +3540,15 @@ function observeRuntimePage(context: PageContext): CarrierObservation {
         /error|unable to load|not found|出错|无法加载|找不到/i.test(element.textContent ?? "")),
     routeStable: now - observationRouteSince >= 2_000
   });
+  return observation;
+}
+
+/**
+ * Read + notify: the observer loop's entry point. Everything here reacts to a
+ * reading; the reading itself is `readRuntimeObservation`.
+ */
+function observeRuntimePage(context: PageContext): CarrierObservation {
+  const observation = readRuntimeObservation(context);
   // A start-gate failure report describes the moment the Human clicked, not a
   // standing condition. Clear it here, on the observation that says the
   // carrier recovered, so the panel never keeps blaming a healthy carrier.
