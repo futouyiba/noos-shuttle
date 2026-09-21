@@ -48,6 +48,22 @@ function observation(overrides: Partial<CarrierObservation> = {}): CarrierObserv
   };
 }
 
+function carrierOf(observation: CarrierObservation) {
+  return {
+    logicalThreadId: "t1",
+    providerConversationRef: observation.providerConversationRef ?? "",
+    bindingEpoch: observation.sourceEpoch,
+    leaseGeneration: observation.sourceEpoch,
+    leaseOwnerRef: observation.executionInstanceRef,
+    targetCarrierRef: observation.carrierRef,
+    carrierState: "READY" as const,
+    logicalControl: "CONTINUE" as const,
+    explicitGo: true,
+    sourceEpoch: observation.sourceEpoch,
+    sourceObservedAt: observation.observedAt
+  };
+}
+
 function dispatchingQueue(): OutboxQueueState {
   const queued = reduceOutboxQueue(
     { revision: 0, sequence: 0, paused: false, items: [] },
@@ -110,6 +126,9 @@ function harness(status: { kind: string; itemId?: string; operationId?: string }
   };
   const client = createOutboxClient({
     ledger,
+    // The probe never actuates in these cases (every status here is a wait, a
+    // reconcile, or a block), so the live read is only here to satisfy the seam.
+    readLiveCarrier: () => ({ observation: observation(), carrier: carrierOf(observation()) }),
     sendMessage: async <TResponse,>() => ({ ok: true, status, queue }) as TResponse,
     readContext: observation => ({
       carrier: {
@@ -223,6 +242,7 @@ describe("outbox storage integration", () => {
     const queue = dispatchingQueue();
     let adopted: OutboxQueueState | undefined;
     const client = createOutboxClient({
+      readLiveCarrier: () => ({ observation: observation(), carrier: carrierOf(observation()) }),
       ledger: {
         initializeAuthority: async () => undefined,
         prepare: async () => { throw new Error("unused"); },

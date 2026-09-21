@@ -50,6 +50,12 @@ export type OutboxDispatchEvidence = {
 export interface OutboxClientDeps {
   /** The carrier's own submission ledger instance — the same one its Run uses. */
   ledger: HumanGoLedger;
+  /**
+   * A fresh reading of the page, taken when called. Passed straight through to
+   * the actuation, which re-reads at the insertion rather than trusting the
+   * probe's snapshot (issue #99).
+   */
+  readLiveCarrier(): { observation: CarrierObservation; carrier: HumanGoCarrierSnapshot };
   sendMessage<TResponse>(message: Record<string, unknown>): Promise<TResponse | undefined>;
   readContext(observation: CarrierObservation): OutboxCarrierContext;
   /** Active Run epoch on this conversation, if any. Attribution only. */
@@ -153,7 +159,10 @@ export function createOutboxClient(deps: OutboxClientDeps): OutboxClient {
         return;
       }
       if (response.status?.kind !== "DISPATCH" || !response.dispatch) return;
-      const result = await dispatchOutboxMessage({ ...response.dispatch, observation, evidence: context.evidence }, { ledger: deps.ledger });
+      const result = await dispatchOutboxMessage(
+        { ...response.dispatch, observation, evidence: context.evidence },
+        { ledger: deps.ledger, readLiveCarrier: deps.readLiveCarrier }
+      );
       report(result);
     } catch {
       // A restarting service worker leaves the durable reservation for the next
