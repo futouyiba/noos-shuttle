@@ -53,6 +53,31 @@ export interface ShuttleCopy {
   bcrRunActive: string;
   bcrDebugRun: string;
   bcrDebugTurn: string;
+  outboxSectionTitle: string;
+  outboxPlaceholder: string;
+  outboxEnqueue: string;
+  outboxPaused: string;
+  outboxResume: string;
+  outboxPause: string;
+  outboxEdit: string;
+  outboxSaveEdit: string;
+  outboxCancel: string;
+  outboxEmpty: string;
+  outboxStateQueued: string;
+  outboxStateWaiting: string;
+  outboxStateDispatching: string;
+  outboxStateDelivered: string;
+  outboxStateUncertain: string;
+  outboxStateBlocked: string;
+  outboxEditLocked: string;
+  outboxWaitConversationAbsent: string;
+  outboxWaitCarrierNotReady: string;
+  outboxWaitComposerNotEmpty: string;
+  outboxWaitSubmissionInFlight: string;
+  outboxWaitLeaseNotHeld: string;
+  outboxWaitAttemptFailed: string;
+  outboxUncertainNote: string;
+  outboxRewriteHint: string;
   autoAfterCollect: string;
   autoCopy: string;
   autoDownload: string;
@@ -259,6 +284,31 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     bcrRunActive: "A bounded run is active; stop it before manual GO.",
     bcrDebugRun: "run",
     bcrDebugTurn: "last turn",
+    outboxSectionTitle: "Message queue",
+    outboxPlaceholder: "Queue a message to send once the conversation is idle",
+    outboxEnqueue: "Add to queue",
+    outboxPaused: "Queue paused",
+    outboxResume: "Resume",
+    outboxPause: "Pause",
+    outboxEdit: "Edit",
+    outboxSaveEdit: "Save",
+    outboxCancel: "Cancel",
+    outboxEmpty: "Nothing queued.",
+    outboxStateQueued: "queued",
+    outboxStateWaiting: "waiting",
+    outboxStateDispatching: "sending…",
+    outboxStateDelivered: "sent",
+    outboxStateUncertain: "unresolved",
+    outboxStateBlocked: "review needed",
+    outboxEditLocked: "Already sending; cancel instead of editing.",
+    outboxWaitConversationAbsent: "waiting for this conversation",
+    outboxWaitCarrierNotReady: "waiting for the conversation to settle",
+    outboxWaitComposerNotEmpty: "waiting for an empty input box",
+    outboxWaitSubmissionInFlight: "waiting for the current send to finish",
+    outboxWaitLeaseNotHeld: "waiting for the authorized tab",
+    outboxWaitAttemptFailed: "not delivered; edit or cancel to continue",
+    outboxUncertainNote: "Unresolved: the queue is suspended. The delivery is not retried automatically.",
+    outboxRewriteHint: "Edit it to replace the message, or cancel it.",
     autoAfterCollect: "Auto after collect",
     autoCopy: "Auto Copy",
     autoDownload: "Auto Download",
@@ -457,6 +507,31 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     bcrRunActive: "有界 Run 进行中，请先停止再做手动 GO。",
     bcrDebugRun: "run",
     bcrDebugTurn: "最近轮次",
+    outboxSectionTitle: "消息队列",
+    outboxPlaceholder: "先排队，等对话空闲后再发送",
+    outboxEnqueue: "加入队列",
+    outboxPaused: "队列已暂停",
+    outboxResume: "恢复",
+    outboxPause: "暂停",
+    outboxEdit: "编辑",
+    outboxSaveEdit: "保存",
+    outboxCancel: "取消",
+    outboxEmpty: "队列为空。",
+    outboxStateQueued: "待发送",
+    outboxStateWaiting: "等待中",
+    outboxStateDispatching: "发送中…",
+    outboxStateDelivered: "已发送",
+    outboxStateUncertain: "未决",
+    outboxStateBlocked: "需人工处理",
+    outboxEditLocked: "已在发送中，不能编辑；如需放弃请取消。",
+    outboxWaitConversationAbsent: "等待该对话打开",
+    outboxWaitCarrierNotReady: "等待对话稳定",
+    outboxWaitComposerNotEmpty: "等待输入框清空",
+    outboxWaitSubmissionInFlight: "等待当前发送结束",
+    outboxWaitLeaseNotHeld: "等待已授权的标签页",
+    outboxWaitAttemptFailed: "未送达；请编辑或取消后再继续",
+    outboxUncertainNote: "未决：队列已挂起，不会自动重发。",
+    outboxRewriteHint: "可编辑替换该条内容，或直接取消。",
     autoAfterCollect: "拉取后自动",
     autoCopy: "自动复制",
     autoDownload: "自动下载",

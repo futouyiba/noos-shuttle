@@ -52,6 +52,28 @@ export function getChatComposer(): HTMLElement | null {
   return findChatInput();
 }
 
+/**
+ * The composer's current draft, without touching it. Issue #63 C2: a delivery
+ * must know whether the Human is mid-sentence *before* it decides to write, so
+ * this deliberately reads and never focuses, selects, or edits.
+ */
+export function readChatComposerDraft(): string | null {
+  const input = findChatInput();
+  if (!input) return null;
+  return input instanceof HTMLTextAreaElement ? input.value : input.textContent ?? "";
+}
+
+/**
+ * True only when a usable composer is present and carries no draft text.
+ * Deliberately strict: whitespace-only content counts as a draft, and a
+ * composer Shuttle itself wrote into on an earlier attempt is still "not
+ * empty" — until an explicit cancel the safe reading is the strict one.
+ */
+export function isChatComposerEmpty(): boolean {
+  const draft = readChatComposerDraft();
+  return draft !== null && draft.trim() === "";
+}
+
 export function insertIntoChatInput(text: string, expectedComposer?: HTMLElement): boolean {
   const input = expectedComposer ?? findChatInput();
   if (!input || !isUsableComposer(input) || (expectedComposer && findChatInput() !== expectedComposer)) {

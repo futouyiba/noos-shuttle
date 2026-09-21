@@ -1,5 +1,16 @@
 /** Durable transport-only SubmissionOperation ledger. Persist PREPARED before provider actuation. */
-export type SubmissionOperationKind = "GO" | "REANCHOR_GOAL" | "BOOTSTRAP" | "REVIEW_DISPATCH" | "SEDIMENT" | "DELIVER_CHILD_RESULT";
+/**
+ * `OUTBOX_MESSAGE` is a Human-authored message whose actuation time was
+ * delegated to Shuttle (issue #63). It is a specialization of this ledger, not
+ * a second actuation path: it prepares before it actuates, it claims exactly
+ * once, it receipts, it reconciles, and its acceptance is proven by the payload
+ * fingerprint appearing as the conversation's last user message — the same
+ * evidence `GO` requires, because exactly like `GO` its whole contract is "the
+ * bytes I handed the composer became the turn". It is deliberately NOT `GO`
+ * (which continues the assistant's own stated next step), NOT `SEDIMENT`, and
+ * NOT a focus request.
+ */
+export type SubmissionOperationKind = "GO" | "REANCHOR_GOAL" | "BOOTSTRAP" | "REVIEW_DISPATCH" | "SEDIMENT" | "DELIVER_CHILD_RESULT" | "OUTBOX_MESSAGE";
 export type SubmissionOperationState = "PREPARED" | "DISPATCHING" | "OBSERVED_ACCEPTED" | "COMPLETED" | "UNCERTAIN" | "FAILED_SAFE" | "CANCELLED";
 export interface SubmissionBaseline { conversationRef?: string; routeRef: string; assistantMessageCount: number; userMessageCount: number; lastUserMessageFingerprint?: string; lastAssistantMessageFingerprint?: string; headFingerprint?: string; observedAt: number; }
 export interface SubmissionObservation extends Omit<SubmissionBaseline, "observedAt"> {
@@ -17,7 +28,12 @@ export interface SubmissionDispatchReceipt {
   fence: SubmissionDispatchFence;
 }
 export interface SubmissionDispatchFence { providerConversationRef: string; bindingEpoch: number; leaseGeneration: number; leaseOwnerRef: string; targetCarrierRef: string; }
-export interface SubmissionOperation { operationId: string; operationKind: SubmissionOperationKind; workItemId: string; logicalThreadId: string; targetCarrierRef: string; providerConversationRef?: string; dispatchFence?: SubmissionDispatchFence; payloadFingerprint: string; payload?: string; parentEpoch?: number; preSubmitBaseline: SubmissionBaseline; state: SubmissionOperationState; createdAt: number; lastObservedAt: number; dispatchClaimedAt?: number; dispatchReceipt?: SubmissionDispatchReceipt; lastReconciliationEvidence?: SubmissionObservation; resultingTurnRef?: string; error?: string; /** Fingerprint of the user message that proved acceptance, stamped when reconciliation first establishes OBSERVED_ACCEPTED; survives later evidence overwrites. */ acceptedPayloadFingerprint?: string; }
+export interface SubmissionOperation { operationId: string; operationKind: SubmissionOperationKind; workItemId: string; logicalThreadId: string; targetCarrierRef: string; providerConversationRef?: string; dispatchFence?: SubmissionDispatchFence; payloadFingerprint: string; payload?: string; parentEpoch?: number; /**
+ * The Run epoch this operation was actuated on behalf of, when there is one.
+ * Attribution only: it lets a Run tell apart user turns Shuttle authored for
+ * *this* epoch from turns it did not author. It grants no execution authority
+ * and no operation is ever adopted through it.
+ */ runId?: string; preSubmitBaseline: SubmissionBaseline; state: SubmissionOperationState; createdAt: number; lastObservedAt: number; dispatchClaimedAt?: number; dispatchReceipt?: SubmissionDispatchReceipt; lastReconciliationEvidence?: SubmissionObservation; resultingTurnRef?: string; error?: string; /** Fingerprint of the user message that proved acceptance, stamped when reconciliation first establishes OBSERVED_ACCEPTED; survives later evidence overwrites. */ acceptedPayloadFingerprint?: string; }
 export interface SubmissionClaimContext extends SubmissionDispatchFence {
   logicalThreadId: string;
   carrierState: "READY";
@@ -98,6 +114,15 @@ export class SubmissionOperationLedger {
   private queue: Promise<void> = Promise.resolve();
   constructor(private readonly store: SubmissionOperationStore) {}
   async list(): Promise<SubmissionOperation[]> { const value = await this.store.get(SUBMISSION_OPERATIONS_KEY); const records = value && typeof value === "object" ? (value as Record<string, unknown>)[SUBMISSION_OPERATIONS_KEY] : undefined; return Array.isArray(records) ? records.filter(isSubmissionOperation).map(cloneOperation) : []; }
+  /**
+   * This thread's actuation authority, when something has initialized one.
+   * Read-only: callers use it to check *whether this carrier is the current
+   * holder* (e.g. the outbox gate), never to assert one.
+   */
+  async authorityFor(logicalThreadId: string): Promise<SubmissionAuthority | undefined> {
+    if (!this.store.getAuthority) return undefined;
+    return this.store.getAuthority(logicalThreadId);
+  }
   async get(operationId: string): Promise<SubmissionOperation | undefined> { return (await this.list()).find(item => item.operationId === operationId); }
   async prepare(input: Omit<SubmissionOperation, "operationId" | "state" | "createdAt" | "lastObservedAt"> & { operationId: string; now?: number }): Promise<SubmissionOperation> {
     if (!isStableOperationId(input.operationId)) throw new Error("operation_id_required");
@@ -118,7 +143,7 @@ export class SubmissionOperationLedger {
       if (!isSubmissionOperation(result)) throw new Error("submission_prepare_unavailable");
       return cloneOperation(result);
     }
-    return this.mutate(records => { const operationId = input.operationId; const existing = records.find(item => item.operationId === operationId); if (existing) { if (!sameOperationIdentity(existing, input)) throw new Error(`operation_id_reuse_conflict:${operationId}`); return { records, result: existing }; } const now = input.now ?? Date.now(); const operation: SubmissionOperation = { operationId, operationKind: input.operationKind, workItemId: input.workItemId, logicalThreadId: input.logicalThreadId, targetCarrierRef: input.targetCarrierRef, providerConversationRef: input.providerConversationRef, dispatchFence: input.dispatchFence, payloadFingerprint: input.payloadFingerprint, payload: input.payload, parentEpoch: input.parentEpoch, preSubmitBaseline: { ...input.preSubmitBaseline }, state: "PREPARED", createdAt: now, lastObservedAt: now }; return { records: [...records, operation], result: operation }; });
+    return this.mutate(records => { const operationId = input.operationId; const existing = records.find(item => item.operationId === operationId); if (existing) { if (!sameOperationIdentity(existing, input)) throw new Error(`operation_id_reuse_conflict:${operationId}`); return { records, result: existing }; } const now = input.now ?? Date.now(); const operation: SubmissionOperation = { operationId, operationKind: input.operationKind, workItemId: input.workItemId, logicalThreadId: input.logicalThreadId, targetCarrierRef: input.targetCarrierRef, providerConversationRef: input.providerConversationRef, dispatchFence: input.dispatchFence, payloadFingerprint: input.payloadFingerprint, payload: input.payload, parentEpoch: input.parentEpoch, runId: input.runId, preSubmitBaseline: { ...input.preSubmitBaseline }, state: "PREPARED", createdAt: now, lastObservedAt: now }; return { records: [...records, operation], result: operation }; });
   }
   /** Persisted claim; only the caller that changes PREPARED to DISPATCHING may actuate. */
   async claim(operationId: string, context: SubmissionClaimContext, now = Date.now()): Promise<SubmissionOperation | undefined> {
@@ -345,7 +370,7 @@ export class SubmissionOperationLedger {
       const sameConversation = typeof operation.providerConversationRef === "string" && typeof observation.conversationRef === "string" && operation.providerConversationRef === observation.conversationRef;
       const sameRoute = observation.routeRef === baseline.routeRef;
       const changed = fingerprintsChanged(observation, baseline);
-      const payloadMatched = operation.operationKind !== "GO" ||
+      const payloadMatched = !requiresPayloadAcceptance(operation.operationKind) ||
         observation.lastUserMessageFingerprint === operation.payloadFingerprint;
       const accepted = observation.generationActive !== undefined && sameConversation && sameRoute &&
         payloadMatched &&
@@ -556,6 +581,7 @@ export function isSubmissionOperation(value: unknown): value is SubmissionOperat
     (item.lastReconciliationEvidence === undefined || isObservationValue(item.lastReconciliationEvidence)) &&
     (item.resultingTurnRef === undefined || typeof item.resultingTurnRef === "string") &&
     (item.acceptedPayloadFingerprint === undefined || (typeof item.acceptedPayloadFingerprint === "string" && item.acceptedPayloadFingerprint.length > 0)) &&
+    (item.runId === undefined || (typeof item.runId === "string" && item.runId.length > 0)) &&
     (item.error === undefined || typeof item.error === "string");
 }
 function cloneOperation(operation: SubmissionOperation): SubmissionOperation { return { ...operation, preSubmitBaseline: { ...operation.preSubmitBaseline } }; }
@@ -607,7 +633,19 @@ function extractAuthorityMap(raw: unknown): SubmissionAuthorityMap {
   const value = raw && typeof raw === "object" ? (raw as Record<string, unknown>)[SUBMISSION_AUTHORITY_KEY] : undefined;
   return foldAuthorityMap(value);
 }
-function isSubmissionOperationKind(value: unknown): value is SubmissionOperationKind { return value === "GO" || value === "REANCHOR_GOAL" || value === "BOOTSTRAP" || value === "REVIEW_DISPATCH" || value === "SEDIMENT" || value === "DELIVER_CHILD_RESULT"; }
+function isSubmissionOperationKind(value: unknown): value is SubmissionOperationKind { return value === "GO" || value === "REANCHOR_GOAL" || value === "BOOTSTRAP" || value === "REVIEW_DISPATCH" || value === "SEDIMENT" || value === "DELIVER_CHILD_RESULT" || value === "OUTBOX_MESSAGE"; }
+/**
+ * Kinds whose whole meaning is "the exact bytes I handed the composer became
+ * the conversation's next user turn", so acceptance must match the payload
+ * fingerprint rather than any new turn. `GO`/`REANCHOR_GOAL` are governed
+ * continuations; `OUTBOX_MESSAGE` is a Human-authored message whose only proof
+ * is its own text appearing. A kind that is not listed here is delivered by
+ * content (e.g. `DELIVER_CHILD_RESULT`), which tightens the same check in its
+ * own runtime.
+ */
+function requiresPayloadAcceptance(kind: unknown): boolean {
+  return kind === "GO" || kind === "REANCHOR_GOAL" || kind === "OUTBOX_MESSAGE";
+}
 function isSubmissionOperationState(value: unknown): value is SubmissionOperationState { return value === "PREPARED" || value === "DISPATCHING" || value === "OBSERVED_ACCEPTED" || value === "COMPLETED" || value === "UNCERTAIN" || value === "FAILED_SAFE" || value === "CANCELLED"; }
 function isBaselineValue(value: unknown): value is SubmissionBaseline {
   if (!value || typeof value !== "object") return false;
@@ -639,9 +677,10 @@ function isPrepareInput(
     typeof input.payloadFingerprint === "string" && input.payloadFingerprint.length > 0 &&
     (input.payload === undefined || typeof input.payload === "string") &&
     (options.checkPayloadFingerprint === false ||
-      input.operationKind !== "GO" && input.payload === undefined ||
+      !requiresPayloadAcceptance(input.operationKind) && input.payload === undefined ||
       typeof input.payload === "string" && fingerprintSubmissionPayload(input.payload) === input.payloadFingerprint) &&
     (input.parentEpoch === undefined || (Number.isSafeInteger(input.parentEpoch) && input.parentEpoch >= 0)) &&
+    (input.runId === undefined || (typeof input.runId === "string" && input.runId.length > 0)) &&
     isBaselineValue(input.preSubmitBaseline) &&
     (input.now === undefined || (typeof input.now === "number" && Number.isSafeInteger(input.now) && input.now >= 0));
 }
@@ -685,6 +724,12 @@ function isDispatchFenceValue(value: unknown): value is SubmissionDispatchFence 
     typeof fence.leaseOwnerRef === "string" && fence.leaseOwnerRef.length > 0 &&
     typeof fence.targetCarrierRef === "string" && fence.targetCarrierRef.length > 0;
 }
+/**
+ * The identity a retry under the same operation id must reproduce. `runId` is
+ * deliberately excluded: it is additive attribution, not execution identity, so
+ * a retry that re-attaches the same payload must stay an idempotent no-op
+ * rather than mint an `operation_id_reuse_conflict`.
+ */
 function sameOperationIdentity(existing: SubmissionOperation, input: Omit<SubmissionOperation, "operationId" | "state" | "createdAt" | "lastObservedAt"> & { operationId: string; now?: number }): boolean {
   return existing.operationKind === input.operationKind &&
     existing.workItemId === input.workItemId &&
@@ -741,7 +786,7 @@ function isCompletionEvidence(operation: SubmissionOperation): boolean {
     evidence !== undefined &&
     evidence.generationActive === false &&
     isStableAfterClaim(evidence, operation.dispatchClaimedAt) &&
-    (!["GO", "REANCHOR_GOAL"].includes(operation.operationKind) || evidence.lastUserMessageFingerprint === operation.payloadFingerprint);
+    (!requiresPayloadAcceptance(operation.operationKind) || evidence.lastUserMessageFingerprint === operation.payloadFingerprint);
 }
 export function isValidClaimContext(context: SubmissionClaimContext): boolean {
   return context.explicitGo === true &&

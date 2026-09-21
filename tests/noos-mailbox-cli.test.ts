@@ -37,6 +37,9 @@ afterAll(() => {
   fs.rmSync(workDir, { recursive: true, force: true });
 });
 
+/** Several real CLI processes per test: the default 5s is not enough under parallel load. */
+const CLI_TEST_TIMEOUT_MS = 30_000;
+
 function runCli(args: string[]): { status: number | null; stdout: string; stderr: string } {
   const result = spawnSync(process.execPath, [scriptPath, ...args], {
     encoding: "utf8",
@@ -142,6 +145,9 @@ describe("cli mailbox flow with a fake gh", () => {
     ledger
   ];
 
+  // Spawns ~8 real CLI processes; the 5s default is not enough once the suite
+  // runs its files in parallel, and the failure mode is a timeout rather than a
+  // real regression.
   it("runs init/open dry, then discover and observe against fake gh comments", () => {
     const init = runCli(["init", "--ledger", ledger]);
     expect(init.status).toBe(0);
@@ -205,7 +211,7 @@ describe("cli mailbox flow with a fake gh", () => {
     const state = JSON.parse(shown.stdout);
     expect(state.resultObservations).toHaveLength(1);
     expect(state.resultObservations[0].resultId).toBe("res-cli-1");
-  });
+  }, CLI_TEST_TIMEOUT_MS);
 
   it("requires --escalation-id for open with a friendly error", () => {
     const withoutId = runCli(openArgs.filter((arg, index) => arg !== "--escalation-id" && openArgs[index - 1] !== "--escalation-id"));
@@ -335,5 +341,5 @@ describe("cli mailbox flow with a fake gh", () => {
     expect(discovered.status).toBe(0);
     expect(discovered.stdout).toContain("HOLD —");
     expect(discovered.stdout).not.toContain("SAME source operation");
-  });
+  }, CLI_TEST_TIMEOUT_MS);
 });

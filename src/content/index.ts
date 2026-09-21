@@ -6,7 +6,7 @@ import { captureNoosCrystals } from "../core/crystal-capture";
 import type { NoosThread } from "../core/noos-thread";
 import type { NoosCrystal } from "../core/noos-crystal";
 import { HumanGoRuntime, type HumanGoCarrierSnapshot, type HumanGoLedger } from "../core/human-go-runtime";
-import type { SubmissionOperation, SubmissionOperationMutation, SubmissionReconcileResult } from "../core/submission-operation";
+import type { SubmissionAuthority, SubmissionOperation, SubmissionOperationMutation, SubmissionReconcileResult } from "../core/submission-operation";
 // Types only: the content entry must not share a runtime module with the
 // service-worker entry, or Rollup emits a chunk that MV3 content scripts
 // (classic scripts) cannot import. Run logic stays background-side.
@@ -32,9 +32,16 @@ import {
 import { ClipboardAdapter } from "../storage/ClipboardAdapter";
 import { DownloadAdapter } from "../storage/DownloadAdapter";
 import { NoosVaultAdapter } from "../storage/NoosVaultAdapter";
-import { attachMarkdownFilesToChatInput, getChatComposer, getPageText, insertIntoChatInput, isChatbotGenerating, submitChatInput } from "./chatgpt-dom";
+import { attachMarkdownFilesToChatInput, getChatComposer, getPageText, insertIntoChatInput, isChatComposerEmpty, isChatbotGenerating, submitChatInput } from "./chatgpt-dom";
 import { captureChatGptTranscriptWithScroll, captureRenderedChatGptTranscript } from "./chatgpt-transcript";
 import { RuntimeObservationLedger, type CarrierObservation } from "./runtime-observer";
+import { createOutboxClient, observationForGate, type OutboxClient } from "./outbox-client";
+import { decideRunIntervention } from "../core/run-intervention";
+// Types only: the queue's runtime is reachable from the service-worker entry
+// too, so importing it as a value here would make the renderer promote it to a
+// chunk an MV3 classic content script cannot import. Every read goes through
+// the outbox client instead.
+import type { OutboxItem, OutboxQueueState } from "../core/outbox-queue";
 import { evaluateAuthorityLoss } from "./submission-authority-loss";
 import { isSubmissionFence, selectCompletedSubmissionToConverge } from "./submission-completion-convergence";
 import styles from "./styles.css?inline";
@@ -80,6 +87,8 @@ interface ViewState {
   open: boolean;
   surfaceOpen: boolean;
   settingsOpen: boolean;
+  /** Item whose payload is open in the pre-claim edit box, if any (#63 delta 2). */
+  outboxEditingItemId: string | null;
   state: ShuttleState;
   message: string;
   threads: NoosThread[];
@@ -253,6 +262,12 @@ let bcrLastDispatchPayload: DispatchedPayloadRecord | null = null;
 // A Stop pressed while the auto-advance lock is held (evaluator round-trip or
 // dispatch) must not be lost: it is consumed at the next auto-advance boundary.
 let bcrStopRequested = false;
+// Shuttle message queue (issue #63). The queue is a producer of its own: it
+// converges with the Run only at the SubmissionOperation actuation boundary, so
+// the Run architecture above is untouched by it.
+let outboxClient: OutboxClient | null = null;
+let outboxState: OutboxQueueState = { revision: 0, sequence: 0, paused: false, items: [] };
+let outboxProbeRequestedAt = -Infinity;
 let shuttleApp: HTMLElement | null = null;
 
 interface SubmissionDispatchFence {
@@ -276,6 +291,11 @@ interface SubmissionBaseline {
 
 interface PersistedSubmissionOperation {
   operationId: string;
+  /**
+   * Read from the ledger only to keep the generic recovery lane off the outbox's
+   * own reservations; this lane never dispatches by kind.
+   */
+  operationKind?: string;
   logicalThreadId?: string;
   state: "PREPARED" | "DISPATCHING" | "OBSERVED_ACCEPTED" | "COMPLETED" | "UNCERTAIN" | "FAILED_SAFE" | "CANCELLED";
   targetCarrierRef: string;
@@ -289,6 +309,7 @@ const viewState: ViewState = {
   open: false,
   surfaceOpen: false,
   settingsOpen: false,
+  outboxEditingItemId: null,
   state: "idle",
   message: COPY[getStoredLocale()].ready,
   threads: [],
@@ -348,6 +369,7 @@ function bootstrap(): void {
   render(app);
   installConversationWatcher(app);
   void refreshActiveRun();
+  void refreshOutboxQueue();
   void refreshBcrEvalConfig();
   installProjectImportBridge(app);
   void refreshVaultStatus(app);
@@ -551,6 +573,7 @@ function renderChatGptSurface(selectedThread: NoosThread | undefined, copy: (typ
     </div>
   </div>
   ${renderBcrSection(copy)}
+  ${renderOutboxSection(copy)}
   <div class="actions supporting-actions">
     <button type="button" data-action="generate">${copy.draftHandoff}</button>
     <button type="button" data-action="capture">${copy.collectHandoff}</button>
@@ -608,6 +631,91 @@ function renderBcrSection(copy: (typeof COPY)[ShuttleLocale]): string {
     <div class="bcr-budgets">${startButtons}</div>
     <div class="bcr-hint">${escapeHtml(bcrAutoConfigured ? copy.bcrAutoHint : copy.bcrLockedReason)}</div>
   </div>`;
+}
+
+/**
+ * The queue section (#63 delta 10). It is a view over the durable queue, and it
+ * is scrupulous about not over-claiming: an item reads "sent" only once the
+ * ledger proved the turn, and a waiting item names what it is waiting for
+ * rather than implying delivery is imminent.
+ */
+function renderOutboxSection(copy: (typeof COPY)[ShuttleLocale]): string {
+  const visible = outboxClient?.visibleItems() ?? outboxState.items.filter(item => item.state !== "CANCELLED");
+  const status = outboxClient?.status() ?? { kind: "IDLE" as const };
+  const uncertain = status.kind === "BLOCKED_UNCERTAIN";
+  const rows = visible.map(item => {
+    const editing = viewState.outboxEditingItemId === item.itemId;
+    const editable = canEditOutboxItem(item);
+    const waitingOn = status.kind === "WAIT" && status.itemId === item.itemId ? copy[outboxWaitKey(status.reason)] : "";
+    const label =
+      item.state === "DELIVERED" ? copy.outboxStateDelivered
+        : item.state === "DISPATCHING" ? copy.outboxStateDispatching
+          : item.state === "UNCERTAIN" ? copy.outboxStateUncertain
+            : item.state === "BLOCKED" ? copy.outboxStateBlocked
+              : waitingOn ? copy.outboxStateWaiting
+                : copy.outboxStateQueued;
+    return `<div class="outbox-item" data-outbox-state="${escapeAttribute(item.state)}" data-outbox-item="${escapeAttribute(item.itemId)}">
+      <div class="outbox-item-head">
+        <span class="outbox-item-state">${escapeHtml(label)}</span>
+        ${waitingOn ? `<span class="bcr-note">${escapeHtml(waitingOn)}</span>` : ""}
+        <span class="outbox-item-rev">r${item.revision}</span>
+      </div>
+      ${
+        editing
+          ? `<textarea class="outbox-edit-input" data-outbox-edit-input="${escapeAttribute(item.itemId)}">${escapeHtml(item.payload)}</textarea>
+             <div class="outbox-item-actions">
+               <button type="button" data-action="outbox-save-edit" data-outbox-id="${escapeAttribute(item.itemId)}">${escapeHtml(copy.outboxSaveEdit)}</button>
+               <button type="button" data-action="outbox-cancel-edit">${escapeHtml(copy.outboxCancel)}</button>
+             </div>`
+          : `<div class="outbox-item-body">${escapeHtml(outboxPreview(item.payload))}</div>
+             <div class="outbox-item-actions">
+               ${
+                 editable
+                   ? `<button type="button" data-action="outbox-edit" data-outbox-id="${escapeAttribute(item.itemId)}">${escapeHtml(copy.outboxEdit)}</button>
+                      <button type="button" data-action="outbox-cancel" data-outbox-id="${escapeAttribute(item.itemId)}">${escapeHtml(copy.outboxCancel)}</button>`
+                   : `<span class="bcr-note">${escapeHtml(copy.outboxEditLocked)}</span>`
+               }
+             </div>`
+      }
+    </div>`;
+  }).join("");
+  return `<div class="outbox-panel" data-outbox-status="${escapeAttribute(status.kind)}">
+    <div class="bcr-title">${escapeHtml(copy.outboxSectionTitle)}
+      <button type="button" data-action="outbox-toggle-pause">${escapeHtml(outboxState.paused ? copy.outboxResume : copy.outboxPause)}</button>
+      ${outboxState.paused ? `<span class="bcr-note">${escapeHtml(copy.outboxPaused)}</span>` : ""}
+    </div>
+    <textarea class="outbox-input" data-outbox-input="true" placeholder="${escapeAttribute(copy.outboxPlaceholder)}"></textarea>
+    <div class="outbox-item-actions">
+      <button class="primary-action" type="button" data-action="outbox-enqueue">${escapeHtml(copy.outboxEnqueue)}</button>
+    </div>
+    ${uncertain ? `<div class="outbox-warning">${escapeHtml(copy.outboxUncertainNote)} ${escapeHtml(copy.outboxRewriteHint)}</div>` : ""}
+    <div class="outbox-items">${rows || `<span class="bcr-note">${escapeHtml(copy.outboxEmpty)}</span>`}</div>
+  </div>`;
+}
+
+/** Mirrors the core predicate: only a pre-claim revision is editable at all. */
+function canEditOutboxItem(item: OutboxItem): boolean {
+  return item.state === "QUEUED" || item.state === "BLOCKED";
+}
+
+function outboxPreview(payload: string): string {
+  return payload.length > 120 ? `${payload.slice(0, 120)}…` : payload;
+}
+
+type OutboxWaitKey =
+  | "outboxWaitConversationAbsent" | "outboxWaitCarrierNotReady" | "outboxWaitComposerNotEmpty"
+  | "outboxWaitSubmissionInFlight" | "outboxWaitLeaseNotHeld" | "outboxWaitAttemptFailed";
+
+function outboxWaitKey(reason: string): OutboxWaitKey {
+  const keys: Record<string, OutboxWaitKey> = {
+    conversation_absent: "outboxWaitConversationAbsent",
+    carrier_not_ready: "outboxWaitCarrierNotReady",
+    composer_not_empty: "outboxWaitComposerNotEmpty",
+    submission_in_flight: "outboxWaitSubmissionInFlight",
+    lease_not_held: "outboxWaitLeaseNotHeld",
+    attempt_failed: "outboxWaitAttemptFailed"
+  };
+  return keys[reason] ?? "outboxWaitCarrierNotReady";
 }
 
 function renderFeishuSurface(copy: (typeof COPY)[ShuttleLocale]): string {
@@ -1371,11 +1479,15 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
     return;
   }
 
+  if (action.startsWith("outbox-")) {
+    await handleOutboxAction(action, app);
+    return;
+  }
+
   if (action === "generate-capture") {
     await generateAndCollect(app);
     return;
   }
-
   if (action === "generate-crystal") {
     await generateAndCollectCrystal(app);
     return;
@@ -1433,6 +1545,61 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
 
   if (action === "vault") {
     await deliverSelectedThread("vault", app);
+  }
+}
+
+/**
+ * Queue controls (#63 delta 10). Reordering, cancelling and editing are legal
+ * only while the item is still pre-claim; once a payload is under an operation
+ * fingerprint the only honest controls are "wait" and "cancel the unresolved
+ * item", so the surface offers exactly those.
+ */
+async function handleOutboxAction(action: string, app: HTMLElement): Promise<void> {
+  const client = createOutboxClientIfAvailable();
+  if (!client) return;
+  const observation = runtimeObservationLedger.value;
+  if (action === "outbox-enqueue") {
+    const input = app.querySelector<HTMLTextAreaElement>("[data-outbox-input='true']");
+    const payload = input?.value ?? "";
+    if (observation && payload.trim() !== "") await client.enqueue(payload, observation);
+    render(app);
+    return;
+  }
+  if (action === "outbox-toggle-pause") {
+    await client.setPaused(!outboxState.paused);
+    render(app);
+    return;
+  }
+  if (action === "outbox-edit") {
+    // The first pre-claim row's edit button is the only one the surface can
+    // offer at a time (every later row is behind it), so this is unambiguous.
+    const button = app.querySelector<HTMLElement>("[data-action='outbox-edit']:not([disabled])");
+    viewState.outboxEditingItemId = button?.dataset.outboxId ?? null;
+    render(app);
+    return;
+  }
+  if (action === "outbox-cancel-edit") {
+    viewState.outboxEditingItemId = null;
+    render(app);
+    return;
+  }
+  if (action === "outbox-save-edit") {
+    const button = app.querySelector<HTMLElement>("[data-action='outbox-save-edit']");
+    const itemId = button?.dataset.outboxId;
+    const item = outboxState.items.find(candidate => candidate.itemId === itemId);
+    const input = itemId ? app.querySelector<HTMLTextAreaElement>(`[data-outbox-edit-input='${itemId}']`) : null;
+    if (item && input && input.value.trim() !== "") {
+      await client.edit(item.itemId, item.revision, input.value);
+    }
+    viewState.outboxEditingItemId = null;
+    render(app);
+    return;
+  }
+  if (action === "outbox-cancel") {
+    const pressed = app.querySelector<HTMLElement>("[data-action='outbox-cancel']");
+    const itemId = pressed?.dataset.outboxId;
+    if (itemId) await client.cancel(itemId);
+    render(app);
   }
 }
 
@@ -1756,6 +1923,14 @@ function registerStartGateFailure(app: HTMLElement): void {
 async function issueRunGo(app: HTMLElement): Promise<void> {
   const copy = COPY[viewState.locale];
   if (!bcrRun) return;
+  // Priority (#63 delta 4): a queued Human message for this Run epoch goes
+  // first. The outbox probe drives that delivery; the round simply waits its
+  // turn rather than racing it, and a `go` the Human presses by hand is deferred
+  // the same way rather than being refused.
+  if (outboxHoldsRunPriority(bcrRun.runId)) {
+    render(app);
+    return;
+  }
   const observation = await waitForReadyObservation();
   if (!observation?.providerConversationRef) {
     registerStartGateFailure(app);
@@ -1920,8 +2095,24 @@ async function bcrWatcherTick(): Promise<void> {
     return;
   }
   // Any user message this run did not author is a Human intervention: the
-  // remaining budget never resumes (task contract §16).
-  if (observedUserCount > bcrExpectedUserCount) {
+  // remaining budget never resumes (task contract §16). Queued Human turns are
+  // the one exception (#63 C1) — and it is *earned*: the floor comes from
+  // deliveries the ledger proved, never from a claimed or failed dispatch. See
+  // core/run-intervention.ts for why the composition lives in one place.
+  const intervention = decideRunIntervention({
+    governedExpectedUserCount: bcrExpectedUserCount,
+    observedUserCount,
+    outbox: outboxClient?.expectedUserTurnAccountingFor(bcrRun.runId, observation.providerConversationRef)
+  });
+  bcrExpectedUserCount = intervention.expectedUserCount;
+  if (intervention.verdict === "AMBIGUOUS_HOLD") {
+    // A queued delivery for this epoch is unresolved, so the extra turn cannot be
+    // attributed. Hold: the Run is neither cancelled nor allowed to advance until
+    // the reservation resolves (provider recovery owns it). The queue surfaces the
+    // same item as BLOCKED-UNCERTAIN, so the hold is visible rather than silent.
+    return;
+  }
+  if (intervention.verdict === "HUMAN_INTERVENTION") {
     await captureBcrCandidate("RUN_ABORTED", "intervened", "USER_INTERVENTION");
     await applyContinuationRunEvent({ type: "USER_INTERVENTION" });
     return;
@@ -1937,6 +2128,76 @@ async function bcrWatcherTick(): Promise<void> {
       await applyContinuationRunEvent({ type: "CARRIER_PHASE", carrierState: "STABILIZING" });
     }
   }
+}
+
+/**
+ * Priority: a queued Human message precedes the Run's next automatic GO (#63
+ * delta 4). While this Run epoch still holds an unaccounted outbox reservation
+ * — one that is dispatching, or delivered and not yet folded in — the round
+ * waits. The two are never actuated concurrently: the round can only run when
+ * the reservation has been reconciled away.
+ */
+function outboxHoldsRunPriority(runId: string): boolean {
+  return outboxClient?.reservationOutstandingFor(runId) === true;
+}
+
+/**
+ * Adopts the durable queue on startup. This is a *read*: a queue that survived a
+ * tab reload or an extension restart becomes visible and schedulable again, but
+ * the read itself authorizes nothing — a reservation only ever moves forward
+ * through its own durable `SubmissionOperation` reconciliation (#63 delta 8).
+ */
+async function refreshOutboxQueue(): Promise<void> {
+  const client = createOutboxClientIfAvailable();
+  if (!client) return;
+  try {
+    const response = await sendExtensionMessage<{ type: string; mutation: { type: string } }, { ok?: boolean; queue?: OutboxQueueState }>({
+      type: "NOOS_OUTBOX_MUTATION",
+      mutation: { type: "list" }
+    });
+    if (response?.ok && response.queue) client.adopt(response.queue);
+  } catch {
+    // No queue available yet; the next observation probe converges it.
+  }
+}
+
+function createOutboxClientIfAvailable(): OutboxClient | null {
+  if (outboxClient) return outboxClient;
+  if (!globalThis.chrome?.runtime?.sendMessage) return null;
+  outboxClient = createOutboxClient({
+    ledger: createContentSubmissionLedger(),
+    sendMessage: <TResponse,>(message: Record<string, unknown>) =>
+      sendExtensionMessage<Record<string, unknown>, TResponse>(message),
+    readContext: observation => ({
+      carrier: toHumanGoCarrierSnapshot(observation),
+      composerEmpty: isChatComposerEmpty(),
+      evidence: readSubmissionMessageEvidence()
+    }),
+    activeRunId: () => bcrRun?.status === "ACTIVE" ? bcrRun.runId : undefined,
+    onQueueChanged: queue => {
+      outboxState = queue;
+      if (shuttleApp) render(shuttleApp);
+    },
+    onBlockedUncertain: () => {
+      if (shuttleApp) render(shuttleApp);
+    }
+  });
+  return outboxClient;
+}
+
+/**
+ * One outbox probe per observation tick, on the same cadence the Run watcher
+ * uses. It is skipped while another submission owns the carrier: the queue and
+ * the Run converge at the actuation boundary, and one actuator at a time is the
+ * whole point.
+ */
+async function probeOutbox(observation: CarrierObservation): Promise<void> {
+  const client = createOutboxClientIfAvailable();
+  if (!client || activeSubmission || observation.carrierIdentityState !== "browser-tab" ||
+    !observation.providerConversationRef) return;
+  if (Date.now() - outboxProbeRequestedAt < 1_000) return;
+  outboxProbeRequestedAt = Date.now();
+  await client.probe(observation);
 }
 
 async function captureBcrCandidate(
@@ -2017,6 +2278,15 @@ function createContentSubmissionLedger(): HumanGoLedger {
     return response?.ok ? response.result : undefined;
   };
   return {
+    // The gate reads this thread's slot straight from the coordinator, which is
+    // the only writer of it; the content side never asserts authority, only asks.
+    authorityFor: async logicalThreadId => {
+      const response = await sendExtensionMessage<
+        { type: "NOOS_SUBMISSION_AUTHORITY"; logicalThreadId: string },
+        { ok?: boolean; authority?: SubmissionAuthority }
+      >({ type: "NOOS_SUBMISSION_AUTHORITY", logicalThreadId });
+      return response?.ok ? response.authority : undefined;
+    },
     initializeAuthority: async context => {
       const response = await sendExtensionMessage<
         { type: "NOOS_SUBMISSION_MUTATION"; mutation: SubmissionOperationMutation },
@@ -3259,6 +3529,7 @@ function observeRuntimePage(context: PageContext): CarrierObservation {
   }
   void probeGoalReanchor(observation);
   void probeChildDelivery(observation);
+  void probeOutbox(observation);
   return observation;
 }
 
@@ -3395,6 +3666,11 @@ async function restoreActiveSubmission(observation: CarrierObservation): Promise
     const candidates = response.result
       .filter(operation =>
         (operation.state === "DISPATCHING" || operation.state === "UNCERTAIN" || operation.state === "OBSERVED_ACCEPTED") &&
+        // The outbox reconciles its own reservations through `probeOutbox`. This
+        // generic lane must not adopt them: it would hold `activeSubmission` for
+        // the whole recovery, which switches the outbox probe off and stalls the
+        // delivery fold the Run's expected-turn floor depends on.
+        operation.operationKind !== "OUTBOX_MESSAGE" &&
         operation.targetCarrierRef === observation.carrierRef &&
         operation.providerConversationRef === observation.providerConversationRef &&
         isSubmissionFence(operation.dispatchFence) &&

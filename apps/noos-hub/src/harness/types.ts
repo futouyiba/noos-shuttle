@@ -61,7 +61,8 @@ export type FixtureOperationKind =
   | "BOOTSTRAP"
   | "REVIEW_DISPATCH"
   | "SEDIMENT"
-  | "DELIVER_CHILD_RESULT";
+  | "DELIVER_CHILD_RESULT"
+  | "OUTBOX_MESSAGE";
 
 /** Real: SubmissionOperationState (src/core/submission-operation.ts). */
 export type FixtureOperationState =
