@@ -173,12 +173,19 @@ export function isBlockingNegative(fixture: FixtureRecord): boolean {
   return fixture.blocking_negative ?? BLOCKING_NEGATIVE_CATEGORIES.includes(fixture.category);
 }
 
+/**
+ * The continuation gate. `confidence` is the evaluator's self-reported certainty
+ * about its own classification, not one of the four boundary terms: on its own it
+ * names no Human, review, evidence or scope boundary. The four semantic predicates
+ * carry that meaning and are unchanged, so a fully green reading at MEDIUM is
+ * authorized and LOW still stops (issue #85 design disposition, ACCEPT 2026-09-21).
+ */
 export function decideContinuation(assessment: ContinuationAssessment): ContinuationDecision {
   const authorized = assessment.goal_status === "IN_PROGRESS"
     && (assessment.focus_status === "OPEN_ADVANCING" || assessment.focus_status === "REFINED")
     && assessment.scope_relation === "WITHIN_SCOPE"
     && assessment.dependency === "NONE"
-    && assessment.confidence === "HIGH";
+    && (assessment.confidence === "HIGH" || assessment.confidence === "MEDIUM");
   return authorized ? "WOULD_CONTINUE" : "WOULD_STOP";
 }
 
