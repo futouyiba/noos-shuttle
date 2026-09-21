@@ -3502,13 +3502,29 @@ function checkPageContext(app: HTMLElement): void {
 }
 
 /**
- * Reads the page and advances the observation ledger. A *pure* read: no probes,
- * no render, no reconciliation.
+ * Reads the page and advances the observation ledger.
  *
- * Split out of `observeRuntimePage` because an actuation needs a fresh reading
- * at the instant it touches the provider, and must not re-enter the observer
- * loop's side effects from inside an actuation — `probeOutbox` in particular
- * would otherwise run while a dispatch is mid-flight (issue #99).
+ * This is **not** a pure read, and an earlier version of this comment was wrong
+ * to call it one (issue #105). It writes five pieces of shared state:
+ *
+ *   - the ledger, through `runtimeObservationLedger.observe(...)` below;
+ *   - the four module-level heartbeats — `observationRoute`,
+ *     `observationRouteSince`, `observationOutputFingerprint` and
+ *     `observationOutputChangedAt` — from the route / output-fingerprint
+ *     comparison at the top of the function.
+ *
+ * Those writes are the price of a reading that can be trusted at the instant of
+ * an actuation: the heartbeats are what `assistantOutputMutating` and
+ * `routeStable` are derived from, and advancing the ledger is what makes this
+ * the current reading rather than a snapshot of an older one. A caller that
+ * wants no side effects at all wants a different function.
+ *
+ * What it deliberately omits is the observer loop's *reacting* half: no probes,
+ * no render, no reconciliation. That split — not purity — is the point. An
+ * actuation needs a fresh reading as it touches the provider and must not
+ * re-enter the loop's side effects from inside an actuation, because
+ * `probeOutbox` would otherwise run while a dispatch is mid-flight and reach a
+ * second writer for the same composer (issues #99, #104).
  */
 function readRuntimeObservation(context: PageContext): CarrierObservation {
   const now = Date.now();
