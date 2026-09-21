@@ -44,12 +44,60 @@ export type OutboxDispatchResult =
   | { status: "DISPATCHED"; operation: SubmissionOperation }
   /** Nothing was sent; the reservation stands and the item is not delivered. */
   | { status: "BLOCKED"; reason: string }
-  /** The reserved operation was reconciled instead of re-actuated. */
-  | { status: "RECONCILED"; operation: SubmissionOperation };
+  /**
+   * A reserved operation was reconciled (or found already settled) instead of
+   * being re-actuated. Never a delivery claim: only the ledger's own
+   * success-terminal evidence moves an item forward, and that fold happens
+   * background-side in `recordOutboxOutcome`.
+   */
+  | { status: "RECONCILED"; operation: SubmissionOperation }
+  /** The reservation is not this outbox's to act on. */
+  | { status: "NOT_RESERVED" };
 
 export interface OutboxDispatchDeps {
   /** The carrier's own ledger instance. Supplied by the caller, never built here. */
   ledger: HumanGoLedger;
+}
+
+/**
+ * The ledger's own stabilization window, mirrored rather than imported: a value
+ * import from `submission-operation` would pull the whole ledger into the
+ * content bundle and the renderer would promote it to a chunk an MV3 classic
+ * content script cannot load. If the ledger's window moves, this must move with
+ * it — the ledger is the authority on when a turn counts as finished, and this
+ * only decides when to *ask*.
+ */
+const OUTBOX_SUBMISSION_STABLE_WINDOW_MS = 2_000;
+
+/** States where the operation already owns execution: reconcile, never resend. */
+const EXECUTION_OWNING = new Set<SubmissionOperation["state"]>(["DISPATCHING", "UNCERTAIN", "OBSERVED_ACCEPTED"]);
+
+/**
+ * Reconciles a reservation the probe reported as `RECONCILE`, and settles it
+ * once the turn is provably finished.
+ *
+ * This is the carrier half of the loop delta 3 depends on. Without it a
+ * delivered operation sits at `OBSERVED_ACCEPTED` forever, which both starves
+ * the queue's fold (the item never reaches `DELIVERED`, so the Run's earned
+ * floor stays at zero and the queued turn reads as Human intervention) and
+ * wedges every later dispatch (`hasExecutionInFlight` stays true for this
+ * target).
+ */
+export async function reconcileOutboxReservation(
+  request: OutboxReconcileRequest,
+  deps: OutboxDispatchDeps
+): Promise<OutboxDispatchResult> {
+  const operation = await deps.ledger.get(request.operationId);
+  if (!operation) return { status: "NOT_RESERVED" };
+  if (operation.operationKind !== "OUTBOX_MESSAGE") return { status: "NOT_RESERVED" };
+  return reconcileReserved(deps.ledger, operation, request.observation, request.evidence, request.itemId);
+}
+
+export interface OutboxReconcileRequest {
+  itemId: string;
+  operationId: string;
+  observation: CarrierObservation;
+  evidence: OutboxDispatchRequest["evidence"];
 }
 
 export async function dispatchOutboxMessage(
@@ -67,25 +115,35 @@ export async function dispatchOutboxMessage(
   // this dispatch if the carrier was not the holder.
   const authority = await ledger.authorityFor?.(logicalThreadId);
 
-  // The reservation may already be claimed and in flight. Reconciling it is the
-  // only legal move: re-preparing the same id would either be an idempotent
-  // no-op or a payload conflict, and neither is a delivery.
+  // A reservation that already owns execution is reconciled, never re-actuated:
+  // re-preparing the same id would be an idempotent no-op or a payload conflict,
+  // and neither is a delivery. A retired reservation is likewise never reused —
+  // the queue folds it and mints a fresh id for the next attempt.
   const existing = await ledger.get(request.operationId);
-  if (existing) return reconcileReserved(ledger, existing, observation, request.evidence);
+  if (existing) {
+    if (existing.operationKind !== "OUTBOX_MESSAGE") return { status: "BLOCKED", reason: "reservation_kind_mismatch" };
+    if (EXECUTION_OWNING.has(existing.state)) {
+      return reconcileReserved(ledger, existing, observation, request.evidence, request.itemId);
+    }
+    if (existing.state === "FAILED_SAFE" || existing.state === "CANCELLED") {
+      return { status: "RECONCILED", operation: existing };
+    }
+    // PREPARED with the fence still intact: the claim never actuated, and the
+    // normal path below re-claims this very operation (create-or-get is
+    // idempotent, so this is a delivery of the same reservation, not a resend).
+    //
+    // PREPARED with a fence that no longer holds is refused rather than
+    // re-fenced. The gate only reports a reservation for a carrier it has
+    // already checked holds this thread's lease, so a stale fence here is one
+    // the gate could not see, and re-preparing under a mismatched fence would
+    // throw a reuse conflict instead of delivering. The head keeps waiting
+    // visibly, which is the honest outcome for a reservation nothing can claim.
+    if (existing.state === "PREPARED" && existing.dispatchFence && !sameFence(existing, observation)) {
+      return { status: "BLOCKED", reason: "reservation_fence_stale" };
+    }
+  }
 
-  const context: SubmissionClaimContext = {
-    logicalThreadId,
-    providerConversationRef: conversationRef,
-    bindingEpoch: observation.sourceEpoch,
-    leaseGeneration: observation.sourceEpoch,
-    leaseOwnerRef: observation.executionInstanceRef,
-    targetCarrierRef: observation.carrierRef,
-    sourceEpoch: observation.sourceEpoch,
-    sourceObservedAt: observation.observedAt,
-    carrierState: "READY",
-    logicalControl: "CONTINUE",
-    explicitGo: true
-  };
+  const context = contextFor(observation);
   if (!authority ||
     authority.logicalThreadId !== logicalThreadId ||
     authority.leaseOwnerRef !== context.leaseOwnerRef ||
@@ -174,16 +232,13 @@ async function reconcileReserved(
   ledger: HumanGoLedger,
   operation: SubmissionOperation,
   observation: CarrierObservation,
-  evidence: OutboxDispatchRequest["evidence"]
+  evidence: OutboxDispatchRequest["evidence"],
+  itemId: string
 ): Promise<OutboxDispatchResult> {
-  if (operation.operationKind !== "OUTBOX_MESSAGE") return { status: "BLOCKED", reason: "reservation_kind_mismatch" };
-  if (operation.state === "COMPLETED" || operation.state === "OBSERVED_ACCEPTED") {
+  if (operation.state === "COMPLETED" || operation.state === "FAILED_SAFE" ||
+    operation.state === "CANCELLED" || operation.state === "PREPARED") {
     return { status: "RECONCILED", operation };
   }
-  if (operation.state === "FAILED_SAFE" || operation.state === "CANCELLED") {
-    return { status: "RECONCILED", operation };
-  }
-  if (operation.state === "PREPARED") return { status: "RECONCILED", operation };
   if (!operation.dispatchFence) return { status: "BLOCKED", reason: "reservation_fence_missing" };
   const result = await ledger.reconcile(operation.operationId, {
     conversationRef: observation.providerConversationRef,
@@ -198,5 +253,64 @@ async function reconcileReserved(
     generationActive: observation.state === "GENERATING",
     dispatchFence: operation.dispatchFence
   });
-  return { status: "RECONCILED", operation: result.operation ?? operation };
+  const settled = result.operation ?? operation;
+  return { status: "RECONCILED", operation: await completeIfTurnFinished(ledger, settled, observation, evidence, itemId) };
+}
+
+/**
+ * Closes a proven-accepted reservation once the turn it produced has finished
+ * and the carrier has been quiet for the ledger's own stabilization window —
+ * the same bar `reconcileActiveSubmission` applies to a governed round.
+ *
+ * Settling is not bookkeeping: an operation left at `OBSERVED_ACCEPTED` still
+ * owns execution, so it would block every later dispatch to this target.
+ */
+async function completeIfTurnFinished(
+  ledger: HumanGoLedger,
+  operation: SubmissionOperation,
+  observation: CarrierObservation,
+  evidence: OutboxDispatchRequest["evidence"],
+  itemId: string
+): Promise<SubmissionOperation> {
+  if (operation.state !== "OBSERVED_ACCEPTED") return operation;
+  const claimedAt = operation.dispatchClaimedAt;
+  if (claimedAt === undefined) return operation;
+  // Acceptance must still be this message's: a later legitimate turn
+  // overwrites `lastReconciliationEvidence`, so a missing stamp means the
+  // acceptance we are completing is no longer provable.
+  const acceptedFingerprint = operation.acceptedPayloadFingerprint;
+  if (acceptedFingerprint === undefined) return operation;
+  const quietSince = observation.quietSince;
+  if (observation.state !== "READY" || quietSince === null || quietSince === undefined) return operation;
+  if (observation.observedAt - Math.max(claimedAt, quietSince) < OUTBOX_SUBMISSION_STABLE_WINDOW_MS) return operation;
+  if (evidence.lastUserMessageFingerprint !== undefined && evidence.lastUserMessageFingerprint !== acceptedFingerprint) return operation;
+  const completed = await ledger.record(operation.operationId, "COMPLETED", { now: observation.observedAt });
+  return completed?.state === "COMPLETED" ? completed : operation;
+}
+
+/** The claim context this observation licenses. Identity is never asserted here. */
+function contextFor(observation: CarrierObservation): SubmissionClaimContext {
+  return {
+    logicalThreadId: `thread:${observation.providerConversationRef ?? ""}`,
+    providerConversationRef: observation.providerConversationRef ?? "",
+    bindingEpoch: observation.sourceEpoch,
+    leaseGeneration: observation.sourceEpoch,
+    leaseOwnerRef: observation.executionInstanceRef,
+    targetCarrierRef: observation.carrierRef,
+    sourceEpoch: observation.sourceEpoch,
+    sourceObservedAt: observation.observedAt,
+    carrierState: "READY",
+    logicalControl: "CONTINUE",
+    explicitGo: true
+  };
+}
+
+function sameFence(operation: SubmissionOperation, observation: CarrierObservation): boolean {
+  const fence = operation.dispatchFence;
+  return Boolean(fence &&
+    fence.providerConversationRef === observation.providerConversationRef &&
+    fence.bindingEpoch === observation.sourceEpoch &&
+    fence.leaseGeneration === observation.sourceEpoch &&
+    fence.leaseOwnerRef === observation.executionInstanceRef &&
+    fence.targetCarrierRef === observation.carrierRef);
 }

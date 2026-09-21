@@ -233,7 +233,8 @@ function isOutboxGateObservation(value: unknown): value is OutboxGateObservation
     typeof observation.providerErrorSurfacePresent === "boolean" &&
     typeof observation.composerPresent === "boolean" &&
     typeof observation.composerInteractive === "boolean" &&
-    typeof observation.composerEmpty === "boolean";
+    typeof observation.composerEmpty === "boolean" &&
+    (observation.userMessageCount === undefined || isFiniteInteger(observation.userMessageCount));
 }
 
 /** True when an execution-owning operation already holds this exact target. */
@@ -329,7 +330,11 @@ function probeOutboxHead(input: OutboxProbeInput, now = Date.now()): OutboxProbe
   const claimed = reduceOutboxQueue(input.queue, {
     type: "claim_dispatch",
     itemId: head.itemId,
-    input: { operationId: decision.operationId, reservation: createOutboxReservation(head, decision.operationId, input.runId), now }
+    input: {
+      operationId: decision.operationId,
+      reservation: createOutboxReservation(head, decision.operationId, input.runId, input.observation.userMessageCount),
+      now
+    }
   });
   if (!claimed.ok || !claimed.item) return { queue: input.queue, status: { kind: "WAIT", itemId: head.itemId, reason: "reservation_missing" } };
   return {

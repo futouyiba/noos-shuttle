@@ -94,6 +94,13 @@ export interface OutboxItem {
    * in-memory counter that a reload would have to guess at.
    */
   baselineUserMessageCount?: number;
+  /**
+   * The observed user-turn count at the instant this reservation was made — the
+   * baseline the Run's accounting uses *before* the delivery is proven. Written
+   * with the reservation, before the provider is touched, because that is what
+   * makes the reservation an expectation rather than a hindsight claim.
+   */
+  reservedAtUserMessageCount?: number;
 }
 
 export interface OutboxQueueState {
@@ -117,6 +124,12 @@ export interface OutboxDispatchReservation {
   submissionOperationId: string;
   runId?: string;
   expectedOperationKind: "OUTBOX_MESSAGE";
+  /**
+   * Present when the Run epoch this reservation is for has an ACTIVE run to
+   * answer to. Carried on the reservation rather than looked up later so the
+   * expectation is durable at the same moment the reservation is.
+   */
+  observedUserMessageCount?: number;
 }
 
 /**
@@ -127,6 +140,41 @@ export interface OutboxDispatchInput {
   operationId: string;
   reservation?: OutboxDispatchReservation;
   now: number;
+}
+
+/** What a queued reservation currently answers for, for one Run epoch. */
+export interface OutboxRunAccounting {
+  /** Turns this epoch's queued deliveries have *proven* they authored. */
+  delivered: number;
+  /**
+   * True while exactly one reservation for this epoch is claimed and unresolved
+   * — the state delta 3 requires the Run to treat as an expected Human turn.
+   */
+  reserved: boolean;
+  /**
+   * True when that unresolved reservation is ambiguous (its operation's outcome
+   * is unknown), so the turn cannot be attributed either way. The Run must
+   * neither cancel on it nor advance past it (#57 Q3).
+   */
+  ambiguous: boolean;
+}
+
+/** The Run-facing view of one epoch's queued turns. */
+export interface OutboxRunExpectation {
+  /** The user-turn count the reservation was recorded against. */
+  baseline: number;
+  /**
+   * Baseline + proven deliveries + at most one tolerated in-flight turn. Only
+   * ever raises a Run's expectation; a Run's own governed bump is never undone.
+   */
+  expectedUserMessageCount: number;
+  /** True when the tolerated turn is a reservation whose delivery is not yet proven. */
+  provisional: boolean;
+  /**
+   * True when that reservation is unresolved *and* ambiguous, so the turn cannot
+   * be attributed to Shuttle or to a Human. Never a licence to cancel a Run.
+   */
+  ambiguous: boolean;
 }
 
 export interface OutboxSubmissionOutcome {
@@ -190,62 +238,112 @@ export function outboxQueueStatus(state: OutboxQueueState): OutboxQueueStatus {
   if (head.state === "UNCERTAIN") return { kind: "BLOCKED_UNCERTAIN", itemId: head.itemId };
   if (head.state === "DISPATCHING") return { kind: "DISPATCHING", itemId: head.itemId };
   if (state.paused) return { kind: "IDLE" };
-  return { kind: "WAIT", itemId: head.itemId, reason: blockReasonFor(head, ordered) };
-}
-
-function blockReasonFor(head: OutboxItem, ordered: OutboxItem[]): OutboxBlockReason {
-  if (head.attempts >= OUTBOX_MAX_ATTEMPTS) return "attempt_failed";
-  // A proven-not-accepted attempt that has not been released yet parks the head.
-  if (head.attempts > 0 && ordered.some(item => item.itemId === head.itemId && item.lastOutcome === "PROVEN_NOT_ACCEPTED")) {
-    return "attempt_failed";
-  }
-  return "conversation_absent";
+  return { kind: "WAIT", itemId: head.itemId, reason: blockReasonFor(head) };
 }
 
 /**
- * The *only* admissible way a queued Human turn may raise a Run's expected
- * user-turn count.
+ * A parked head is not dispatchable at all — attempts spent, or a reservation
+ * retired by policy — and the only ways forward are to rewrite it or cancel it.
+ * A queued head, by contrast, is waiting on the delivery gate.
+ */
+function blockReasonFor(head: OutboxItem): OutboxBlockReason {
+  return head.state === "BLOCKED" ? "attempt_failed" : "conversation_absent";
+}
+
+/**
+ * What the queue answers for, for one Run epoch.
  *
- * A Run's intervention rule is "any user turn this Run did not author is a
- * Human intervention". Shuttle authors exactly the turns that own a
- * success-terminal `OUTBOX_MESSAGE` operation, so the expected count is
- * `baseline + (delivered items, counted as a prefix)`. Nothing here consults a
- * claimed-but-unproven operation: that is precisely what keeps a failed or
- * UNCERTAIN dispatch from leaving a loose `+1` that could hide later genuine
- * Human input.
+ * This is the *only* admissible way a queued Human turn may soften a Run's
+ * intervention rule, and it is deliberately two-sided:
  *
- * `baseline` is the pre-submit user-turn count recorded in the first delivered
- * item's own acceptance evidence, so the accounting survives a page reload
- * without any in-memory counter.
+ *  - A **proven delivery** raises the floor permanently. Its baseline comes from
+ *    the operation's own pre-submit evidence, and it counts only as a
+ *    contiguous prefix — nothing behind an unresolved head can be counted,
+ *    because the queue cannot have delivered it.
+ *  - A **live reservation** tolerates exactly one more turn, and nothing else.
+ *    Without this the Run is cancelled in the gap between the turn appearing in
+ *    the provider and the ledger proving it: the carrier's reconcile and the
+ *    background's fold take at least a probe cycle each, while the Run's watcher
+ *    ticks faster than either. Reserving the turn is precisely what delta 3
+ *    asks for — "durably reserve that one specific operation *is an expected
+ *    Human turn*" — and the tolerance is withdrawn the moment the item leaves
+ *    the reservation without proving acceptance, so nothing is *left* behind.
+ *
+ * `undefined` means the queue says nothing about this epoch, and the Run's own
+ * rule applies unchanged.
  */
 export function expectedUserTurnAccounting(
   state: OutboxQueueState,
   runId: string,
   providerConversationRef: string
-): { baseline: number; expectedUserMessageCount: number } | undefined {
+): OutboxRunExpectation | undefined {
   const ordered = orderedOutboxItems(state).filter(item => item.state !== "CANCELLED");
-  const delivered = new Map<string, OutboxItem>();
-  for (const item of ordered) {
-    if (item.state !== "DELIVERED") break;
-    delivered.set(item.itemId, item);
-  }
-  const mine = ordered.filter(item => item.reservationRunId === runId && item.providerConversationRef === providerConversationRef);
-  if (mine.length === 0) return undefined;
+  const mine = (item: OutboxItem) => item.reservationRunId === runId && item.providerConversationRef === providerConversationRef;
   let baseline: number | undefined;
-  let count = 0;
-  for (const item of mine) {
-    if (!delivered.has(item.itemId)) break;
-    baseline ??= item.baselineUserMessageCount;
-    if (baseline === undefined) return undefined;
-    count += 1;
+  let delivered = 0;
+  let provisional = false;
+  let ambiguous = false;
+  for (const item of ordered) {
+    if (item.state === "DELIVERED") {
+      if (mine(item)) {
+        baseline ??= item.baselineUserMessageCount;
+        delivered += 1;
+      }
+      // A delivery from another epoch still occupies the prefix, but is not ours.
+      continue;
+    }
+    // The first unresolved (or unclaimed) item ends the prefix: nothing behind it
+    // can have been delivered. A reservation that is still claimed — including
+    // one whose outcome is ambiguous — is exactly the turn the Run is told to
+    // expect, so it tolerates one and nothing more.
+    if (mine(item) && (item.state === "DISPATCHING" || item.state === "UNCERTAIN")) {
+      baseline ??= item.reservedAtUserMessageCount;
+      provisional = true;
+      ambiguous = item.state === "UNCERTAIN";
+    }
+    break;
   }
   if (baseline === undefined) return undefined;
-  return { baseline, expectedUserMessageCount: baseline + count };
+  return {
+    baseline,
+    expectedUserMessageCount: baseline + delivered + (provisional ? 1 : 0),
+    provisional,
+    ambiguous
+  };
 }
 
 /** True when the queue still holds a reservation this Run epoch has not accounted for. */
 export function hasOutstandingOutboxReservation(state: OutboxQueueState, runId: string): boolean {
   return state.items.some(item => item.reservationRunId === runId && item.state !== "DELIVERED" && item.state !== "CANCELLED");
+}
+
+/**
+ * The richer view the Run's decision needs: how much is proven, and whether an
+ * unresolved reservation is currently standing in for it.
+ */
+export function outboxRunAccounting(
+  state: OutboxQueueState,
+  runId: string,
+  providerConversationRef: string
+): OutboxRunAccounting | undefined {
+  const ordered = orderedOutboxItems(state).filter(item => item.state !== "CANCELLED");
+  const mine = (item: OutboxItem) => item.reservationRunId === runId && item.providerConversationRef === providerConversationRef;
+  let delivered = 0;
+  let reserved = false;
+  let ambiguous = false;
+  for (const item of ordered) {
+    if (item.state === "DELIVERED") {
+      if (mine(item)) delivered += 1;
+      continue;
+    }
+    if (mine(item) && (item.state === "DISPATCHING" || item.state === "UNCERTAIN")) {
+      reserved = true;
+      ambiguous = item.state === "UNCERTAIN";
+    }
+    break;
+  }
+  if (delivered === 0 && !reserved) return undefined;
+  return { delivered, reserved, ambiguous };
 }
 
 /**
@@ -286,6 +384,9 @@ export function reduceOutboxQueue(state: OutboxQueueState, mutation: OutboxMutat
       if (item.revision !== mutation.expectedRevision) return fail(state, "revision_conflict");
       if (!isValidPayload(mutation.payload)) return fail(state, "payload_invalid");
       const payload = normalizePayload(mutation.payload);
+      // A rewrite that changes nothing but whitespace is still a new revision:
+      // the fingerprint changes, so the operation identity must too.
+      const rewritten = fingerprintOutboxPayload(payload) !== item.payloadFingerprint;
       // createdAt is refreshed with the revision so a dispatch can never compile
       // the previous revision's payload under this revision's fingerprint.
       const edited: OutboxItem = {
@@ -297,6 +398,19 @@ export function reduceOutboxQueue(state: OutboxQueueState, mutation: OutboxMutat
         updatedAt: mutation.now,
         lastOutcome: undefined
       };
+      // A parked item (attempts spent on bytes that never landed) becomes
+      // dispatchable again under the new bytes, with a fresh attempt budget: the
+      // spent attempts belonged to the old message, not to this one. Without
+      // this, "edit to continue" — what the surface offers — would be a lie, and
+      // the item could only ever be cancelled. The retired operations keep their
+      // own ids (the revision is in the minted id), so nothing is reused.
+      if (item.state === "BLOCKED" && rewritten) {
+        edited.state = "QUEUED";
+        edited.attempts = 0;
+        edited.submissionOperationId = undefined;
+        edited.dispatchedAt = undefined;
+        edited.uncertaintySince = undefined;
+      }
       return commit(state, [edited], edited);
     }
     case "cancel": {
@@ -324,6 +438,7 @@ export function reduceOutboxQueue(state: OutboxQueueState, mutation: OutboxMutat
         state: "DISPATCHING",
         submissionOperationId: mutation.input.operationId,
         reservationRunId: reservation?.runId ?? item.reservationRunId,
+        reservedAtUserMessageCount: reservation?.observedUserMessageCount ?? item.reservedAtUserMessageCount,
         dispatchedAt: mutation.input.now,
         updatedAt: mutation.input.now,
         uncertaintySince: undefined
@@ -335,8 +450,11 @@ export function reduceOutboxQueue(state: OutboxQueueState, mutation: OutboxMutat
       const item = state.items.find(candidate => candidate.submissionOperationId === outcome.operationId);
       if (!item) return fail(state, "operation_not_reserved");
       // An operation may only ever move an item forward. A stale observation of
-      // PREPARED (or of a re-claim) must not undo a recorded outcome.
-      if (item.state !== "DISPATCHING") return { ok: true, item, state };
+      // PREPARED (or of a re-claim) must not undo a recorded outcome — and a
+      // recorded outcome must not be undone by a later one. `UNCERTAIN` is not
+      // an outcome: it is "unresolved", so a cancellation or a proof that finally
+      // arrives is still allowed to resolve it.
+      if (item.state !== "DISPATCHING" && item.state !== "UNCERTAIN") return { ok: true, item, state };
       if (SUCCESS_TERMINAL.has(outcome.state)) {
         const delivered: OutboxItem = {
           ...item,
@@ -358,8 +476,23 @@ export function reduceOutboxQueue(state: OutboxQueueState, mutation: OutboxMutat
         };
         return commit(state, [uncertain], uncertain);
       }
-      // PREPARED / DISPATCHING / FAILED_SAFE / CANCELLED prove nothing and must
-      // not fabricate a delivery. Leave the reservation standing.
+      if (outcome.state === "CANCELLED") {
+        // The reservation is retired by policy: nothing can ever satisfy it, so
+        // the item must not keep holding an expectation for a turn that will
+        // never arrive. Park it — the Human can still rewrite it into a fresh
+        // attempt, or cancel it outright — and withdraw the tolerance.
+        const parked: OutboxItem = {
+          ...item,
+          state: "BLOCKED",
+          submissionOperationId: undefined,
+          dispatchedAt: undefined,
+          uncertaintySince: undefined,
+          updatedAt: outcome.now
+        };
+        return commit(state, [parked], parked);
+      }
+      // PREPARED / DISPATCHING / FAILED_SAFE prove nothing and must not fabricate
+      // a delivery. FAILED_SAFE is released by an explicit `release_attempt`.
       return { ok: true, item, state };
     }
     case "release_attempt": {
@@ -485,6 +618,7 @@ export function isOutboxItem(value: unknown): value is OutboxItem {
     (item.deliveredAt === undefined || isFiniteCount(item.deliveredAt)) &&
     (item.uncertaintySince === undefined || isFiniteCount(item.uncertaintySince)) &&
     (item.baselineUserMessageCount === undefined || isFiniteCount(item.baselineUserMessageCount)) &&
+    (item.reservedAtUserMessageCount === undefined || isFiniteCount(item.reservedAtUserMessageCount)) &&
     (item.lastOutcome === undefined || item.lastOutcome === "PROVEN_NOT_ACCEPTED");
 }
 
@@ -505,8 +639,20 @@ function cloneOutboxItem(item: OutboxItem): OutboxItem {
  * The reservation a dispatch carries. Built by the caller from the Run epoch it
  * is about to spend, and written into the queue record before actuation.
  */
-export function createOutboxReservation(item: OutboxItem, operationId: string, runId: string | undefined): OutboxDispatchReservation {
-  return { itemId: item.itemId, revision: item.revision, submissionOperationId: operationId, runId, expectedOperationKind: "OUTBOX_MESSAGE" };
+export function createOutboxReservation(
+  item: OutboxItem,
+  operationId: string,
+  runId: string | undefined,
+  observedUserMessageCount?: number
+): OutboxDispatchReservation {
+  return {
+    itemId: item.itemId,
+    revision: item.revision,
+    submissionOperationId: operationId,
+    runId,
+    expectedOperationKind: "OUTBOX_MESSAGE",
+    observedUserMessageCount: runId === undefined ? undefined : observedUserMessageCount
+  };
 }
 
 /**

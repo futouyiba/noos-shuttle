@@ -36,6 +36,7 @@ import { attachMarkdownFilesToChatInput, getChatComposer, getPageText, insertInt
 import { captureChatGptTranscriptWithScroll, captureRenderedChatGptTranscript } from "./chatgpt-transcript";
 import { RuntimeObservationLedger, type CarrierObservation } from "./runtime-observer";
 import { createOutboxClient, observationForGate, type OutboxClient } from "./outbox-client";
+import { decideRunIntervention } from "../core/run-intervention";
 // Types only: the queue's runtime is reachable from the service-worker entry
 // too, so importing it as a value here would make the renderer promote it to a
 // chunk an MV3 classic content script cannot import. Every read goes through
@@ -290,6 +291,11 @@ interface SubmissionBaseline {
 
 interface PersistedSubmissionOperation {
   operationId: string;
+  /**
+   * Read from the ledger only to keep the generic recovery lane off the outbox's
+   * own reservations; this lane never dispatches by kind.
+   */
+  operationKind?: string;
   logicalThreadId?: string;
   state: "PREPARED" | "DISPATCHING" | "OBSERVED_ACCEPTED" | "COMPLETED" | "UNCERTAIN" | "FAILED_SAFE" | "CANCELLED";
   targetCarrierRef: string;
@@ -2081,13 +2087,25 @@ async function bcrWatcherTick(): Promise<void> {
     await applyContinuationRunEvent({ type: "CONVERSATION_REBASE_REQUIRED" });
     return;
   }
-  // Queued Human turns are the one exception to "any un-authored user message is
-  // an intervention" (#63 C1). The exception is earned, never assumed: see
-  // applyOutboxRunAccounting.
-  applyOutboxRunAccounting(bcrRun.runId, observation.providerConversationRef);
   // Any user message this run did not author is a Human intervention: the
-  // remaining budget never resumes (task contract §16).
-  if (observedUserCount > bcrExpectedUserCount) {
+  // remaining budget never resumes (task contract §16). Queued Human turns are
+  // the one exception (#63 C1) — and it is *earned*: the floor comes from
+  // deliveries the ledger proved, never from a claimed or failed dispatch. See
+  // core/run-intervention.ts for why the composition lives in one place.
+  const intervention = decideRunIntervention({
+    governedExpectedUserCount: bcrExpectedUserCount,
+    observedUserCount,
+    outbox: outboxClient?.expectedUserTurnAccountingFor(bcrRun.runId, observation.providerConversationRef)
+  });
+  bcrExpectedUserCount = intervention.expectedUserCount;
+  if (intervention.verdict === "AMBIGUOUS_HOLD") {
+    // A queued delivery for this epoch is unresolved, so the extra turn cannot be
+    // attributed. Hold: the Run is neither cancelled nor allowed to advance until
+    // the reservation resolves (provider recovery owns it). The queue surfaces the
+    // same item as BLOCKED-UNCERTAIN, so the hold is visible rather than silent.
+    return;
+  }
+  if (intervention.verdict === "HUMAN_INTERVENTION") {
     await captureBcrCandidate("RUN_ABORTED", "intervened", "USER_INTERVENTION");
     await applyContinuationRunEvent({ type: "USER_INTERVENTION" });
     return;
@@ -2103,26 +2121,6 @@ async function bcrWatcherTick(): Promise<void> {
       await applyContinuationRunEvent({ type: "CARRIER_PHASE", carrierState: "STABILIZING" });
     }
   }
-}
-
-/**
- * The Run's expected-user-turn accounting (issue #63 delta 3).
- *
- * A Run treats every user turn it did not author as Human intervention. A
- * queued message *is* authored by Shuttle, but only once the ledger has proven
- * that the exact reserved `OUTBOX_MESSAGE` operation became the turn — so the
- * floor is raised by an operation that reached a success-terminal state and had
- * its acceptance folded into the queue, and by nothing else. A claimed, failed,
- * or UNCERTAIN dispatch raises nothing: it cannot leave a loose `+1` behind that
- * a later genuine Human message could hide under.
- *
- * `bcrExpectedUserCount` only ever moves up, so the Run's own pre-dispatch bump
- * for a governed GO is never undone here.
- */
-function applyOutboxRunAccounting(runId: string, providerConversationRef: string): void {
-  const floor = outboxClient?.expectedUserTurnCountFor(runId, providerConversationRef);
-  if (floor === undefined) return;
-  if (floor > bcrExpectedUserCount) bcrExpectedUserCount = floor;
 }
 
 /**
@@ -3661,6 +3659,11 @@ async function restoreActiveSubmission(observation: CarrierObservation): Promise
     const candidates = response.result
       .filter(operation =>
         (operation.state === "DISPATCHING" || operation.state === "UNCERTAIN" || operation.state === "OBSERVED_ACCEPTED") &&
+        // The outbox reconciles its own reservations through `probeOutbox`. This
+        // generic lane must not adopt them: it would hold `activeSubmission` for
+        // the whole recovery, which switches the outbox probe off and stalls the
+        // delivery fold the Run's expected-turn floor depends on.
+        operation.operationKind !== "OUTBOX_MESSAGE" &&
         operation.targetCarrierRef === observation.carrierRef &&
         operation.providerConversationRef === observation.providerConversationRef &&
         isSubmissionFence(operation.dispatchFence) &&

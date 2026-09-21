@@ -65,6 +65,8 @@ export interface OutboxGateObservation {
   composerPresent: boolean;
   composerInteractive: boolean;
   composerEmpty: boolean;
+  /** Observed user turns; the baseline a queued reservation is recorded against. */
+  userMessageCount?: number;
 }
 
 export interface OutboxGateLedgers {

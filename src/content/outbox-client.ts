@@ -13,7 +13,7 @@
  * reconciled first (its durable outcome is folded back into the queue), and
  * only then may a `DISPATCH` decision actuate the frozen revision.
  */
-import { dispatchOutboxMessage, type OutboxDispatchResult } from "./outbox-dispatch";
+import { dispatchOutboxMessage, reconcileOutboxReservation, type OutboxDispatchResult } from "./outbox-dispatch";
 import type { CarrierObservation } from "./runtime-observer";
 import type { HumanGoCarrierSnapshot } from "../core/human-go-runtime";
 import type { HumanGoLedger } from "../core/human-go-runtime";
@@ -25,10 +25,13 @@ import {
   hasOutstandingOutboxReservation,
   orderedOutboxItems,
   outboxQueueStatus,
+  outboxRunAccounting,
   type OutboxItem,
-  type OutboxQueueState
+  type OutboxQueueState,
+  type OutboxRunAccounting
 } from "../core/outbox-queue";
 import type { OutboxGateObservation } from "../background/outbox-gate";
+import type { OutboxRunExpectation } from "../core/outbox-queue";
 
 export interface OutboxCarrierContext {
   carrier: HumanGoCarrierSnapshot;
@@ -64,10 +67,12 @@ export interface OutboxClient {
   /** True while the whole queue is held by the Human. */
   paused(): boolean;
   /**
-   * The expected-user-turn floor this Run epoch has *earned* from queued
-   * deliveries, or undefined when the queue says nothing about this epoch.
+   * What the queue answers for, for this Run epoch: proven deliveries, and
+   * whether an unresolved reservation is standing in for one turn.
    */
-  expectedUserTurnCountFor(runId: string, providerConversationRef: string): number | undefined;
+  outboxAccountingFor(runId: string, providerConversationRef: string): OutboxRunAccounting | undefined;
+  /** The absolute expected-user-turn floor those deliveries have earned. */
+  expectedUserTurnAccountingFor(runId: string, providerConversationRef: string): OutboxRunExpectation | undefined;
   /** Adopts the durable queue without probing (startup). */
   adopt(queue: OutboxQueueState): void;
   probe(observation: CarrierObservation): Promise<void>;
@@ -81,7 +86,7 @@ export interface OutboxClient {
 
 interface OutboxProbeResponse {
   ok?: boolean;
-  status?: { kind?: string; itemId?: string };
+  status?: { kind?: string; itemId?: string; operationId?: string };
   queue?: unknown;
   dispatch?: {
     itemId: string;
@@ -132,6 +137,21 @@ export function createOutboxClient(deps: OutboxClientDeps): OutboxClient {
         if (head) deps.onBlockedUncertain?.(head);
         return;
       }
+      // The gate reports a reservation that left execution (or overstayed its
+      // dispatch grace) as RECONCILE. Consuming it is what closes the loop that
+      // delta 3 rests on: the ledger is driven to a terminal state so the
+      // background can fold the delivery and the Run's earned floor moves. A
+      // `DISPATCHING` status is a plain wait — the operation is still in flight.
+      if (response.status?.kind === "RECONCILE" && response.status.operationId !== undefined) {
+        const reconciled = await reconcileOutboxReservation({
+          itemId: response.status.itemId ?? "",
+          operationId: response.status.operationId,
+          observation,
+          evidence: context.evidence
+        }, { ledger: deps.ledger });
+        report(reconciled);
+        return;
+      }
       if (response.status?.kind !== "DISPATCH" || !response.dispatch) return;
       const result = await dispatchOutboxMessage({ ...response.dispatch, observation, evidence: context.evidence }, { ledger: deps.ledger });
       report(result);
@@ -154,8 +174,10 @@ export function createOutboxClient(deps: OutboxClientDeps): OutboxClient {
     status: () => outboxQueueStatus(state),
     visibleItems: () => orderedOutboxItems(state).filter(item => item.state !== "CANCELLED"),
     paused: () => state.paused,
-    expectedUserTurnCountFor: (runId, providerConversationRef) =>
-      expectedUserTurnAccounting(state, runId, providerConversationRef)?.expectedUserMessageCount,
+    outboxAccountingFor: (runId, providerConversationRef) =>
+      outboxRunAccounting(state, runId, providerConversationRef),
+    expectedUserTurnAccountingFor: (runId, providerConversationRef) =>
+      expectedUserTurnAccounting(state, runId, providerConversationRef),
     adopt: publish,
     probe,
     async enqueue(payload, observation) {
@@ -201,6 +223,7 @@ export function observationForGate(observation: CarrierObservation, composerEmpt
     providerErrorSurfacePresent: observation.providerErrorSurfacePresent,
     composerPresent: observation.composerPresent,
     composerInteractive: observation.composerInteractive,
-    composerEmpty
+    composerEmpty,
+    userMessageCount: observation.userMessageCount
   };
 }
