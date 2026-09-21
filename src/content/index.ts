@@ -34,6 +34,7 @@ import { ClipboardAdapter } from "../storage/ClipboardAdapter";
 import { DownloadAdapter } from "../storage/DownloadAdapter";
 import { NoosVaultAdapter } from "../storage/NoosVaultAdapter";
 import { attachMarkdownFilesToChatInput, getChatComposer, getPageText, insertIntoChatInput, isChatComposerEmpty, isChatbotGenerating, submitChatInput } from "./chatgpt-dom";
+import { handleBackgroundDispatch } from "./background-dispatch";
 import { captureChatGptTranscriptWithScroll, captureRenderedChatGptTranscript } from "./chatgpt-transcript";
 import { RuntimeObservationLedger, type CarrierObservation } from "./runtime-observer";
 import { createOutboxClient, observationForGate, type OutboxClient } from "./outbox-client";
@@ -3568,69 +3569,55 @@ function observeRuntimePage(context: PageContext): CarrierObservation {
 
 let goalProbeInFlight = false;
 let goalProbeAt = 0;
-chrome.runtime?.onMessage?.addListener((message, sender, sendResponse) => {
-  if (message?.type !== "NOOS_DISPATCH_GOAL_REANCHOR") return false;
-  if (sender.id !== chrome.runtime.id) { sendResponse({ ok: false }); return false; }
-  const operation = message.operation;
-  const current = runtimeObservationLedger.value;
-  if (!current || current.state !== "READY" || activeSubmission ||
-    operation?.operationKind !== "REANCHOR_GOAL" || operation.state !== "DISPATCHING" ||
-    !isSubmissionFence(operation.dispatchFence) || typeof operation.payload !== "string" ||
-    operation.dispatchFence.leaseOwnerRef !== current.executionInstanceRef ||
-    operation.dispatchFence.bindingEpoch !== current.sourceEpoch ||
-    operation.dispatchFence.targetCarrierRef !== current.carrierRef ||
-    operation.dispatchFence.providerConversationRef !== current.providerConversationRef) {
-    sendResponse({ ok: false }); return false;
-  }
-  activeSubmission = { operationId: operation.operationId, logicalThreadId: operation.logicalThreadId, fence: operation.dispatchFence, claimedAt: operation.dispatchClaimedAt };
-  const composer = getChatComposer();
-  if (!composer || !insertIntoChatInput(operation.payload, composer)) { sendResponse({ ok: false }); return false; }
-  submitChatInput(composer).then(sent => {
-    sendResponse({ ok: sent, observation: {
+chrome.runtime?.onMessage?.addListener((message, sender, sendResponse) =>
+  handleBackgroundDispatch(message, sender.id === chrome.runtime.id, {
+    messageType: "NOOS_DISPATCH_GOAL_REANCHOR",
+    operationKind: "REANCHOR_GOAL",
+    readObservation: () => runtimeObservationLedger.value,
+    isSubmissionActive: () => activeSubmission !== null,
+    claimSubmission: claim => { activeSubmission = claim; },
+    buildObservation: (current, operation) => ({
       conversationRef: current.providerConversationRef, routeRef: getPageContext().pathname,
       assistantMessageCount: document.querySelectorAll("[data-message-author-role='assistant']").length,
       userMessageCount: document.querySelectorAll("[data-message-author-role='user']").length,
       ...readSubmissionMessageEvidence(), observedAt: Date.now(), sourceEpoch: current.sourceEpoch,
       generationActive: true, dispatchFence: operation.dispatchFence
-    } });
-  }).catch(() => sendResponse({ ok: false }));
-  return true;
-});
+    }),
+    sendResponse
+  })
+);
 
 let deliveryProbeInFlight = false;
 let deliveryProbeAt = 0;
-chrome.runtime?.onMessage?.addListener((message, sender, sendResponse) => {
-  if (message?.type !== "NOOS_DISPATCH_DELIVER_CHILD_RESULT") return false;
-  if (sender.id !== chrome.runtime.id) { sendResponse({ ok: false }); return false; }
-  const operation = message.operation;
-  const current = runtimeObservationLedger.value;
-  if (!current || current.state !== "READY" || activeSubmission ||
-    operation?.operationKind !== "DELIVER_CHILD_RESULT" || operation.state !== "DISPATCHING" ||
-    !isSubmissionFence(operation.dispatchFence) || typeof operation.payload !== "string" ||
-    operation.dispatchFence.leaseOwnerRef !== current.executionInstanceRef ||
-    operation.dispatchFence.bindingEpoch !== current.sourceEpoch ||
-    operation.dispatchFence.targetCarrierRef !== current.carrierRef ||
-    operation.dispatchFence.providerConversationRef !== current.providerConversationRef) {
-    sendResponse({ ok: false }); return false;
-  }
-  activeSubmission = { operationId: operation.operationId, logicalThreadId: operation.logicalThreadId, fence: operation.dispatchFence, claimedAt: operation.dispatchClaimedAt };
-  const composer = getChatComposer();
-  if (!composer || !insertIntoChatInput(operation.payload, composer)) { sendResponse({ ok: false }); return false; }
-  submitChatInput(composer).then(sent => {
-    sendResponse({ ok: sent, observation: {
+chrome.runtime?.onMessage?.addListener((message, sender, sendResponse) =>
+  handleBackgroundDispatch(message, sender.id === chrome.runtime.id, {
+    messageType: "NOOS_DISPATCH_DELIVER_CHILD_RESULT",
+    operationKind: "DELIVER_CHILD_RESULT",
+    readObservation: () => runtimeObservationLedger.value,
+    isSubmissionActive: () => activeSubmission !== null,
+    claimSubmission: claim => { activeSubmission = claim; },
+    buildObservation: (current, operation) => ({
       conversationRef: current.providerConversationRef, routeRef: getPageContext().pathname,
       assistantMessageCount: document.querySelectorAll("[data-message-author-role='assistant']").length,
       userMessageCount: document.querySelectorAll("[data-message-author-role='user']").length,
       ...readSubmissionMessageEvidence(), observedAt: Date.now(), sourceEpoch: current.sourceEpoch,
       generationActive: true, dispatchFence: operation.dispatchFence
-    } });
-  }).catch(() => sendResponse({ ok: false }));
-  return true;
-});
+    }),
+    sendResponse
+  })
+);
 
 async function probeChildDelivery(observation: CarrierObservation): Promise<void> {
   if (deliveryProbeInFlight || activeSubmission || observation.state !== "READY" ||
     observation.carrierIdentityState !== "browser-tab" || !observation.providerConversationRef ||
+    // Issue #98: a background delivery yields to the Human's unsent draft. Asking
+    // at all while a draft is pending is what used to overwrite it — the probe
+    // claims a delivery operation before the carrier ever sees the composer. Not
+    // asking is also the whole convergence story: nothing is claimed, so there is
+    // no ledger state to unwind, and the next observation tick (the 1s cadence
+    // below) retries once the composer is free again. This is the same judgment
+    // the outbox gate already makes (outbox-gate.ts `composer_not_empty`).
+    !isChatComposerEmpty() ||
     Date.now() - deliveryProbeAt < 1000) return;
   deliveryProbeInFlight = true;
   deliveryProbeAt = Date.now();
@@ -3649,6 +3636,10 @@ async function probeChildDelivery(observation: CarrierObservation): Promise<void
 async function probeGoalReanchor(observation: CarrierObservation): Promise<void> {
   if (goalProbeInFlight || activeSubmission || observation.state !== "READY" ||
     observation.carrierIdentityState !== "browser-tab" || !observation.providerConversationRef ||
+    // Same yield as `probeChildDelivery`: a re-anchor is a background payload
+    // bound for the same composer, so it waits for the Human's draft the same
+    // way. Nothing is claimed while it waits, so nothing has to be converged.
+    !isChatComposerEmpty() ||
     Date.now() - goalProbeAt < 1000) return;
   goalProbeInFlight = true;
   goalProbeAt = Date.now();
