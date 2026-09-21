@@ -146,4 +146,17 @@ describe("evaluateContinuation", () => {
     const verdict = await evaluateContinuation({ goal: "g", scope: "s", assistantTurnExcerpt: "x" }, config, fetchImpl as unknown as typeof fetch);
     expect(verdict.stopReason).toBe("EVALUATOR_UNAVAILABLE");
   });
+
+  // The runtime verdict over the issue #85 confidence gate: this is the shape the
+  // reported bug produced — four green semantic fields, only the evaluator's
+  // self-reported certainty at MEDIUM — and the old rule reported it to the Human
+  // as WAIT_HUMAN ("waiting for your decision") without any boundary being stated.
+  it("continues a fully green MEDIUM assessment through the runtime verdict (issue #85 ACCEPT)", async () => {
+    const fetchImpl = vi.fn(async () => chatResponse(JSON.stringify(assessment({ confidence: "MEDIUM" }))));
+    const verdict = await evaluateContinuation({ goal: "g", scope: "s", assistantTurnExcerpt: "I traced the loader and the re-entry path is genuinely missing." }, config, fetchImpl as unknown as typeof fetch);
+    expect(verdict.decision).toBe("WOULD_CONTINUE");
+    expect(verdict.stopReason).toBeUndefined();
+    expect(verdict.vetoHit).toBe(false);
+    expect(verdict.assessment?.confidence).toBe("MEDIUM");
+  });
 });

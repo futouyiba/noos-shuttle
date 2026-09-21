@@ -12,6 +12,7 @@ import {
   parseFixtureRecord,
   runEvaluation,
   type ContinuationAssessment,
+  type FixtureCategory,
   type FixtureRecord,
 } from "../src/core/continuation-eligibility";
 
@@ -121,10 +122,117 @@ describe("decideContinuation", () => {
       { dependency: "NEEDS_EVIDENCE" },
       { dependency: "NEEDS_EXTERNAL" },
       { dependency: "UNCERTAIN" },
-      { confidence: "MEDIUM" },
       { confidence: "LOW" },
     ];
     for (const violation of stops) expect(decideContinuation(assessment(violation))).toBe("WOULD_STOP");
+  });
+});
+
+describe("decideContinuation confidence gate (issue #85 ACCEPT)", () => {
+  it("all four semantic fields green + MEDIUM => continue", () => {
+    const allGreen = assessment({ confidence: "MEDIUM" });
+    expect(decideContinuation(allGreen)).toBe("WOULD_CONTINUE");
+  });
+
+  it("all four semantic fields green + LOW => stop", () => {
+    expect(decideContinuation(assessment({ confidence: "LOW" }))).toBe("WOULD_STOP");
+  });
+
+  it("MEDIUM + a semantic field at UNCERTAIN => stop, for each of the four", () => {
+    const uncertainSemantics: Partial<ContinuationAssessment>[] = [
+      { goal_status: "UNCERTAIN" },
+      { focus_status: "UNCERTAIN" },
+      { scope_relation: "UNCERTAIN" },
+      { dependency: "UNCERTAIN" },
+    ];
+    for (const semantic of uncertainSemantics) {
+      expect(decideContinuation(assessment({ ...semantic, confidence: "MEDIUM" }))).toBe("WOULD_STOP");
+    }
+  });
+
+  it("MEDIUM + NEEDS_HUMAN => stop", () => {
+    expect(decideContinuation(assessment({ dependency: "NEEDS_HUMAN", confidence: "MEDIUM" }))).toBe("WOULD_STOP");
+  });
+});
+
+describe("continuation gate characterization over the assessment enum space (issue #85 delta 6)", () => {
+  const GOALS = ["IN_PROGRESS", "SATISFIED", "UNCERTAIN"] as const;
+  const FOCUSES = ["OPEN_ADVANCING", "SATISFIED", "REFINED", "BLOCKED", "STALLED_SUSPECTED", "UNCERTAIN"] as const;
+  const SCOPES = ["WITHIN_SCOPE", "OPTIONAL_EXTENSION", "OUT_OF_SCOPE", "UNCERTAIN"] as const;
+  const DEPENDENCIES = ["NONE", "NEEDS_HUMAN", "NEEDS_REVIEW", "NEEDS_EVIDENCE", "NEEDS_EXTERNAL", "UNCERTAIN"] as const;
+  const CONFIDENCES = ["HIGH", "MEDIUM", "LOW"] as const;
+
+  it("enumerates only values the real parser accepts, so this space is not a fiction", () => {
+    for (const goal_status of GOALS) for (const focus_status of FOCUSES) for (const scope_relation of SCOPES) for (const dependency of DEPENDENCIES) for (const confidence of CONFIDENCES) {
+      expect(() => parseAssessment({ goal_status, focus_status, scope_relation, dependency, anchor_need: "NONE", confidence })).not.toThrow();
+    }
+  });
+
+  it("continues on exactly the four green semantic fields at HIGH or MEDIUM, and on nothing else", () => {
+    const continuing = new Set<string>();
+    let combinations = 0;
+    for (const goal_status of GOALS) for (const focus_status of FOCUSES) for (const scope_relation of SCOPES) for (const dependency of DEPENDENCIES) for (const confidence of CONFIDENCES) {
+      combinations += 1;
+      const semanticGreen = goal_status === "IN_PROGRESS"
+        && (focus_status === "OPEN_ADVANCING" || focus_status === "REFINED")
+        && scope_relation === "WITHIN_SCOPE"
+        && dependency === "NONE";
+      const decision = decideContinuation({ goal_status, focus_status, scope_relation, dependency, anchor_need: "NONE", confidence });
+      expect(decision).toBe(semanticGreen && confidence !== "LOW" ? "WOULD_CONTINUE" : "WOULD_STOP");
+      if (decision === "WOULD_CONTINUE") continuing.add([goal_status, focus_status, scope_relation, dependency, confidence].join("/"));
+    }
+    expect(combinations).toBe(1296);
+    // The whole widening surface, enumerated: adding MEDIUM to the confidence
+    // conjunct can never make a semantic field pass, so these four readings are
+    // the complete set of continues. Every one of the other 1292 stops.
+    expect([...continuing].sort()).toEqual([
+      "IN_PROGRESS/OPEN_ADVANCING/WITHIN_SCOPE/NONE/HIGH",
+      "IN_PROGRESS/OPEN_ADVANCING/WITHIN_SCOPE/NONE/MEDIUM",
+      "IN_PROGRESS/REFINED/WITHIN_SCOPE/NONE/HIGH",
+      "IN_PROGRESS/REFINED/WITHIN_SCOPE/NONE/MEDIUM",
+    ]);
+  });
+
+  it("cannot continue any blocking-negative family at any confidence, MEDIUM included", () => {
+    // Each blocking-negative category is defined by a semantic violation, and the
+    // confidence axis is orthogonal to all of them: this is why widening the
+    // confidence conjunct cannot produce a false-continue on a correctly labeled
+    // blocking negative.
+    const blockingShapes: Array<{ category: FixtureCategory; semantics: Partial<ContinuationAssessment> }> = [
+      { category: "GOAL_SATISFIED", semantics: { goal_status: "SATISFIED" } },
+      { category: "NEEDS_HUMAN", semantics: { dependency: "NEEDS_HUMAN" } },
+      { category: "NEEDS_REVIEW", semantics: { dependency: "NEEDS_REVIEW" } },
+      { category: "NEEDS_EVIDENCE", semantics: { dependency: "NEEDS_EVIDENCE" } },
+      { category: "NEEDS_EXTERNAL", semantics: { dependency: "NEEDS_EXTERNAL" } },
+    ];
+    for (const shape of blockingShapes) {
+      expect(isBlockingNegative(fixture({ category: shape.category }))).toBe(true);
+      for (const confidence of CONFIDENCES) {
+        expect(decideContinuation(assessment({ ...shape.semantics, confidence }))).toBe("WOULD_STOP");
+      }
+    }
+  });
+
+  it("keeps the offline gate at zero blocking-negative false-continue when every assessment is MEDIUM", () => {
+    // The strongest gate evidence available in this repo state: a batch at the
+    // gate threshold whose positives are green MEDIUM — the newly accepted level,
+    // and 35/35 would have been false-stopped by the old rule — and whose blocking
+    // negatives carry their defining violation at MEDIUM too.
+    const records = [
+      ...Array.from({ length: 35 }, (_, i) => fixture({ fixture_id: `pos-${i}`, category: "CLEAR_CONTINUE", expected_continue: true })),
+      ...Array.from({ length: 5 }, (_, i) => fixture({ fixture_id: `block-${i}`, category: "NEEDS_HUMAN", expected_continue: false })),
+    ];
+    const assessments: Record<string, ContinuationAssessment> = Object.fromEntries([
+      ...Array.from({ length: 35 }, (_, i) => [`pos-${i}`, assessment({ confidence: "MEDIUM" })] as const),
+      ...Array.from({ length: 5 }, (_, i) => [`block-${i}`, assessment({ dependency: "NEEDS_HUMAN" as const, confidence: "MEDIUM" })] as const),
+    ]);
+    const report = runEvaluation(records, assessments, { minGateFixtures: 40 });
+    expect(report.gate.outcome).toBe("PASS");
+    expect(report.gate.violations).toEqual([]);
+    expect(report.overall.blocking_negative_false_continue).toBe(0);
+    expect(report.overall.negative_false_continue).toBe(0);
+    expect(report.overall.negative_false_continue_rate).toBe(0);
+    expect(report.overall.clear_positive_recall).toBe(1);
   });
 });
 
@@ -215,8 +323,11 @@ describe("runEvaluation", () => {
   });
 
   it("fails below the 80% clear-positive recall", () => {
+    // Two clear positives must stop to land on 3/5. `pos-0` uses a semantic
+    // violation rather than MEDIUM confidence, because MEDIUM no longer stops on
+    // an otherwise green assessment (issue #85 ACCEPT); `pos-1` pins that LOW still does.
     const records = batch(5, 5);
-    const report = runEvaluation(records, answers(records, { "pos-0": { confidence: "MEDIUM" }, "pos-1": { confidence: "LOW" } }), { minGateFixtures: 10 });
+    const report = runEvaluation(records, answers(records, { "pos-0": { dependency: "NEEDS_EVIDENCE" }, "pos-1": { confidence: "LOW" } }), { minGateFixtures: 10 });
     expect(report.overall.clear_positive_recall).toBeLessThan(MIN_CLEAR_POSITIVE_RECALL);
     expect(report.gate.outcome).toBe("FAIL");
     expect(report.gate.violations.join(" ")).toMatch(/clear_positive_recall=0.6/);
