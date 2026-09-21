@@ -93,6 +93,42 @@ export function insertIntoChatInput(text: string, expectedComposer?: HTMLElement
   return true;
 }
 
+/**
+ * Why a background-initiated write did not happen. Neither is a failure of the
+ * delivery: `chatgpt_composer_not_empty` in particular means the Human's turn
+ * has priority, which is the normal case during a conversation.
+ */
+export type ComposerInsertRefusal = "chatgpt_composer_unavailable" | "chatgpt_composer_not_empty";
+
+export type ComposerInsertResult =
+  | { readonly ok: true; readonly composer: HTMLElement }
+  | { readonly ok: false; readonly reason: ComposerInsertRefusal };
+
+/**
+ * Write `text` into the composer *only* if the Human has nothing pending there,
+ * and say which of the two happened without ever touching a draft (issue #98).
+ *
+ * This is the single place a background payload is allowed to reach the
+ * composer. It exists as its own function, rather than as a check a caller is
+ * trusted to remember, because both halves have to be in the same synchronous
+ * turn: the emptiness read and the write below cannot be separated by an
+ * `await`, or a draft typed in between would be overwritten anyway. A caller
+ * that gets `ok: true` has already replaced a composer it observed empty; a
+ * caller that gets `ok: false` has not modified the page at all.
+ *
+ * The refusal is a return value and not a throw because the refusal is
+ * actionable by the *caller's* caller: the background has to learn that the
+ * delivery was not attempted so it can retry once the Human's turn is done,
+ * which is a different outcome from "we may have sent something".
+ */
+export function insertIntoFreeChatInput(text: string): ComposerInsertResult {
+  const composer = getChatComposer();
+  if (!composer) return { ok: false, reason: "chatgpt_composer_unavailable" };
+  if (!isChatComposerEmpty()) return { ok: false, reason: "chatgpt_composer_not_empty" };
+  if (!insertIntoChatInput(text, composer)) return { ok: false, reason: "chatgpt_composer_unavailable" };
+  return { ok: true, composer };
+}
+
 interface AttachMarkdownFileOptions {
   root?: ParentNode | null;
 }
