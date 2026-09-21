@@ -16,10 +16,21 @@
  * Two structural properties make that enforcement fail-closed rather than
  * best-effort, and both are load-bearing:
  *
- *  1. Every evidence question is read through `isYes(verdict)`, which returns
- *     true only for the literal `"YES"` variant. Absent, malformed or
- *     explicitly `UNKNOWN` evidence therefore denies by construction — there is
- *     no code path in which a missing field reads as a pass.
+ *  1. Every question whose passing answer is "yes, this is established" is read
+ *     through `isYes(verdict)`, and every question whose passing answer is "no,
+ *     this is not happening" through `isNo(verdict)`. Both pass only for the
+ *     explicit literal — `true`/`"YES"`, `false`/`"NO"` — so absent, malformed
+ *     or explicitly `UNKNOWN` evidence denies by construction, and an unread
+ *     field never reads as a pass.
+ *
+ *     The one pair not routed through a predicate is the human-state hazard
+ *     check in `checkRefresh` (`draftPresent ?? false`): "would this refresh
+ *     discard a draft?" is false whenever no draft was observed, so a bare
+ *     presence flag is the correct reading *there*. What keeps that from being a
+ *     fail-open is that the sub-record itself is required — an absent
+ *     `humanStateSafety` denies — and `refreshSafe`, the affirmative
+ *     `isYes`-checked assertion over the same hazards, must still be an explicit
+ *     `true`.
  *  2. There is no shared "looks fine" gate. Each action has its own check list in
  *     `checkAction`, and a satisfied list for one action is never consulted for
  *     another. In particular the two things most tempting to conflate — a turn
@@ -92,9 +103,9 @@ export interface RecoveryGateInput {
 }
 
 /**
- * The only pass predicate in this module. Everything that is not an explicit
- * `"YES"` — including every `"UNKNOWN"` and every absent field — denies. See
- * property (1) above.
+ * The pass predicate for questions whose passing answer is "yes, this is
+ * established". Everything that is not an explicit `"YES"` — including every
+ * `"UNKNOWN"` and every absent field — denies. See property (1) above.
  *
  * It accepts the raw material (`boolean | undefined`) as well as a typed
  * verdict, because an omitted optional field IS the `UNKNOWN` case: the caller
@@ -105,6 +116,34 @@ export interface RecoveryGateInput {
  */
 function isYes<T extends string>(verdict: EvidenceVerdict<T> | boolean | undefined): boolean {
   return verdict === true || (typeof verdict === "object" && verdict !== null && verdict.status === "YES");
+}
+
+/**
+ * The pass predicate for questions whose passing answer is "no, this is not
+ * happening" — the side-effect question is the one this module asks. It is
+ * `isYes` with the polarity flipped and is exactly as fail-closed: `true`,
+ * `"YES"`, `"UNKNOWN"`, a malformed value and an absent field all deny, and only
+ * an explicit `false` / `"NO"` passes.
+ *
+ * Writing these checks as `!isNo(...)` rather than `... === true` is the whole
+ * point. A negative-polarity question asked as a bare comparison reads "we never
+ * looked" as a pass, which is the fail-open §4.2 names: "ambiguity fails closed",
+ * and a side effect whose status is unknown is precisely the ambiguity that must
+ * not become permission to recover by side effect.
+ */
+function isNo<T extends string>(verdict: EvidenceVerdict<T> | boolean | undefined): boolean {
+  return verdict === false || (typeof verdict === "object" && verdict !== null && verdict.status === "NO");
+}
+
+/**
+ * The audit detail for a side-effect refusal. Both polarities deny, with the one
+ * shared reason §8.2 names; distinguishing them here matters because "nobody
+ * read it" and "it is outstanding" are different facts about the Run, and only
+ * the second one is waiting on a tool or an external system to settle.
+ */
+function sideEffectsDetail(sideEffectsOutstanding: boolean | undefined): string {
+  if (sideEffectsOutstanding === true) return "unresolved tool/external side effects";
+  return "no evidence that tool/external side effects are resolved; an unread side-effect question is not a resolved one";
 }
 
 function deny(reason: RecoveryGateDenyReason, detail?: string): RecoveryGateDecision {
@@ -182,10 +221,20 @@ function checkRefresh(evidence: RecoveryEvidence): RecoveryGateDecision | undefi
     return deny("EXECUTION_OWNERSHIP_AMBIGUOUS", "an execution-owning operation may still be in flight");
   }
   const humanState = evidence.humanStateSafety;
-  if (humanState?.draftPresent === true && humanState.draftPreservedByAction !== true) {
+  if (humanState === undefined) {
+    // §4.2: ambiguity fails closed. "The refresh disturbs no Human state" and
+    // "nobody looked at the composer" are the same absence, and only one of them
+    // is safe to actuate on — so the record is required, not merely consulted
+    // when present.
+    return deny(
+      "REFRESH_UNSAFE_FOR_HUMAN_STATE",
+      "no evidence about draft/attachment/ephemeral Human state was read; a refresh that might discard Human state must not be authorized on an unasked question",
+    );
+  }
+  if (humanState.draftPresent === true && humanState.draftPreservedByAction !== true) {
     return deny("REFRESH_UNSAFE_FOR_HUMAN_STATE", "a refresh would discard a composer draft");
   }
-  if (humanState?.ephemeralHumanStatePresent === true && humanState.ephemeralHumanStatePreservedByAction !== true) {
+  if (humanState.ephemeralHumanStatePresent === true && humanState.ephemeralHumanStatePreservedByAction !== true) {
     return deny("REFRESH_UNSAFE_FOR_HUMAN_STATE", "a refresh would discard ephemeral Human state");
   }
   if (!isYes(evidence.refreshSafe)) {
@@ -222,8 +271,8 @@ function checkProviderNativeRetry(evidence: RecoveryEvidence): RecoveryGateDecis
       "provider-native Retry requires a determinately interrupted assistant generation",
     );
   }
-  if (evidence.sideEffectsOutstanding === true) {
-    return deny("SIDE_EFFECTS_UNRESOLVED", "unresolved tool/external side effects");
+  if (!isNo(evidence.sideEffectsOutstanding)) {
+    return deny("SIDE_EFFECTS_UNRESOLVED", sideEffectsDetail(evidence.sideEffectsOutstanding));
   }
   return undefined;
 }
@@ -310,8 +359,8 @@ function checkContinueProviderTurn(
       "continue requires a determinately interrupted assistant generation",
     );
   }
-  if (evidence.sideEffectsOutstanding === true) {
-    return deny("SIDE_EFFECTS_UNRESOLVED", "unresolved tool/external side effects");
+  if (!isNo(evidence.sideEffectsOutstanding)) {
+    return deny("SIDE_EFFECTS_UNRESOLVED", sideEffectsDetail(evidence.sideEffectsOutstanding));
   }
   if (!isYes(evidence.sameProviderConversation)) {
     return deny("SAME_CONVERSATION_UNPROVEN", "same Provider Conversation/binding not established");

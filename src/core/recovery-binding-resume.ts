@@ -198,6 +198,11 @@ export interface ResumeAuthorizationDecision {
  * or when the only authorization on hand predates the pause: the old run's
  * authorization is spent, and re-presenting it is exactly the fail-open §6.2
  * names ("不得因'已恢复工作位'而跳过 Goal/授权询问").
+ *
+ * The timing clause is written so that the "after the pause" half of that
+ * guarantee does not depend on the caller's willingness to supply `pausedAt`:
+ * with no pause time on hand the ordering is unestablishable, and an
+ * unestablishable ordering is a denial rather than a skipped check.
  */
 export function resumeAuthorizationRequired(args: {
   readonly eligibility: ResumeEligibility;
@@ -207,7 +212,11 @@ export function resumeAuthorizationRequired(args: {
   readonly priorAuthorizationRef?: string;
   /** Process time the new authorization was established, if any. */
   readonly newAuthorizationEstablishedAt?: number;
-  /** Process time the run was paused. */
+  /**
+   * Process time the run was paused. Optional in the type so that a caller with
+   * no pause time gets a denial it can report rather than a compile error it
+   * might work around; omitting it denies.
+   */
   readonly pausedAt?: number;
 }): ResumeAuthorizationDecision {
   if (!args.eligibility.eligible) {
@@ -232,7 +241,14 @@ export function resumeAuthorizationRequired(args: {
       detail: "the pre-pause authorization cannot be reused across a binding change",
     };
   }
-  if (args.pausedAt !== undefined && (args.newAuthorizationEstablishedAt === undefined || args.newAuthorizationEstablishedAt <= args.pausedAt)) {
+  if (args.pausedAt === undefined) {
+    return {
+      authorized: false,
+      denial: "AUTHORIZATION_NOT_ESTABLISHED_AFTER_PAUSE",
+      detail: "no pause time on hand; whether the presented authorization was established after the pause cannot be established",
+    };
+  }
+  if (args.newAuthorizationEstablishedAt === undefined || args.newAuthorizationEstablishedAt <= args.pausedAt) {
     return {
       authorized: false,
       denial: "AUTHORIZATION_NOT_ESTABLISHED_AFTER_PAUSE",

@@ -186,12 +186,21 @@ export interface RecoveryEvidence {
   readonly turnAcceptance?: TurnAcceptance;
   /** §4.2: an accepted turn's assistant side may interrupt; Shuttle must never resend it. */
   readonly assistantGeneration?: AssistantGenerationStatus;
-  /** §4.2 / §4.1: unresolved tool or external side effects fail the continue gate closed. */
+  /**
+   * §4.2 / §4.1 / §8.2: unresolved tool or external side effects fail both the
+   * continue gate and the provider-native Retry gate closed. Only an explicit
+   * `false` passes — an unread question denies exactly like an outstanding side
+   * effect, because "nobody checked" and "there are none" must never collapse
+   * into the same value when the consequence of being wrong is a duplicate
+   * external effect.
+   */
   readonly sideEffectsOutstanding?: boolean;
-  /** §6.1: Human intervention (including a hand-clicked provider Retry) ends the Run. */
-  readonly humanIntervention?: boolean;
-  /** §6.1: a Stop latch cancels everything not yet actuated. */
-  readonly stopLatched?: boolean;
+
+  // §6.1's Stop latch and Human intervention are deliberately NOT modelled here.
+  // They are run-side state rather than evidence, and the gate reads them from
+  // `RecoveryLoopContext` (see `recovery-evidence-gate.ts`); defining them a
+  // second time on this type would be a silent second truth that no code reads,
+  // inviting a caller to set a latch in the one place that has no effect.
 
   // -- REFRESH evidence --
   /** Same Provider Conversation + binding generation, no execution-owning ambiguity (§4.1). */

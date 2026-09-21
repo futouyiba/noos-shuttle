@@ -149,6 +149,96 @@ describe("fail-closed property: absent evidence never reads as a pass", () => {
   });
 });
 
+/**
+ * The counterexamples that falsified "there is no code path in which a missing
+ * field reads as a pass". Each one drops a single field from an otherwise
+ * fully-satisfying evidence set, so the denial cannot be attributed to any other
+ * clause — which is exactly what the older "no evidence denies every action"
+ * case could not show: it denied REFRESH on the FIRST clause
+ * (`SAME_CONVERSATION_UNPROVEN`) and so never reached the human-state pair.
+ */
+describe("absent side-effect / human-state evidence denies (§4.2: ambiguity fails closed)", () => {
+  it("denies CONTINUE_PROVIDER_TURN when sideEffectsOutstanding was never read", () => {
+    const { sideEffectsOutstanding: _unread, ...sideEffectsUnread } = CONTINUE_ACCEPTED_OK;
+    // Control first: the same set WITH the read is a pass, so the denial below
+    // is attributable to the unread field and nothing else.
+    expect(gate("CONTINUE_PROVIDER_TURN", CONTINUE_ACCEPTED_OK).decision.verdict).toBe("ALLOW");
+    const result = gate("CONTINUE_PROVIDER_TURN", sideEffectsUnread);
+    expectDeny(result.decision, "SIDE_EFFECTS_UNRESOLVED");
+    // A refusal authorizes nothing and burns no budget (§5.2).
+    expect(result.budget.consumedAttempts).toBe(0);
+  });
+
+  it("denies PROVIDER_NATIVE_RETRY when sideEffectsOutstanding was never read", () => {
+    const { sideEffectsOutstanding: _unread, ...sideEffectsUnread } = NATIVE_RETRY_OK;
+    expect(gate("PROVIDER_NATIVE_RETRY", NATIVE_RETRY_OK).decision.verdict).toBe("ALLOW");
+    expectDeny(gate("PROVIDER_NATIVE_RETRY", sideEffectsUnread).decision, "SIDE_EFFECTS_UNRESOLVED");
+  });
+
+  it("denies REFRESH when the human-state safety record is absent", () => {
+    const { humanStateSafety: _unread, ...humanStateUnread } = REFRESH_OK;
+    expect(gate("REFRESH", REFRESH_OK).decision.verdict).toBe("ALLOW");
+    const result = gate("REFRESH", humanStateUnread);
+    expectDeny(result.decision, "REFRESH_UNSAFE_FOR_HUMAN_STATE");
+    expect(result.budget.consumedAttempts).toBe(0);
+  });
+
+  it("distinguishes 'known outstanding' from 'never read' in the audit detail", () => {
+    // Both deny for the same reason — an unresolved side effect IS the failure
+    // §8.2 names — but an audit must be able to tell which one it was.
+    const { sideEffectsOutstanding: _unread, ...sideEffectsUnread } = CONTINUE_ACCEPTED_OK;
+    const neverRead = gate("CONTINUE_PROVIDER_TURN", sideEffectsUnread).decision;
+    const knownOutstanding = gate("CONTINUE_PROVIDER_TURN", { ...CONTINUE_ACCEPTED_OK, sideEffectsOutstanding: true }).decision;
+    expectDeny(neverRead, "SIDE_EFFECTS_UNRESOLVED");
+    expectDeny(knownOutstanding, "SIDE_EFFECTS_UNRESOLVED");
+    if (neverRead.verdict !== "DENY" || knownOutstanding.verdict !== "DENY") throw new Error("unreachable");
+    expect(neverRead.detail).not.toBe(knownOutstanding.detail);
+  });
+});
+
+/**
+ * The generic form of the same property, and the guard against the failure
+ * recurring: rather than trusting a hand-picked case per clause, this drops one
+ * satisfied field at a time from each fully-satisfying set. A clause that can be
+ * masked by an earlier one no longer passes unnoticed, and a polarity slip like
+ * `=== true` is caught for every field it could be written on.
+ */
+describe("every satisfied evidence field is load-bearing (§4.2)", () => {
+  const MUST_DENY_WHEN_DROPPED: ReadonlyArray<readonly [RecoveryAction, RecoveryEvidence, readonly string[]]> = [
+    ["REFRESH", REFRESH_OK, ["sameProviderConversation", "executionOwnershipUnambiguous", "refreshSafe", "humanStateSafety"]],
+    ["PROVIDER_NATIVE_RETRY", NATIVE_RETRY_OK, ["turnAcceptance", "assistantGeneration", "sideEffectsOutstanding", "providerRetrySemantics"]],
+    [
+      "CONTINUE_PROVIDER_TURN",
+      CONTINUE_ACCEPTED_OK,
+      [
+        "turnAcceptance",
+        "acceptedOperationId",
+        "acceptedOperationKind",
+        "acceptedTurnRef",
+        "assistantPartialOutputObserved",
+        "assistantGeneration",
+        "sideEffectsOutstanding",
+        "sameProviderConversation",
+      ],
+    ],
+    // `priorAttemptRefs` is the one field deliberately NOT listed: it records
+    // attempts already burned, so its absence is "no retry has happened yet",
+    // which is a legitimate pass rather than an unread question.
+    ["SHUTTLE_RETRY", SHUTTLE_RETRY_OK, ["turnAcceptance", "logicalOperationId", "dispatchAttemptRef"]],
+  ];
+
+  it("denies when any one of them is dropped", () => {
+    for (const [action, base, fields] of MUST_DENY_WHEN_DROPPED) {
+      expect(gate(action, base).decision.verdict, `${action}: the base set must be a pass`).toBe("ALLOW");
+      for (const field of fields) {
+        const dropped = { ...base } as Record<string, unknown>;
+        delete dropped[field];
+        expect(gate(action, dropped as RecoveryEvidence).decision.verdict, `${action} without ${field}`).toBe("DENY");
+      }
+    }
+  });
+});
+
 describe("WAIT / REOBSERVE / RECONCILE: the only path out of UNKNOWN (§4.1)", () => {
   it("allows all three with no evidence and charges nothing", () => {
     for (const action of ["WAIT", "REOBSERVE", "RECONCILE"] as const) {

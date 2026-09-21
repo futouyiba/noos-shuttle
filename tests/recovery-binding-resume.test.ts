@@ -174,6 +174,32 @@ describe("RESUME_ELIGIBLE is a precondition for asking, not the permission (§6.
     }
   });
 
+  it("denies when the pause time itself is missing", () => {
+    // Without this clause the "established AFTER the pause" guarantee is only
+    // as good as the caller's willingness to pass `pausedAt`: a non-prior ref
+    // with no pause time on hand would otherwise read as authorized.
+    const decision = resumeAuthorizationRequired({
+      eligibility: ELIGIBLE,
+      newAuthorizationRef: "auth-new",
+      priorAuthorizationRef: "auth-old",
+      newAuthorizationEstablishedAt: 5_000,
+    });
+    expect(decision.authorized).toBe(false);
+    expect(decision.denial).toBe("AUTHORIZATION_NOT_ESTABLISHED_AFTER_PAUSE");
+  });
+
+  it("denies when the pause time is missing even for a ref that was never presented before", () => {
+    const decision = resumeAuthorizationRequired({ eligibility: ELIGIBLE, newAuthorizationRef: "auth-brand-new", newAuthorizationEstablishedAt: 5_000 });
+    expect(decision.authorized).toBe(false);
+    expect(decision.denial).toBe("AUTHORIZATION_NOT_ESTABLISHED_AFTER_PAUSE");
+  });
+
+  it("denies when the authorization's establishment time is missing", () => {
+    const decision = resumeAuthorizationRequired({ eligibility: ELIGIBLE, newAuthorizationRef: "auth-new", pausedAt: 1_000 });
+    expect(decision.authorized).toBe(false);
+    expect(decision.denial).toBe("AUTHORIZATION_NOT_ESTABLISHED_AFTER_PAUSE");
+  });
+
   it("authorizes only an eligible resume with a genuinely new, post-pause authorization", () => {
     const decision = resumeAuthorizationRequired({
       eligibility: ELIGIBLE,
