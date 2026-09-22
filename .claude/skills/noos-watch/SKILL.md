@@ -121,9 +121,12 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
    在投递中途）。其余按首行标记 + 次行 provenance 分档路由：
 
    - `REVIEW: REQUEST_CHANGES` → 向该 PR 的实现会话投 `fix PR#N`
-   - `REVIEW: APPROVE` → 通知 orchestrator；向 integrator 会话只投递
-     `merge PR#N` 指针。该消息只负责唤醒且不构成授权；integrator 从
-     PR body、标记及原授权通道核验 head、证据与授权，不在消息中复制
+   - `REVIEW: APPROVE` → 以 PR 指针通知实现会话补 PR body／转 Ready，
+     并通知 orchestrator。确认 PR 线程已有带 provenance 的
+     `intg: merge PR#N` 委派记录后，才向 integrator 会话投递同一指针；
+     缺失时只唤醒实现会话／orchestrator 补记录，不唤醒 integrator。
+     消息只负责唤醒且不构成授权；各角色从 PR、标记及原授权通道核验
+     head、证据与授权，不在消息中复制
    - `DESIGN: REQUEST_CHANGES`（开放 PR）→ 向该 PR 的实现会话投
      `fix PR#N`
    - `DESIGN: APPROVE` → 通知实现会话与 orchestrator

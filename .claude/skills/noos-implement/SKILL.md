@@ -36,6 +36,8 @@ noos_docs `docs/agent-workflow.md` 附录 B（v0.3.2+）；冲突时以附录 B
    验证或 review 正文。不得用 `Closes`／`Fixes`／`Resolves` 等自动关闭
    关键词；issue 只在集成验证与验收完成后关闭。
 9. 自动通知（无需向人请示——通知类动作不是敏感动作）：send_message
-   给 integrator 会话只投递 `merge PR#M` 指针，并通知 orchestrator；
-   授权、head、review 证据与范围由各自原始记录提供，不在消息中复制。
-   `ccd_session_mgmt list_sessions` 按标题/分支定位 integrator。
+   前，先在 PR 线程留下 `intg: merge PR#M` 与 provenance 的最小委派
+   记录；再给 integrator 会话只投递同一指针，并通知 orchestrator。
+   指针和记录都不授权合并；授权、head、review 证据与范围由各自原始
+   记录提供，不在消息中复制。`ccd_session_mgmt list_sessions` 按标题／
+   分支定位 integrator。

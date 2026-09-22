@@ -50,7 +50,9 @@ integrator。完整条款见规范本体。
   指针供恢复，但接管者必须能回读原授权记录。
 - **通知类动作自动执行**：向 integrator / orchestrator 投递暗号、
   send_message 通知等跨角色消息只传对象指针，直接执行、无需向人请示；
-  仅敏感动作（merge / 部署 / push / 关单 / 破坏性变更等）需要授权。
+  指针永不构成授权。`INTEGRATED` 前仍须有带 provenance 的
+  `intg: merge PR#N` 持久委派记录；仅敏感动作（merge / 部署 / push /
+  关单 / 破坏性变更等）需要授权。
 - watcher：本仓由例行任务（noos-watch）约每 10 分钟轮询新评论
   （`gh api issues/comments?since=`），按 verdict 与 provenance
   角色路由唤醒对应会话；无 watcher 在运行时，标记仅为持久邮箱。
