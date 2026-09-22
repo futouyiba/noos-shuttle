@@ -6,7 +6,7 @@ description: Route or perform an epic-designer review or adjudication on a PR or
 # noos-design
 
 等价纯文本暗号：`design <ref>`（ref 为 PR 或携带 proposal 的 issue）。
-权威展开：noos_docs `docs/agent-workflow.md` 附录 B（v0.3.0+）；冲突时
+权威展开：noos_docs `docs/agent-workflow.md` 附录 B（v0.3.2+）；冲突时
 以附录 B 为准。
 
 ## 两种用法
@@ -21,6 +21,11 @@ description: Route or perform an epic-designer review or adjudication on a PR or
 （`REJECTED` 同时关闭 proposal issue）、次行 provenance——经
 connector 发出写 `（des: via connector, 委派: <来源>）`，经人中继
 写 `（des: relayed by <交付来源>）`；决定性表述原文引用（§2.3）；
+同时以 `DESIGN-SOURCE: <path>@<blob-sha>; scope=<裁定射程>` 记录实际
+读取的完整文件。最终 PR 中指定目标文件的 blob 与来源 blob 相同且未
+扩大裁定射程时，由 reviewer 或 integrator 按 canonical 记录
+`DESIGN-EQUIVALENCE` 并承接该 DESIGN，不重复请求 designer。缺少记录、
+blob 不同、只比较局部内容或射程变化时重裁。
 对 reviewer 技术异议的重裁（§2.5）同此。
 
 已合并 PR 上的 DESIGN findings 不要求原 PR 改动：由 orchestrator 以
