@@ -17,13 +17,13 @@ NOOS Shuttle 是用于在 Chatbox、Agent、Coding Agent 和创作工具之间�
 
 https://raw.githubusercontent.com/futouyiba/noos_docs/main/docs/agent-workflow.md
 
-硬门禁：独立 review 必须 APPROVE 当前 exact head；required checks 全部
-成功；授权和阻塞项有效；合并后完成集成验证与 issue 验收。其余按风险和
-上下文判断，完整条款见 canonical。
+硬门禁：独立 review 必须 APPROVE 当前 exact head；授权和阻塞项有效；
+合并后完成集成验证与 issue 验收。其余按风险和上下文判断，完整条款见
+canonical。
 
 ### 跨角色流转暗号（会话内联索引）
 
-权威展开见 v0.3.3（noos_docs `acd0d32`）。本表只提供入口：
+权威展开见 v0.3.4（noos_docs `42d59d6`）。本表只提供入口：
 
 | 暗号 | 角色 | 一句话展开 |
 | --- | --- | --- |
@@ -67,7 +67,7 @@ main 这一事实本身，不构成把该 PR 强制降级为 ad-hoc cherry-pick 
 的理由。**
 
 > 本节**只界定上面这一条落地方式的射程**，**不定义「常规 PR」的完整合并资格**。
-> 合并所需的全部门禁（exact-head review、CI/status、blocking disposition、验收、
+> 合并所需的全部门禁（exact-head review、blocking disposition、验收、
 > 合并授权，以及对实际 merge 结果的核验）由规范本体与该通道各 skill 规定；
 > **本节不新增、不替代、不放松其中任何一项**。若这些来源之间仍有矛盾，应另开
 > 一个有界的 policy reconciliation 任务，**不要**在 intake 段就地造一条新的合并门。
@@ -98,10 +98,9 @@ main 这一事实本身，不构成把该 PR 强制降级为 ad-hoc cherry-pick 
 - **该证据不替代下列任何一项**（逐项列出，不是概括免责）：
   1. **合并授权**——谁有权合并；
   2. **exact-head review**——独立复审确实覆盖被审 head；
-  3. **CI / status** 检查；
-  4. **blocking disposition**——生效中的阻断性裁决；
-  5. **验收**（acceptance）；
-  6. 对**实际 merge 结果**的核验，以及语义／权限耦合面的核验。
+  3. **blocking disposition**——生效中的阻断性裁决；
+  4. **验收**（acceptance）；
+  5. 对**实际 merge 结果**的核验，以及语义／权限耦合面的核验。
 
   即：路径交集为空**只是证据**，既不构成合并资格判定，也不放松上述任何一项。
 - 之所以关注锚点：B.3 的三方 head 一致（reviewed head ＝ PR body 记录的 head ＝
