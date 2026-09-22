@@ -6,7 +6,7 @@ description: Integrate an approved pull request per the agent-workflow spec (ver
 # noos-merge
 
 等价纯文本暗号：`merge PR#N`。权威规则：noos_docs
-`docs/agent-workflow.md` v0.3.4+；冲突时以 canonical 为准。指针和评论
+`docs/agent-workflow.md` 当前 canonical；冲突时以 canonical 为准。指针和评论
 不授权合并；使用可回读且未越界的人类授权或有界持续授权。
 
 ## 步骤
