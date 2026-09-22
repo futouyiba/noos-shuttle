@@ -5,28 +5,16 @@ description: Route or perform an epic-designer review or adjudication on a PR or
 
 # noos-design
 
-等价纯文本暗号：`design <ref>`（ref 为 PR 或携带 proposal 的 issue）。
-权威展开：noos_docs `docs/agent-workflow.md` 附录 B（v0.3.2+）；冲突时
-以附录 B 为准。
+等价纯文本暗号：`design <ref>`。权威规则：noos_docs
+`docs/agent-workflow.md` v0.3.3+；冲突时以 canonical 为准。
 
 ## 两种用法
 
-**CC 会话收到 design**：本会话作为流转代理，生成给 designer 的极简
-流转词（§2.2：verdict + 文档引用 + 具体请求；不复述契约原则与边界），
-由用户转达 designer（ChatGPT）。
+**流转会话**：只转发动作和 ref，不复述 proposal。
 
-**designer 会话（ChatGPT，GitHub connector + 附录 B 已置入其上下文）
-收到 design**：按 connector 读取 ref 的 diff 与 proposal / 契约文件，
+**designer 会话**：读取 ref、相关契约和必要 diff，
 结论评论到 PR，首行 `DESIGN: APPROVE|REQUEST_CHANGES|REJECTED`
-（`REJECTED` 同时关闭 proposal issue）、次行 provenance——经
-connector 发出写 `（des: via connector, 委派: <来源>）`，经人中继
-写 `（des: relayed by <交付来源>）`；决定性表述原文引用（§2.3）；
-同时以 `DESIGN-SOURCE: <path>@<blob-sha>; scope=<裁定射程>` 记录实际
-读取的完整文件。最终 PR 中指定目标文件的 blob 与来源 blob 相同且未
-扩大裁定射程时，由 reviewer 或 integrator 按 canonical 记录
-`DESIGN-EQUIVALENCE` 并承接该 DESIGN，不重复请求 designer。缺少记录、
-blob 不同、只比较局部内容或射程变化时重裁。
-对 reviewer 技术异议的重裁（§2.5）同此。
+、次行 provenance；正文引用被裁对象和决定性原文。内容未变不重复
+裁定；是否发生语义变化由 reviewer／integrator 判断，拿不准再重裁。
 
-已合并 PR 上的 DESIGN findings 不要求原 PR 改动：由 orchestrator 以
-新 `dispatch` 接续（follow-up issue 引用该评论）。
+已合并 PR 的新 findings 另立 follow-up issue。

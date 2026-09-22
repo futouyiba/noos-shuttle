@@ -5,7 +5,7 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
 
 # noos-watch
 
-标记的 watcher（唤醒层）。权威语义：规范附录 B——标记是 watcher 的
+标记的 watcher（唤醒层）。权威语义见 canonical §6——标记是 watcher 的
 唤醒信号，没有 watcher 时只是持久邮箱（durable mailbox）；本 skill
 是传输层实现，不构成任何授权。
 
@@ -122,11 +122,8 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
 
    - `REVIEW: REQUEST_CHANGES` → 向该 PR 的实现会话投 `fix PR#N`
    - `REVIEW: APPROVE` → 以 PR 指针通知实现会话补 PR body／转 Ready，
-     并通知 orchestrator。确认 PR 线程已有带 provenance 的
-     `intg: merge PR#N` 委派记录后，才向 integrator 会话投递同一指针；
-     缺失时只唤醒实现会话／orchestrator 补记录，不唤醒 integrator。
-     消息只负责唤醒且不构成授权；各角色从 PR、标记及原授权通道核验
-     head、证据与授权，不在消息中复制
+     通知 orchestrator，并向 integrator 投递 `merge PR#N`。消息只负责
+     唤醒且不构成授权
    - `DESIGN: REQUEST_CHANGES`（开放 PR）→ 向该 PR 的实现会话投
      `fix PR#N`
    - `DESIGN: APPROVE` → 通知实现会话与 orchestrator
@@ -135,10 +132,7 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
    - `DESIGN: REQUEST_CHANGES` 或 `DESIGN: REJECTED` 且 PR 已合并
      → 提示 orchestrator 以新 dispatch 立 follow-up issue
    - `INTEGRATED:` → 记录并通知 orchestrator
-   - `IMPLEMENTED: PR#M @ <head>` → **已知输出标记、无唤醒动作**。它是实现在
-     任务 issue 上的完成记录（规范 B.3）；唤醒 integrator 的证据是
-     `REVIEW: APPROVE`，不是本条。记为「已知、不路由」并按 D2 判终态，
-     **不进 pending**
+   - `IMPLEMENTED:` → 旧版兼容标记，无唤醒动作；按 D2 判终态
 
    **终态 `DISMISSED`（已作出结论：不投递）**：命中以下判据的评论，
    记为 `DISMISSED` 并写 `dismissRule` / `dismissedAt` / `dismissReason`

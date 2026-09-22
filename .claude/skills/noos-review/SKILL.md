@@ -5,33 +5,15 @@ description: Independently review a pull request per the agent-workflow spec (re
 
 # noos-review
 
-等价纯文本暗号：`review PR#N`（接受 `复审`）。权威展开：noos_docs
-`docs/agent-workflow.md` 附录 B（v0.3.2+）；冲突时以附录 B 为准。
+等价纯文本暗号：`review PR#N`。权威规则：noos_docs
+`docs/agent-workflow.md` v0.3.3+；冲突时以 canonical 为准。
 
 ## 步骤
 
-1. 解析 PR 指针（宽松归一：`PR 42` / `PR42` / `PR#42` / `pr 42` /
-   大小写无关、全角归一）；歧义时向用户确认，不猜。
-2. `gh pr view <N> --json url,title,headRefName,headRefOid,baseRefName`
-   与 `gh pr diff <N>` 获取被审内容；`gh pr view <N> --comments` 解析
-   线程中最新 `REVIEW:` 标记的 head。
-3. 与当前 head 比对：线程无有效 `REVIEW:` 标记（带 provenance）时
-   为全量审；否则取最新有效标记的 head——相同＝重看，不同＝增量
-   复审（基线＝上次 reviewed head，审其后的全部 commit，内容不
-   限，§1.3）。
-4. 按触及路径分级（§1.4）：源码、脚本、CI workflow、构建配置、
-   lockfile、生成代码一律 §1.2 全项——在本地 checkout 该 PR 亲跑
-   关键命令并引用实际输出，核心不变量做变异验证；不采信实现者
-   转述。
-   若 PR 承接已有 DESIGN，只对完整文件比较获批 source blob 与最终
-   target blob，并核对射程未扩大；在结论正文按 canonical 写
-   `DESIGN-EQUIVALENCE`。记录缺失、blob 不同、仅局部相同或射程变化时
-   要求重新 DESIGN，不自行承接。
-5. 以只读方式执行（§1.2(a) 能力条件：不持有写入工具，Bash 不改写
-   被审工作区）；不改被审代码；技术异议按 §2.5 回流 designer 重裁，
-   不当场僵持。
-6. 结论评论到 PR，首行严格标记 `REVIEW: APPROVE @ <head-sha>` 或
-   `REVIEW: REQUEST_CHANGES @ <head-sha>`，第二行 provenance（如
-   `（rev: 直评, 委派: orch）`；会话内只读 subagent 形态写
-   `（rev: in-session subagent, 委派: impl）`）；findings 各带
-   severity（MAJOR / MINOR）、文件行号与亲跑证据。
+1. 读取 PR、task issue、相关规范、现有 verdict 和当前 exact head。
+2. 使用独立、只读执行上下文，以证伪为目标。审核深度按运行风险与
+   authority／contract 风险判断，亲自核验关键证据。
+3. 发现语义或契约争议时走 `design <ref>`；实现证据仍由 reviewer 判断。
+4. 在 PR 评论首行写 `REVIEW: APPROVE|REQUEST_CHANGES @ <head-sha>`，
+   第二行写 provenance；findings 提供足以复现的证据。
+5. head 改变后复审。reviewer 不修改被审内容。
