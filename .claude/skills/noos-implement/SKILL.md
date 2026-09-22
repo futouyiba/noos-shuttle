@@ -6,7 +6,7 @@ description: 'Start an implementation task from a task issue per the agent-workf
 # noos-implement
 
 等价纯文本暗号：`implement #N`。权威规则：noos_docs
-`docs/agent-workflow.md` v0.3.3+；冲突时以 canonical 为准。
+`docs/agent-workflow.md` 当前 canonical；冲突时以 canonical 为准。
 
 ## 步骤
 

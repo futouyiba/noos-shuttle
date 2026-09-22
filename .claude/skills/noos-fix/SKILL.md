@@ -6,7 +6,7 @@ description: Address unresolved REVIEW or DESIGN findings on a PR per the agent-
 # noos-fix
 
 等价纯文本暗号：`fix PR#N`。权威规则：noos_docs
-`docs/agent-workflow.md` v0.3.3+；冲突时以 canonical 为准。
+`docs/agent-workflow.md` 当前 canonical；冲突时以 canonical 为准。
 
 ## 步骤
 

@@ -6,7 +6,7 @@ description: Independently review a pull request per the agent-workflow spec (re
 # noos-review
 
 等价纯文本暗号：`review PR#N`。权威规则：noos_docs
-`docs/agent-workflow.md` v0.3.3+；冲突时以 canonical 为准。
+`docs/agent-workflow.md` 当前 canonical；冲突时以 canonical 为准。
 
 ## 步骤
 
