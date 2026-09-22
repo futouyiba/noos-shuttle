@@ -6,13 +6,13 @@ description: Integrate an approved pull request per the agent-workflow spec (ver
 # noos-merge
 
 等价纯文本暗号：`merge PR#N`。权威规则：noos_docs
-`docs/agent-workflow.md` v0.3.3+；冲突时以 canonical 为准。指针和评论
+`docs/agent-workflow.md` v0.3.4+；冲突时以 canonical 为准。指针和评论
 不授权合并；使用可回读且未越界的人类授权或有界持续授权。
 
 ## 步骤
 
-1. 核对授权、PR body 的 review 链接与 exact head、PR 当前 head、
-   required checks 和阻塞项；任一不满足就停止。
+1. 核对授权、PR body 的 review 链接与 exact head、PR 当前 head 和
+   阻塞项；任一不满足就停止。
 2. 运行 `npm run review:intake -- --source <head 分支> --base main`，按仓库
    现行 merge-commit 方式合并。
 3. 核对实际 merge 结果和 main，运行仓库要求的集成检查；其它检查按风险
