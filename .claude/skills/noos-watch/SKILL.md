@@ -121,10 +121,9 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
    在投递中途）。其余按首行标记 + 次行 provenance 分档路由：
 
    - `REVIEW: REQUEST_CHANGES` → 向该 PR 的实现会话投 `fix PR#N`
-   - `REVIEW: APPROVE` → 通知实现会话与 orchestrator；向
-     integrator 会话投递合并交接（PR 链接、分支、exact head、
-     review 证据链接；交接消息注明"本交接不构成合并授权"），并
-     向人提示可 merge
+   - `REVIEW: APPROVE` → 通知 orchestrator；向 integrator 会话只投递
+     `merge PR#N` 指针。该消息只负责唤醒且不构成授权；integrator 从
+     PR body、标记及原授权通道核验 head、证据与授权，不在消息中复制
    - `DESIGN: REQUEST_CHANGES`（开放 PR）→ 向该 PR 的实现会话投
      `fix PR#N`
    - `DESIGN: APPROVE` → 通知实现会话与 orchestrator
@@ -133,7 +132,7 @@ description: 'Poll new PR/issue comments since the last watermark, classify mark
    - `DESIGN: REQUEST_CHANGES` 或 `DESIGN: REJECTED` 且 PR 已合并
      → 提示 orchestrator 以新 dispatch 立 follow-up issue
    - `INTEGRATED:` → 记录并通知 orchestrator
-   - `IMPLEMENTED: PR#M` → **已知输出标记、无唤醒动作**。它是实现在
+   - `IMPLEMENTED: PR#M @ <head>` → **已知输出标记、无唤醒动作**。它是实现在
      任务 issue 上的完成记录（规范 B.3）；唤醒 integrator 的证据是
      `REVIEW: APPROVE`，不是本条。记为「已知、不路由」并按 D2 判终态，
      **不进 pending**

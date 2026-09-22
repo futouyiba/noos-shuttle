@@ -6,7 +6,7 @@ description: Independently review a pull request per the agent-workflow spec (re
 # noos-review
 
 等价纯文本暗号：`review PR#N`（接受 `复审`）。权威展开：noos_docs
-`docs/agent-workflow.md` 附录 B（v0.3.0+）；冲突时以附录 B 为准。
+`docs/agent-workflow.md` 附录 B（v0.3.2+）；冲突时以附录 B 为准。
 
 ## 步骤
 
@@ -23,6 +23,10 @@ description: Independently review a pull request per the agent-workflow spec (re
    lockfile、生成代码一律 §1.2 全项——在本地 checkout 该 PR 亲跑
    关键命令并引用实际输出，核心不变量做变异验证；不采信实现者
    转述。
+   若 PR 承接已有 DESIGN，只对完整文件比较获批 source blob 与最终
+   target blob，并核对射程未扩大；在结论正文按 canonical 写
+   `DESIGN-EQUIVALENCE`。记录缺失、blob 不同、仅局部相同或射程变化时
+   要求重新 DESIGN，不自行承接。
 5. 以只读方式执行（§1.2(a) 能力条件：不持有写入工具，Bash 不改写
    被审工作区）；不改被审代码；技术异议按 §2.5 回流 designer 重裁，
    不当场僵持。
