@@ -20,6 +20,7 @@ import { runChildDeliveryProbe } from "./delivery-runtime";
 import {
   OUTBOX_MAX_ATTEMPTS,
   OUTBOX_STORE_KEY,
+  cancelOutboxItem,
   createOutboxReservation,
   emptyOutboxQueueState,
   extractOutboxQueueState,
@@ -32,6 +33,7 @@ import {
 } from "../core/outbox-queue";
 import {
   classifyOutboxHead,
+  hasExecutionInFlight,
   type OutboxGateCarrier,
   type OutboxGateObservation,
   type OutboxProbeInput,
@@ -170,7 +172,19 @@ async function handleOutboxMutation(mutation: OutboxMutation): Promise<OutboxMut
   return navigator.locks.request(OUTBOX_LOCK, async () => {
     const persisted = await storage.get(OUTBOX_STORE_KEY);
     const state = extractOutboxQueueState(persisted);
-    const result = reduceOutboxQueue(state, mutation);
+    // Cancelling an UNRESOLVED item is the Human's delta-7 escape, and it has a
+    // ledger half the pure reducer cannot do. The flow (plan against the
+    // operation's durable state, retire first, then cancel) lives in the core
+    // as `cancelOutboxItem` so its ordering is testable; this handler only
+    // supplies the ledger and persists the outcome.
+    let result: OutboxMutationResult;
+    if (mutation.type === "cancel") {
+      const submissions = getSubmissionOperationCoordinator();
+      if (!submissions) return { ok: false, error: "coordinator_unavailable", state };
+      result = await cancelOutboxItem(state, mutation.itemId, submissions, Date.now());
+    } else {
+      result = reduceOutboxQueue(state, mutation);
+    }
     if (result.ok && result.state !== state) await storage.set({ [OUTBOX_STORE_KEY]: result.state });
     return result;
   });
@@ -236,14 +250,6 @@ function isOutboxGateObservation(value: unknown): value is OutboxGateObservation
     typeof observation.composerInteractive === "boolean" &&
     typeof observation.composerEmpty === "boolean" &&
     (observation.userMessageCount === undefined || isFiniteInteger(observation.userMessageCount));
-}
-
-/** True when an execution-owning operation already holds this exact target. */
-function hasExecutionInFlight(operations: SubmissionOperation[], carrier: OutboxGateCarrier): boolean {
-  return operations.some(operation =>
-    (operation.state === "DISPATCHING" || operation.state === "UNCERTAIN" || operation.state === "OBSERVED_ACCEPTED") &&
-    operation.targetCarrierRef === carrier.targetCarrierRef &&
-    operation.providerConversationRef === carrier.providerConversationRef);
 }
 
 /**
@@ -361,7 +367,11 @@ async function recordOutboxOutcome(
   queue: OutboxQueueState
 ): Promise<{ queue: OutboxQueueState; recorded?: OutboxSubmissionOutcome }> {
   const head = headOutboxItem(queue);
-  if (!head || head.state !== "DISPATCHING" || head.submissionOperationId === undefined) return { queue };
+  // An UNCERTAIN head folds too: its operation may have gone terminal behind
+  // it (the retire-first cancel's crash window, or a policy resolution), and
+  // without this fold the item stays wedged on stale evidence.
+  if (!head || (head.state !== "DISPATCHING" && head.state !== "UNCERTAIN") ||
+    head.submissionOperationId === undefined) return { queue };
   const operation = await submissions.get(head.submissionOperationId);
   if (!operation || operation.operationKind !== "OUTBOX_MESSAGE") return { queue };
   const terminal = operation.state === "OBSERVED_ACCEPTED" || operation.state === "COMPLETED" ||

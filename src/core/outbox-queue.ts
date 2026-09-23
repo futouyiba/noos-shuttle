@@ -312,6 +312,95 @@ export function expectedUserTurnAccounting(
   };
 }
 
+/**
+ * The policy for cancelling an UNRESOLVED item (issue #63 delta 7: an ambiguous
+ * head may be "cancelled by authorized policy"; in this tree the authorized
+ * actor is the Human).
+ *
+ * The queue's reducer is a pure state machine and cannot see the ledger, so the
+ * background consults this before issuing the cancel. The order it prescribes is
+ * load-bearing: retire the operation FIRST, then cancel the item. A crash after
+ * the retire but before the cancel converges on the next probe (the fold sees a
+ * CANCELLED operation and parks the item); the reverse order would leave an
+ * execution-owning operation orphaned forever, blocking every later dispatch to
+ * that target — the very wedge this exists to remove.
+ */
+export type UncertainCancelDecision =
+  | { allowed: true; retireOperationId?: string }
+  | { allowed: false; reason: "delivery_accepted" };
+
+export function planUncertainCancel(item: OutboxItem, operation: SubmissionOperation | undefined): UncertainCancelDecision {
+  // Other states are governed by the reducer alone; this plan is only
+  // authoritative for the one state that needs the ledger's side of the story.
+  if (item.state !== "UNCERTAIN") return { allowed: true };
+  if (!operation) return { allowed: true };
+  if (operation.state === "OBSERVED_ACCEPTED" || operation.state === "COMPLETED") {
+    // The ledger has proof the turn landed. Cancelling now would claim a
+    // delivery never happened; the next probe's fold converges the item to
+    // DELIVERED instead. Honest refusal, not a silent no-op.
+    return { allowed: false, reason: "delivery_accepted" };
+  }
+  if (operation.state === "UNCERTAIN" || operation.state === "DISPATCHING") {
+    // Still execution-owning: it must be retired or it blocks every later
+    // dispatch to this target forever. `record(CANCELLED)` is a legal
+    // transition from both states.
+    return { allowed: true, retireOperationId: operation.operationId };
+  }
+  // FAILED_SAFE/CANCELLED are terminal and not execution-owning: nothing to
+  // retire, the item can simply be cancelled.
+  return { allowed: true };
+}
+
+/** The ledger surface cancelling an unresolved item needs. Nothing more. */
+export interface OutboxCancelLedger {
+  get(operationId: string): Promise<SubmissionOperation | undefined>;
+  record(operationId: string, state: "CANCELLED", details: { now?: number }): Promise<SubmissionOperation | undefined>;
+}
+
+/**
+ * Cancels one item, retiring an unresolved reservation's operation first.
+ *
+ * Extracted from the service worker (review 5791080411's F2: the load-bearing
+ * ordering lived in entry-point code no test could reach). The queue reducer is
+ * pure and cannot see the ledger, so the policy lives here, between the two:
+ *
+ * 1. `planUncertainCancel` decides against the operation's durable state.
+ * 2. The retire happens BEFORE the item is cancelled. If the process dies in
+ *    between, the durable state is (op CANCELLED, item UNCERTAIN), and the
+ *    next probe converges it — the gate reports RECONCILE for an UNCERTAIN
+ *    head whose operation is terminal, and the fold parks the item. The
+ *    reverse order would orphan an execution-owning operation and block every
+ *    later dispatch to that target forever.
+ * 3. The reducer records the outcome; the caller persists the returned state.
+ */
+export async function cancelOutboxItem(
+  state: OutboxQueueState,
+  itemId: string,
+  ledger: OutboxCancelLedger,
+  now: number
+): Promise<OutboxMutationResult> {
+  const item = state.items.find(candidate => candidate.itemId === itemId);
+  if (item?.state !== "UNCERTAIN") {
+    // Every other state is the reducer's own call: QUEUED/BLOCKED cancel
+    // outright, DISPATCHING/DELIVERED are refused.
+    return reduceOutboxQueue(state, { type: "cancel", itemId, now });
+  }
+  const operation = item.submissionOperationId === undefined
+    ? undefined
+    : await ledger.get(item.submissionOperationId);
+  const plan = planUncertainCancel(item, operation);
+  if (!plan.allowed) return { ok: false, error: plan.reason, state };
+  if (plan.retireOperationId !== undefined) {
+    const retired = await ledger.record(plan.retireOperationId, "CANCELLED", { now });
+    if (retired?.state !== "CANCELLED") {
+      // The retire must actually take, or the operation stays
+      // execution-owning behind a cancelled item — the wedge, one level down.
+      return { ok: false, error: "operation_retire_failed", state };
+    }
+  }
+  return reduceOutboxQueue(state, { type: "cancel", itemId, now });
+}
+
 /** True when the queue still holds a reservation this Run epoch has not accounted for. */
 export function hasOutstandingOutboxReservation(state: OutboxQueueState, runId: string): boolean {
   return state.items.some(item => item.reservationRunId === runId && item.state !== "DELIVERED" && item.state !== "CANCELLED");
@@ -417,7 +506,14 @@ export function reduceOutboxQueue(state: OutboxQueueState, mutation: OutboxMutat
       const item = findItem(state, mutation.itemId);
       if (!item) return fail(state, "item_not_found");
       if (item.state === "CANCELLED") return { ok: true, item, state };
-      if (AFTER_ACTUATION.has(item.state)) return fail(state, "cancel_requires_resolution");
+      // DISPATCHING is genuinely in flight and DELIVERED is a proven turn:
+      // neither can be abandoned honestly. UNCERTAIN is exactly the delta-7
+      // escape — an ambiguous reservation the Human may retire by authorized
+      // policy — and the background retires the backing operation *first*
+      // (`planUncertainCancel`); this reducer only records the outcome.
+      if (item.state === "DISPATCHING" || item.state === "DELIVERED") return fail(state, "cancel_requires_resolution");
+      // The reservation id stays on the cancelled item as its audit trail;
+      // cancelled items leave the head, the accounting, and the priority gate.
       const cancelled: OutboxItem = { ...item, state: "CANCELLED", updatedAt: mutation.now };
       return commit(state, [cancelled], cancelled);
     }
@@ -498,7 +594,11 @@ export function reduceOutboxQueue(state: OutboxQueueState, mutation: OutboxMutat
     case "release_attempt": {
       const item = findItem(state, mutation.itemId);
       if (!item) return fail(state, "item_not_found");
-      if (item.state !== "DISPATCHING") return fail(state, `item_${item.state.toLowerCase()}`);
+      // An UNCERTAIN item whose attempt was proven not accepted resolves the
+      // same way a DISPATCHING one does: release it for a fresh attempt. (The
+      // fold itself only reaches UNCERTAIN items since the gate learned to
+      // consult the backing operation — see classifyOutboxHead.)
+      if (item.state !== "DISPATCHING" && item.state !== "UNCERTAIN") return fail(state, `item_${item.state.toLowerCase()}`);
       if (item.attempts + 1 >= OUTBOX_MAX_ATTEMPTS) {
         // The cap is spent: park visibly rather than retry into a loop.
         const parked: OutboxItem = { ...item, state: "BLOCKED", attempts: item.attempts + 1, updatedAt: mutation.now, lastOutcome: mutation.reason };
@@ -574,9 +674,6 @@ export function fingerprintOutboxPayload(value: string): string {
   for (let index = 0; index < normalized.length; index += 1) hash = (hash * 31 + normalized.charCodeAt(index)) >>> 0;
   return hash.toString(16);
 }
-
-/** States that follow actuation: nothing here can be cancelled into a lie. */
-const AFTER_ACTUATION: ReadonlySet<OutboxItemState> = new Set<OutboxItemState>(["DISPATCHING", "UNCERTAIN", "DELIVERED"]);
 
 /** Reads the durable queue out of one `chrome.storage` payload. */
 export function extractOutboxQueueState(raw: unknown): OutboxQueueState {
