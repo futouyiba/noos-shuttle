@@ -595,6 +595,7 @@ function renderCurrentSection(): void {
       break;
     case "system":
       content.innerHTML = renderSystem(currentHealth, currentConfig);
+      void loadPairingPanel().then(() => bindPairingEvents(document));
       void loadConfig();
       break;
     case "help":
@@ -646,6 +647,153 @@ function renderShellContext(): void {
   if (summary) {
     summary.textContent = item.summary;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Browser pairing panel (#100): the ONLY place a pairing code is displayed.
+// ---------------------------------------------------------------------------
+
+interface PairingClient {
+  origin: string;
+  enrolled_at_epoch: number;
+}
+
+interface PairingStatus {
+  ok: boolean;
+  epoch: number;
+  activeCode: { code: string; expiresAtEpoch: number; secondsLeft: number } | null;
+  clients: PairingClient[];
+  tokenEpochValid: boolean;
+  paired: boolean;
+}
+
+function renderPairingPanel(status: PairingStatus): string {
+  const clients = status.clients
+    .map(
+      (client) => `
+      <div class="sys-row">
+        <div class="sys-row-body">
+          <strong>${escapeHtml(client.origin)}</strong>
+          <span>enrolled ${new Date(client.enrolled_at_epoch * 1000).toLocaleString()}</span>
+        </div>
+        <button type="button" class="text-link" data-pairing-revoke="${escapeHtml(client.origin)}">Revoke</button>
+      </div>`
+    )
+    .join("");
+  const code = status.activeCode
+    ? `<div class="sys-row">
+        <div class="sys-row-body">
+          <strong class="pairing-code">${escapeHtml(status.activeCode.code)}</strong>
+          <span>valid ${status.activeCode.secondsLeft}s · single use · enter it in the NOOS Shuttle panel</span>
+        </div>
+        <span class="pill pill--ready">active</span>
+      </div>`
+    : "";
+  return `
+    ${sysRowPairing(
+      "Shuttle extension",
+      status.paired ? "at least one enrolled client with a live token" : "not paired — generate a code and enter it in the Shuttle panel",
+      `<span class="pill pill--${status.paired ? "ready" : "partial"}">${status.paired ? "paired" : "unpaired"}</span>`
+    )}
+    ${code}
+    <div class="sys-row">
+      <div class="sys-row-body">
+        <strong>Enrollment code</strong>
+        <span>8 digits · 3 minutes · one use · shown only here</span>
+      </div>
+      <button type="button" class="text-link" data-pairing="generate">Generate code</button>
+    </div>
+    ${clients || `<div class="sys-row"><div class="sys-row-body"><span>No paired clients.</span></div></div>`}
+    <details class="system-manage">
+      <summary>Development origin &amp; reset</summary>
+      <div class="system-manage-body">
+        <div class="sys-row">
+          <div class="sys-row-body">
+            <strong>Add development origin</strong>
+            <span>exact chrome-extension://… origin, no code needed (Hub-side action)</span>
+          </div>
+        </div>
+        <div class="pairing-dev-row">
+          <input type="text" data-pairing-dev-input placeholder="chrome-extension://…" />
+          <button type="button" class="text-link" data-pairing="add-dev">Add</button>
+        </div>
+        <div class="sys-row">
+          <div class="sys-row-body">
+            <strong>Reset all pairing</strong>
+            <span>rotates the token: every paired browser is disconnected at once and must re-enter a new code</span>
+          </div>
+          <button type="button" class="text-link" data-pairing="reset">Reset</button>
+        </div>
+      </div>
+    </details>`;
+}
+
+function sysRowPairing(name: string, subText: string, rightHtml: string): string {
+  return `
+    <div class="sys-row">
+      <div class="sys-row-body">
+        <strong>${escapeHtml(name)}</strong>
+        <span>${escapeHtml(subText)}</span>
+      </div>
+      ${rightHtml}
+    </div>`;
+}
+
+async function loadPairingPanel(): Promise<void> {
+  const panel = document.getElementById("pairing-panel");
+  if (!panel || !isTauriRuntime()) return;
+  try {
+    const status = await invoke<PairingStatus>("get_pairing_status");
+    panel.dataset.pairingState = "loaded";
+    panel.innerHTML = renderPairingPanel(status);
+  } catch (error) {
+    panel.dataset.pairingState = "error";
+    panel.innerHTML = `<div class="sys-row"><div class="sys-row-body"><strong>Pairing status unavailable</strong><span>${escapeHtml(
+      String(error)
+    )}</span></div></div>`;
+  }
+}
+
+function bindPairingEvents(root: ParentNode): void {
+  const panel = root.querySelector("#pairing-panel");
+  if (!panel) return;
+  panel.querySelectorAll<HTMLButtonElement>("[data-pairing]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const action = button.dataset.pairing;
+      const panelEl = document.getElementById("pairing-panel");
+      try {
+        if (action === "generate") {
+          await invoke("generate_pair_code_command");
+        } else if (action === "reset") {
+          if (!window.confirm("Reset all pairing? Every paired browser will be disconnected and must re-enter a new code.")) {
+            return;
+          }
+          await invoke("reset_pairing");
+        } else if (action === "add-dev") {
+          const input = panelEl?.querySelector<HTMLInputElement>("[data-pairing-dev-input]");
+          const origin = input?.value.trim() ?? "";
+          if (origin === "") return;
+          await invoke("enroll_dev_origin", { origin });
+          if (input) input.value = "";
+        }
+      } catch (error) {
+        showToast(`Pairing: ${String(error)}`, "error");
+      }
+      await loadPairingPanel();
+    });
+  });
+  panel.querySelectorAll<HTMLButtonElement>("[data-pairing-revoke]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      try {
+        await invoke("revoke_paired_client", { origin: button.dataset.pairingRevoke });
+      } catch (error) {
+        showToast(`Pairing: ${String(error)}`, "error");
+      }
+      await loadPairingPanel();
+    });
+  });
 }
 
 async function runAction(action: string, sourceButton?: HTMLButtonElement): Promise<void> {
@@ -898,6 +1046,7 @@ async function loadConfig(): Promise<void> {
   if (!content || !currentHealth) return;
   if (activeSection === "system") {
     content.innerHTML = renderSystem(currentHealth, currentConfig);
+    void loadPairingPanel().then(() => bindPairingEvents(document));
     bindConfigEditEvents(content);
     bindContentActions(content, {
       run: (action, sourceButton) => {

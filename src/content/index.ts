@@ -383,9 +383,24 @@ function bootstrap(): void {
   });
 }
 
+// Hub pairing state for the settings row (#100): null = unknown yet.
+let hubPaired: boolean | null = null;
+
+function refreshHubPairingState(): void {
+  void sendExtensionMessage<{ type: string }, { ok?: boolean; paired?: boolean }>({ type: "NOOS_HUB_PAIRING_STATE" })
+    .then(response => {
+      hubPaired = response?.ok === true && response.paired === true;
+      if (viewState.settingsOpen && shuttleApp) render(shuttleApp);
+    })
+    .catch(() => {
+      hubPaired = null;
+    });
+}
+
 function render(app: HTMLElement): void {
   const selectedThread = viewState.threads[viewState.selectedIndex];
   const copy = COPY[viewState.locale];
+  const hubPairingStateLabel = hubPaired === true ? copy.hubPairingPaired : copy.hubPairingNotPaired;
   const surface = getCurrentSurface();
 
   app.innerHTML = `
@@ -425,6 +440,10 @@ function render(app: HTMLElement): void {
                           viewState.locale === "en"
                         }">English</button>
                       </div>
+                      <div class="settings-label">${copy.hubPairingTitle}</div>
+                      <span class="bcr-note" data-hub-pairing-state>${escapeHtml(hubPairingStateLabel)}</span>
+                      <input class="bcr-eval-input" type="text" inputmode="numeric" maxlength="8" data-hub-pairing-input placeholder="${escapeAttribute(copy.hubPairingPlaceholder)}" autocomplete="off" />
+                      <button type="button" data-action="hub-pairing-submit">${escapeHtml(copy.hubPairingSubmit)}</button>
                       <div class="settings-label">${copy.bcrSettingsTitle}</div>
                       <input class="bcr-eval-input" type="password" data-action="bcr-eval-key" placeholder="${escapeAttribute(copy.bcrSettingsKey)}" autocomplete="off" />
                       <input class="bcr-eval-input" type="text" data-action="bcr-eval-model" placeholder="${escapeAttribute(copy.bcrSettingsModel)}" value="${escapeAttribute(bcrEvalModel)}" />
@@ -1333,6 +1352,7 @@ async function handleAction(action: string, app: HTMLElement, source?: HTMLEleme
 
   if (action === "settings") {
     viewState.settingsOpen = !viewState.settingsOpen;
+    if (viewState.settingsOpen) refreshHubPairingState();
     render(app);
     return;
   }
@@ -1490,6 +1510,29 @@ async function handleAction(action: string, app: HTMLElement, source?: HTMLEleme
 
   if (action === "bcr-go") {
     if (bcrRun?.phase === "READY_TO_GO") await runExclusiveBcrAction(() => issueRunGo(app));
+    return;
+  }
+
+  if (action === "hub-pairing-submit") {
+    const input = app.querySelector<HTMLInputElement>("[data-hub-pairing-input]");
+    const code = input?.value.trim() ?? "";
+    if (code === "") return;
+    try {
+      const response = await sendExtensionMessage<
+        { type: string; code: string },
+        { ok?: boolean; errorCode?: string }
+      >({ type: "NOOS_HUB_SUBMIT_PAIR_CODE", code });
+      if (response?.ok) {
+        hubPaired = true;
+        viewState.message = copy.hubPairingSuccess;
+        if (input) input.value = "";
+      } else {
+        viewState.message = `${copy.hubPairingFailed}: ${response?.errorCode ?? "hub_unreachable"}`;
+      }
+    } catch {
+      viewState.message = `${copy.hubPairingFailed}: hub_unreachable`;
+    }
+    render(app);
     return;
   }
 

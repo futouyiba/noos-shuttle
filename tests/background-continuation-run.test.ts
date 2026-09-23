@@ -268,36 +268,38 @@ describe("background continuation run coordinator", () => {
     expect(unreachable.ok).toBe(false);
     expect(unreachable.error).toBe("hub_unreachable");
     expect(backing.noosBcrEvaluatorConfig).toBeUndefined();
+    // Pairing is now an explicit Human act (#100): sync runs on the STORED
+    // token and never silently re-pairs. Seed one, as a paired extension has.
+    backing.noosHubShuttleToken = "test-token";
     // Hub responds but has no evaluator config: not synced, local untouched.
-    // The pair endpoint shares the stub and must still yield a token.
-    const hubEndpointPayload = (target: string): Response =>
-      target.endsWith("/pair")
-        ? new Response(JSON.stringify({ token: "test-token" }), { status: 200 })
-        : new Response(JSON.stringify({ ok: true, configured: false, baseUrl: "https://api.deepseek.com", apiKey: null, model: null }), { status: 200 });
-    vi.stubGlobal("fetch", vi.fn(async (url: string | URL) => hubEndpointPayload(String(url))));
+    // /pair is deliberately absent from the stub: the new protocol must never
+    // touch it from an authorized call.
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL) => {
+      calls.push(String(url));
+      return new Response(JSON.stringify({ ok: true, configured: false, baseUrl: "https://api.deepseek.com", apiKey: null, model: null }), { status: 200 });
+    }));
     const notConfigured = await raw({ type: "NOOS_CONTINUATION_EVAL_SYNC" });
     expect(notConfigured.ok).toBe(true);
     expect(notConfigured.synced).toBe(false);
     expect(notConfigured.reason).toBe("hub_not_configured");
     // Hub serves a full config: normalized and stored locally.
-    vi.stubGlobal("fetch", vi.fn(async (url: string | URL) => {
-      if (String(url).endsWith("/pair")) return new Response(JSON.stringify({ token: "test-token" }), { status: 200 });
-      return new Response(JSON.stringify({ ok: true, configured: true, baseUrl: "https://api.deepseek.com", apiKey: "sk-hub", model: "deepseek-chat" }), { status: 200 });
-    }));
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify({ ok: true, configured: true, baseUrl: "https://api.deepseek.com", apiKey: "sk-hub", model: "deepseek-chat" }), { status: 200 })));
     const synced = await raw({ type: "NOOS_CONTINUATION_EVAL_SYNC" });
     expect(synced.ok).toBe(true);
     expect(synced.synced).toBe(true);
     expect(synced.model).toBe("deepseek-chat");
     expect(backing.noosBcrEvaluatorConfig).toEqual({ baseUrl: "https://api.deepseek.com", apiKey: "sk-hub", model: "deepseek-chat" });
     // A served config off the allowlist is refused and never stored.
-    vi.stubGlobal("fetch", vi.fn(async (url: string | URL) => {
-      if (String(url).endsWith("/pair")) return new Response(JSON.stringify({ token: "test-token" }), { status: 200 });
-      return new Response(JSON.stringify({ ok: true, configured: true, baseUrl: "https://evil.example.com", apiKey: "sk-evil", model: "m" }), { status: 200 });
-    }));
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify({ ok: true, configured: true, baseUrl: "https://evil.example.com", apiKey: "sk-evil", model: "m" }), { status: 200 })));
     const invalid = await raw({ type: "NOOS_CONTINUATION_EVAL_SYNC" });
     expect(invalid.ok).toBe(true);
     expect(invalid.synced).toBe(false);
     expect(invalid.reason).toBe("hub_config_invalid");
     expect((backing.noosBcrEvaluatorConfig as { apiKey?: string }).apiKey).toBe("sk-hub");
+    // The old auto-pair path is gone: no authorized call ever hit /pair.
+    expect(calls.every(url => !url.endsWith("/pair"))).toBe(true);
   });
 });

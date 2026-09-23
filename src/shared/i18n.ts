@@ -74,6 +74,13 @@ export interface ShuttleCopy {
   bcrDebugRun: string;
   bcrDebugTurn: string;
   outboxSectionTitle: string;
+  hubPairingTitle: string;
+  hubPairingPlaceholder: string;
+  hubPairingSubmit: string;
+  hubPairingPaired: string;
+  hubPairingNotPaired: string;
+  hubPairingSuccess: string;
+  hubPairingFailed: string;
   outboxPlaceholder: string;
   outboxEnqueue: string;
   outboxPaused: string;
@@ -326,6 +333,13 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     bcrDebugRun: "run",
     bcrDebugTurn: "last turn",
     outboxSectionTitle: "Message queue",
+    hubPairingTitle: "Hub pairing",
+    hubPairingPlaceholder: "8-digit code from NOOS Hub",
+    hubPairingSubmit: "Pair",
+    hubPairingPaired: "Paired with NOOS Hub.",
+    hubPairingNotPaired: "Not paired — generate a code in NOOS Hub.",
+    hubPairingSuccess: "Paired with NOOS Hub.",
+    hubPairingFailed: "Pairing failed",
     outboxPlaceholder: "Queue a message to send once the conversation is idle",
     outboxEnqueue: "Add to queue",
     outboxPaused: "Queue paused",
@@ -570,6 +584,13 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     bcrDebugRun: "run",
     bcrDebugTurn: "最近轮次",
     outboxSectionTitle: "消息队列",
+    hubPairingTitle: "Hub 配对",
+    hubPairingPlaceholder: "Hub 上显示的 8 位配对码",
+    hubPairingSubmit: "配对",
+    hubPairingPaired: "已与 NOOS Hub 配对。",
+    hubPairingNotPaired: "未配对——请在 NOOS Hub 生成配对码。",
+    hubPairingSuccess: "已与 NOOS Hub 配对。",
+    hubPairingFailed: "配对失败",
     outboxPlaceholder: "先排队，等对话空闲后再发送",
     outboxEnqueue: "加入队列",
     outboxPaused: "队列已暂停",

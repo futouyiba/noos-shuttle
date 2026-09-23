@@ -337,10 +337,21 @@ struct HandoffWriteResponse {
 }
 
 #[derive(Serialize, Deserialize)]
+/// v2 carries the pairing epoch it was minted under. A token from another
+/// epoch (including any pre-pairing v1 file, which fails to parse) is dead —
+/// that is the "no grandfather" migration (#100 decision 3): the epoch switch
+/// invalidates every previously issued token at once.
 struct ShuttleTokenFile {
     version: u8,
     token: String,
+    #[serde(default)]
+    epoch: u64,
     created_at_epoch: u64,
+}
+
+#[derive(Deserialize)]
+struct PairRequestBody {
+    code: String,
 }
 
 #[derive(Clone)]
@@ -578,6 +589,77 @@ struct SleepRecoveryStatus {
     local_write_healthy: bool,
     relaunch_recommended: bool,
     message: String,
+}
+
+/// Pairing panel state: the active code (Hub UI only — this is the ONLY
+/// surface the plaintext code ever leaves), its expiry, the enrolled clients,
+/// and whether a live-epoch token backs them.
+#[tauri::command]
+fn get_pairing_status() -> Result<Value, String> {
+    let registry = load_pairing_registry();
+    let token = read_shuttle_token();
+    let code = ACTIVE_PAIR_CODE
+        .lock()
+        .map_err(|error| error.to_string())?
+        .as_ref()
+        .filter(|active| !active.consumed && now_epoch() < active.expires_at_epoch)
+        .map(|active| {
+            json!({
+                "code": active.code,
+                "expiresAtEpoch": active.expires_at_epoch,
+                "secondsLeft": active.expires_at_epoch.saturating_sub(now_epoch()),
+            })
+        })
+        .unwrap_or(Value::Null);
+    Ok(json!({
+        "ok": true,
+        "epoch": registry.epoch,
+        "activeCode": code,
+        "clients": registry.clients,
+        "tokenEpochValid": token.as_ref().is_some_and(|t| t.epoch == registry.epoch),
+        "paired": pairing_is_active(&registry, token.as_ref()),
+    }))
+}
+
+#[tauri::command]
+fn generate_pair_code_command() -> Result<Value, String> {
+    let active = generate_pair_code(now_epoch())?;
+    let expires_at = active.expires_at_epoch;
+    let code = active.code.clone();
+    *ACTIVE_PAIR_CODE
+        .lock()
+        .map_err(|error| error.to_string())? = Some(active);
+    Ok(json!({ "ok": true, "code": code, "expiresAtEpoch": expires_at, "secondsLeft": PAIR_CODE_TTL_SECS }))
+}
+
+#[tauri::command]
+fn revoke_paired_client(origin: String) -> Result<Value, String> {
+    if !is_extension_scheme_origin(&origin) {
+        return Err("origin must be an extension origin".to_string());
+    }
+    let registry = revoke_client_at(&noos_home(), &origin)?;
+    Ok(json!({ "ok": true, "clients": registry.clients }))
+}
+
+/// Full reset: fresh epoch + fresh token + empty registry. Every issued token
+/// dies everywhere at once; each browser re-pairs with a new code.
+/// Dev/dogfood enrollment without a code: the Human adds an exact extension
+/// origin from the Hub's own panel. Same registry, same exact-match rule —
+/// this replaces the wildcard convenience the old scheme-prefix check gave.
+#[tauri::command]
+fn enroll_dev_origin(origin: String) -> Result<Value, String> {
+    if !is_extension_scheme_origin(&origin) {
+        return Err("origin must be an exact chrome-extension:// or moz-extension:// origin".to_string());
+    }
+    let registry = enroll_client_at(&noos_home(), &origin, now_epoch())?;
+    Ok(json!({ "ok": true, "clients": registry.clients }))
+}
+
+#[tauri::command]
+fn reset_pairing() -> Result<Value, String> {
+    let registry = reset_pairing_at(&noos_home())?;
+    *ACTIVE_PAIR_CODE.lock().map_err(|error| error.to_string())? = None;
+    Ok(json!({ "ok": true, "epoch": registry.epoch }))
 }
 
 #[tauri::command]
@@ -846,7 +928,12 @@ fn main() {
             browse_vault,
             get_vault_object,
             read_config,
-            write_config
+            write_config,
+            get_pairing_status,
+            generate_pair_code_command,
+            revoke_paired_client,
+            enroll_dev_origin,
+            reset_pairing
         ])
         .run(tauri::generate_context!())
         .expect("error while running NOOS Hub");
@@ -1211,7 +1298,74 @@ fn handle_local_write_request(mut stream: TcpStream) -> Result<(), String> {
         return write_options_response(&mut stream);
     }
 
-    if !origin.is_empty() && !is_allowed_local_write_origin(&origin) {
+    // /pair is routed BEFORE the general origin gate: an unenrolled extension
+    // origin cannot pass that gate, yet pairing is exactly how it enrolls.
+    // Nothing here ever returns a token without the Human-displayed code.
+    if path == "/pair" && (method == "GET" || method == "POST") {
+        if !is_extension_scheme_origin(&origin) {
+            return write_json_response(
+                &mut stream,
+                403,
+                &write_error("origin_not_allowed", "Browser connection origin is not allowed."),
+            );
+        }
+        if method == "GET" {
+            // Never a token. The extension reads this as "the Human must
+            // enter a code in the Hub"; a pre-pairing build that auto-GETs
+            // gets the same refusal and falls back to the Downloads mirror.
+            return write_json_response(
+                &mut stream,
+                401,
+                &write_error(
+                    "pairing_required",
+                    "Pairing requires a one-time code shown in NOOS Hub.",
+                ),
+            );
+        }
+        let registry = load_pairing_registry();
+        let verdict = {
+            let mut guard = ACTIVE_PAIR_CODE
+                .lock()
+                .map_err(|error| error.to_string())?;
+            let now = now_epoch();
+            let submitted = {
+                let body_start = end + 4;
+                let body_end = body_start + content_length;
+                let body = &buffer[body_start..body_end.min(buffer.len())];
+                serde_json::from_slice::<PairRequestBody>(body)
+                    .map_err(|error| error.to_string())?
+                    .code
+            };
+            consume_pair_code(&mut guard, now, &submitted)
+        };
+        let (status, code, message) = match verdict {
+            PairCodeVerdict::Enrolled => {
+                let registry = enroll_client_at(&noos_home(), &origin, now_epoch())
+                    .map_err(|error| error.to_string())?;
+                let token = ensure_shuttle_token_for_epoch(registry.epoch)
+                    .map_err(|error| error.to_string())?;
+                return write_json_response(
+                    &mut stream,
+                    200,
+                    &json!({ "ok": true, "token": token.token, "origin": origin }),
+                );
+            }
+            PairCodeVerdict::NoActiveCode => (401, "pairing_code_absent", "No pairing code is active. Generate one in NOOS Hub."),
+            PairCodeVerdict::Expired => (401, "pairing_code_expired", "The pairing code expired. Generate a new one in NOOS Hub."),
+            PairCodeVerdict::AlreadyConsumed => (401, "pairing_code_consumed", "The pairing code was already used."),
+            PairCodeVerdict::AttemptsExhausted => (401, "pairing_code_locked", "Too many wrong codes. Generate a new one in NOOS Hub."),
+            PairCodeVerdict::Mismatch => (401, "pairing_code_invalid", "The pairing code does not match."),
+        };
+        let _ = registry;
+        return write_json_response(&mut stream, status, &write_error(code, message));
+    }
+
+    // General gate: the Hub's own surfaces, same-UID local tools (empty
+    // Origin), or an ENROLLED exact origin. The former wildcard on any
+    // extension scheme is gone (#100): /health and everything behind this
+    // point now require enrollment too.
+    let registry = load_pairing_registry();
+    if !allows_general_bridge_access(&origin, &registry) {
         return write_json_response(
             &mut stream,
             403,
@@ -1233,24 +1387,9 @@ fn handle_local_write_request(mut stream: TcpStream) -> Result<(), String> {
                 started_at: started_at_epoch(),
                 pid: std::process::id(),
                 vault_path: noos_home().join("vault").display().to_string(),
-                paired: read_shuttle_token().is_some(),
+                paired: pairing_is_active(&registry, read_shuttle_token().as_ref()),
             },
         );
-    }
-
-    if method == "GET" && path == "/pair" {
-        if !is_allowed_browser_connection_origin(&origin) {
-            return write_json_response(
-                &mut stream,
-                403,
-                &write_error(
-                    "origin_not_allowed",
-                    "Browser connection origin is not allowed.",
-                ),
-            );
-        }
-
-        return write_browser_token_response(&mut stream);
     }
 
     if method == "GET"
@@ -1261,7 +1400,7 @@ fn handle_local_write_request(mut stream: TcpStream) -> Result<(), String> {
             || path == "/v1/bcr/evaluator-config"
             || path == "/v1/wiki/default-target")
     {
-        if !is_authorized_handoff_write(&headers) {
+        if !is_authorized_bridge_request(&origin, &header_value(&headers, "authorization").unwrap_or_default(), &registry, read_shuttle_token().as_ref()) {
             return write_json_response(
                 &mut stream,
                 401,
@@ -1316,7 +1455,7 @@ fn handle_local_write_request(mut stream: TcpStream) -> Result<(), String> {
     }
 
     if method == "POST" && path == "/v1/actions" {
-        if !is_authorized_handoff_write(&headers) {
+        if !is_authorized_bridge_request(&origin, &header_value(&headers, "authorization").unwrap_or_default(), &registry, read_shuttle_token().as_ref()) {
             return write_json_response(
                 &mut stream,
                 401,
@@ -1338,7 +1477,7 @@ fn handle_local_write_request(mut stream: TcpStream) -> Result<(), String> {
     }
 
     if method == "POST" && path == "/v1/focus/ack" {
-        if !is_authorized_handoff_write(&headers) {
+        if !is_authorized_bridge_request(&origin, &header_value(&headers, "authorization").unwrap_or_default(), &registry, read_shuttle_token().as_ref()) {
             return write_json_response(
                 &mut stream,
                 401,
@@ -1381,7 +1520,7 @@ fn handle_local_write_request(mut stream: TcpStream) -> Result<(), String> {
         );
     }
 
-    if !is_authorized_handoff_write(&headers) {
+    if !is_authorized_bridge_request(&origin, &header_value(&headers, "authorization").unwrap_or_default(), &registry, read_shuttle_token().as_ref()) {
         return write_json_response(
             &mut stream,
             401,
@@ -6514,7 +6653,7 @@ fn command_in_dir_status(directory: &Path, command: &str, args: &[&str]) -> bool
 fn local_write_summary() -> LocalWriteSummary {
     LocalWriteSummary {
         endpoint: format!("http://127.0.0.1:{}", local_write_port()),
-        paired: read_shuttle_token().is_some(),
+        paired: pairing_is_active(&load_pairing_registry(), read_shuttle_token().as_ref()),
     }
 }
 
@@ -6740,17 +6879,6 @@ fn project_runtime_from_vault_file(
     )
 }
 
-fn write_browser_token_response(stream: &mut TcpStream) -> Result<(), String> {
-    match ensure_shuttle_token() {
-        Ok(token) => write_json_response(stream, 200, &token),
-        Err(error) => write_json_response(
-            stream,
-            500,
-            &write_error("browser_connection_failed", &error),
-        ),
-    }
-}
-
 fn reset_browser_connection() -> Result<String, String> {
     let path = shuttle_token_path();
     if path.exists() {
@@ -6762,24 +6890,25 @@ fn reset_browser_connection() -> Result<String, String> {
     ))
 }
 
-fn is_authorized_handoff_write(headers: &str) -> bool {
-    let Some(expected) = read_shuttle_token() else {
-        return false;
-    };
-    let Some(authorization) = header_value(headers, "authorization") else {
-        return false;
-    };
-    authorization == format!("Bearer {}", expected.token)
+fn ensure_shuttle_token() -> Result<ShuttleTokenFile, String> {
+    ensure_shuttle_token_for_epoch(current_pairing_epoch())
 }
 
-fn ensure_shuttle_token() -> Result<ShuttleTokenFile, String> {
+/// Only a token whose epoch matches the live registry is current; anything
+/// else (missing, unparsable v1, stale epoch) is minted fresh under the live
+/// epoch. Called from successful enrollment and explicit reset — never from a
+/// bare request, so nothing mints a token without the pairing proof.
+fn ensure_shuttle_token_for_epoch(epoch: u64) -> Result<ShuttleTokenFile, String> {
     if let Some(token) = read_shuttle_token() {
-        return Ok(token);
+        if token.epoch == epoch {
+            return Ok(token);
+        }
     }
 
     let token = ShuttleTokenFile {
-        version: 1,
+        version: 2,
         token: random_token()?,
+        epoch,
         created_at_epoch: now_epoch(),
     };
     let path = shuttle_token_path();
@@ -6877,17 +7006,269 @@ fn percent_decode(value: &str) -> String {
     String::from_utf8_lossy(&output).to_string()
 }
 
-fn is_allowed_local_write_origin(origin: &str) -> bool {
-    origin.starts_with("chrome-extension://")
-        || origin.starts_with("moz-extension://")
-        || origin == "http://127.0.0.1:1430"
-        || origin == "tauri://localhost"
+// ---------------------------------------------------------------------------
+// Paired-client registry and short-code enrollment (#100 slice 1).
+//
+// An extension-origin SCHEME PREFIX is transport metadata, not client identity
+// (design disposition 5758723769). The registry below is the only runtime
+// identity: exact `chrome-extension://<id>` / `moz-extension://<id>` origins,
+// enrolled only through a single-use, short-TTL, Human-displayed code. Every
+// bearer route checks it — not just /pair — because the token is shared, so a
+// token that leaks to an unenrolled origin must still be refused.
+// ---------------------------------------------------------------------------
+
+const PAIRING_REGISTRY_RELATIVE_PATH: &str = "runtime/paired-clients.json";
+const PAIR_CODE_LENGTH: usize = 8;
+const PAIR_CODE_TTL_SECS: u64 = 180;
+const PAIR_CODE_MAX_FAILED_ATTEMPTS: u32 = 5;
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+struct PairedClient {
+    origin: String,
+    enrolled_at_epoch: u64,
 }
 
-fn is_allowed_browser_connection_origin(origin: &str) -> bool {
-    origin.is_empty()
-        || origin.starts_with("chrome-extension://")
-        || origin.starts_with("moz-extension://")
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+struct PairingRegistry {
+    version: u8,
+    /// Rotated on reset; tokens are minted under it. An epoch mismatch is a
+    /// dead token — the "no grandfather" switch.
+    epoch: u64,
+    clients: Vec<PairedClient>,
+}
+
+/// The active enrollment code. Memory-only by design: nothing about a code is
+/// ever written to disk, which is stricter than the advisor ruling's
+/// "store only the hash" — there is no at-rest form at all. A Hub restart
+/// simply drops the pending code; the Human generates a new one.
+struct ActivePairCode {
+    code: String,
+    expires_at_epoch: u64,
+    consumed: bool,
+    failed_attempts: u32,
+}
+
+static ACTIVE_PAIR_CODE: Mutex<Option<ActivePairCode>> = Mutex::new(None);
+
+fn pairing_registry_path_at(root: &Path) -> PathBuf {
+    root.join(PAIRING_REGISTRY_RELATIVE_PATH)
+}
+
+fn write_json_file_atomic(path: &Path, contents: &str) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Invalid pairing registry path.".to_string())?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let temp = path.with_extension("json.tmp");
+    fs::write(&temp, contents).map_err(|error| error.to_string())?;
+    // POSIX rename over an existing file is atomic. Windows refuses it, so the
+    // fallback accepts a tiny replace window there rather than losing the file.
+    if fs::rename(&temp, path).is_err() {
+        let _ = fs::remove_file(path);
+        fs::rename(&temp, path).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// Loads the registry, creating a fresh one (new epoch, no clients) when the
+/// file is missing or predates this schema. That creation *is* the no-
+/// grandfather migration: any v1-era state is gone the moment it happens.
+fn load_pairing_registry_at(root: &Path) -> Result<PairingRegistry, String> {
+    let path = pairing_registry_path_at(root);
+    if let Ok(text) = fs::read_to_string(&path) {
+        if let Ok(registry) = serde_json::from_str::<PairingRegistry>(&text) {
+            if registry.version >= 2 {
+                return Ok(registry);
+            }
+        }
+    }
+    let registry = PairingRegistry {
+        version: 2,
+        epoch: random_epoch(),
+        clients: Vec::new(),
+    };
+    save_pairing_registry_at(root, &registry)?;
+    Ok(registry)
+}
+
+fn save_pairing_registry_at(root: &Path, registry: &PairingRegistry) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(registry).map_err(|error| error.to_string())?;
+    write_json_file_atomic(&pairing_registry_path_at(root), &text)
+}
+
+fn save_pairing_registry(registry: &PairingRegistry) -> Result<(), String> {
+    save_pairing_registry_at(&noos_home(), registry)
+}
+
+fn load_pairing_registry() -> PairingRegistry {
+    load_pairing_registry_at(&noos_home()).unwrap_or_else(|_| PairingRegistry {
+        version: 2,
+        epoch: 0,
+        clients: Vec::new(),
+    })
+}
+
+fn current_pairing_epoch() -> u64 {
+    load_pairing_registry().epoch
+}
+
+fn random_epoch() -> u64 {
+    let mut bytes = [0_u8; 8];
+    let _ = getrandom::fill(&mut bytes);
+    u64::from_be_bytes(bytes)
+}
+
+/// Enrolls one exact origin. Idempotent for an already-enrolled origin.
+fn enroll_client_at(root: &Path, origin: &str, now: u64) -> Result<PairingRegistry, String> {
+    let mut registry = load_pairing_registry_at(root)?;
+    if !registry.clients.iter().any(|client| client.origin == origin) {
+        registry.clients.push(PairedClient {
+            origin: origin.to_string(),
+            enrolled_at_epoch: now,
+        });
+        save_pairing_registry_at(root, &registry)?;
+    }
+    Ok(registry)
+}
+
+fn revoke_client_at(root: &Path, origin: &str) -> Result<PairingRegistry, String> {
+    let mut registry = load_pairing_registry_at(root)?;
+    let before = registry.clients.len();
+    registry.clients.retain(|client| client.origin != origin);
+    if registry.clients.len() != before {
+        save_pairing_registry_at(root, &registry)?;
+    }
+    Ok(registry)
+}
+
+/// Full reset: fresh epoch, no clients, fresh token. Every previously issued
+/// token dies on the epoch check, in every browser profile at once.
+fn reset_pairing_at(root: &Path) -> Result<PairingRegistry, String> {
+    let registry = PairingRegistry {
+        version: 2,
+        epoch: random_epoch(),
+        clients: Vec::new(),
+    };
+    save_pairing_registry_at(root, &registry)?;
+    let _ = ensure_shuttle_token_for_epoch(registry.epoch)?;
+    Ok(registry)
+}
+
+// --- pure decision helpers (the whole auth table is unit-tested through these) ---
+
+/// A syntactic format check ONLY. Extension scheme proves nothing about
+/// identity; it just routes a request into the pairing flow, where the
+/// Human-displayed code is the actual proof.
+fn is_extension_scheme_origin(origin: &str) -> bool {
+    origin.starts_with("chrome-extension://") || origin.starts_with("moz-extension://")
+}
+
+/// The Hub's own surfaces: the dev frontend and the Tauri webview. Fixed,
+/// non-extension identities — same app, not browser clients.
+fn is_fixed_local_origin(origin: &str) -> bool {
+    origin == "http://127.0.0.1:1430" || origin == "tauri://localhost"
+}
+
+fn is_enrolled_origin(origin: &str, registry: &PairingRegistry) -> bool {
+    registry.clients.iter().any(|client| client.origin == origin)
+}
+
+/// The general gate (formerly `is_allowed_local_write_origin`'s wildcard).
+/// Empty origin = same-UID local tool, explicitly outside the threat model.
+/// Everything else must be the Hub's own surfaces or an ENROLLED exact origin.
+fn allows_general_bridge_access(origin: &str, registry: &PairingRegistry) -> bool {
+    origin.is_empty() || is_fixed_local_origin(origin) || is_enrolled_origin(origin, registry)
+}
+
+/// The bearer check, now origin-bound. Valid token string is not enough: the
+/// token's epoch must match the live registry, and a non-empty origin must be
+/// the enrolled client presenting it — a shared token that leaked to another
+/// extension is refused here, on every protected route.
+fn is_authorized_bridge_request(
+    origin: &str,
+    authorization: &str,
+    registry: &PairingRegistry,
+    token_file: Option<&ShuttleTokenFile>,
+) -> bool {
+    let Some(token) = token_file else { return false };
+    if token.epoch != registry.epoch {
+        return false;
+    }
+    if authorization != format!("Bearer {}", token.token) {
+        return false;
+    }
+    origin.is_empty() || is_enrolled_origin(origin, registry)
+}
+
+// --- short-code state machine ---
+
+fn generate_pair_code(now: u64) -> Result<ActivePairCode, String> {
+    let mut bytes = [0_u8; PAIR_CODE_LENGTH];
+    getrandom::fill(&mut bytes).map_err(|error| error.to_string())?;
+    // One digit per CSPRNG byte. The modulo bias over 256→10 is negligible for
+    // a 3-minute human-read proof whose entropy budget is the Human's eyes.
+    let code: String = bytes.iter().map(|byte| char::from(b'0' + (byte % 10))).collect();
+    Ok(ActivePairCode {
+        code,
+        expires_at_epoch: now + PAIR_CODE_TTL_SECS,
+        consumed: false,
+        failed_attempts: 0,
+    })
+}
+
+#[derive(PartialEq, Debug)]
+enum PairCodeVerdict {
+    Enrolled,
+    NoActiveCode,
+    Expired,
+    AlreadyConsumed,
+    AttemptsExhausted,
+    Mismatch,
+}
+
+/// Consumes the code on success and counts failures otherwise. `now` and the
+/// submitted code are the only inputs, so the whole lifecycle is testable.
+fn consume_pair_code(
+    state: &mut Option<ActivePairCode>,
+    now: u64,
+    submitted: &str,
+) -> PairCodeVerdict {
+    let Some(active) = state.as_mut() else {
+        return PairCodeVerdict::NoActiveCode;
+    };
+    if active.consumed {
+        return PairCodeVerdict::AlreadyConsumed;
+    }
+    if now >= active.expires_at_epoch {
+        return PairCodeVerdict::Expired;
+    }
+    if active.failed_attempts >= PAIR_CODE_MAX_FAILED_ATTEMPTS {
+        return PairCodeVerdict::AttemptsExhausted;
+    }
+    if !constant_time_eq(submitted.as_bytes(), active.code.as_bytes()) {
+        active.failed_attempts += 1;
+        return PairCodeVerdict::Mismatch;
+    }
+    active.consumed = true;
+    PairCodeVerdict::Enrolled
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut diff = 0_u8;
+    for (a, b) in left.iter().zip(right.iter()) {
+        diff |= a ^ b;
+    }
+    diff == 0
+}
+
+/// `/health.paired` under the new semantics: at least one enrolled client AND
+/// a live-epoch token behind it.
+fn pairing_is_active(registry: &PairingRegistry, token_file: Option<&ShuttleTokenFile>) -> bool {
+    !registry.clients.is_empty()
+        && token_file.is_some_and(|token| token.epoch == registry.epoch)
 }
 
 fn artifact_kind(value: Option<&str>) -> &str {
@@ -8567,5 +8948,190 @@ See [Spec](.assets/feishu_docx_abc123/spec.pdf).
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    // -----------------------------------------------------------------
+    // #100 slice 1: pairing registry, short code, origin-bound bearer.
+    // The whole auth table is exercised through the pure decision helpers;
+    // file-backed behavior uses an isolated temp root.
+    // -----------------------------------------------------------------
+
+    fn temp_registry_root(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "noos-hub-pairing-tests-{}-{}-{}",
+            label,
+            std::process::id(),
+            random_epoch()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
+
+    fn registry_with(origin: &str) -> PairingRegistry {
+        PairingRegistry {
+            version: 2,
+            epoch: 77,
+            clients: vec![PairedClient { origin: origin.to_string(), enrolled_at_epoch: 1 }],
+        }
+    }
+
+    fn token_for(epoch: u64) -> ShuttleTokenFile {
+        ShuttleTokenFile { version: 2, token: "tok".to_string(), epoch, created_at_epoch: 1 }
+    }
+
+    #[test]
+    fn general_gate_admits_only_enrolled_or_local() {
+        let registry = registry_with("chrome-extension://shuttle");
+        assert!(allows_general_bridge_access("", &registry), "empty origin = same-UID tool");
+        assert!(allows_general_bridge_access("http://127.0.0.1:1430", &registry));
+        assert!(allows_general_bridge_access("tauri://localhost", &registry));
+        assert!(allows_general_bridge_access("chrome-extension://shuttle", &registry));
+        // The former wildcard: ANY other extension origin is now refused,
+        // chrome and moz alike (#100 disposition: scheme prefix is not identity).
+        assert!(!allows_general_bridge_access("chrome-extension://attacker", &registry));
+        assert!(!allows_general_bridge_access("moz-extension://attacker", &registry));
+        assert!(!allows_general_bridge_access("https://evil.example", &registry));
+    }
+
+    #[test]
+    fn bearer_is_origin_bound_even_with_a_valid_token() {
+        let registry = registry_with("chrome-extension://shuttle");
+        let token = token_for(77);
+        let auth = "Bearer tok";
+        assert!(is_authorized_bridge_request("chrome-extension://shuttle", auth, &registry, Some(&token)));
+        assert!(is_authorized_bridge_request("", auth, &registry, Some(&token)), "empty origin stays in model carve-out");
+        // THE shared-token hole: the token string is valid, the presenting
+        // origin is not its enrolled owner.
+        assert!(!is_authorized_bridge_request("chrome-extension://attacker", auth, &registry, Some(&token)));
+        assert!(!is_authorized_bridge_request("moz-extension://attacker", auth, &registry, Some(&token)));
+        // Wrong token string.
+        assert!(!is_authorized_bridge_request("chrome-extension://shuttle", "Bearer other", &registry, Some(&token)));
+        // No token file at all.
+        assert!(!is_authorized_bridge_request("chrome-extension://shuttle", auth, &registry, None));
+    }
+
+    #[test]
+    fn token_from_another_epoch_is_dead_even_with_matching_string() {
+        let registry = registry_with("chrome-extension://shuttle");
+        let stale = token_for(76);
+        assert!(!is_authorized_bridge_request("chrome-extension://shuttle", "Bearer tok", &registry, Some(&stale)));
+    }
+
+    #[test]
+    fn revoke_removes_only_the_named_origin() {
+        let mut registry = PairingRegistry {
+            version: 2,
+            epoch: 77,
+            clients: vec![
+                PairedClient { origin: "chrome-extension://shuttle".to_string(), enrolled_at_epoch: 1 },
+                PairedClient { origin: "chrome-extension://other".to_string(), enrolled_at_epoch: 2 },
+            ],
+        };
+        registry.clients.retain(|client| client.origin != "chrome-extension://shuttle");
+        assert!(!is_enrolled_origin("chrome-extension://shuttle", &registry));
+        assert!(is_enrolled_origin("chrome-extension://other", &registry), "only the named origin is removed");
+    }
+
+    #[test]
+    fn pair_code_lifecycle_single_use_ttl_and_lockout() {
+        let now = 1_000_u64;
+        let mut state = Some(generate_pair_code(now).unwrap());
+        let code = state.as_ref().unwrap().code.clone();
+        assert_eq!(code.len(), PAIR_CODE_LENGTH);
+        assert!(code.chars().all(|c| c.is_ascii_digit()));
+
+        assert_eq!(consume_pair_code(&mut state, now, &code), PairCodeVerdict::Enrolled);
+        // Replay: single-use.
+        assert_eq!(consume_pair_code(&mut state, now, &code), PairCodeVerdict::AlreadyConsumed);
+
+        let mut second = Some(generate_pair_code(now).unwrap());
+        let second_code = second.as_ref().unwrap().code.clone();
+        // Five wrong submissions lock the code; even the right one is refused after.
+        for _ in 0..PAIR_CODE_MAX_FAILED_ATTEMPTS {
+            assert_eq!(consume_pair_code(&mut second, now, "00000000"), PairCodeVerdict::Mismatch);
+        }
+        assert_eq!(consume_pair_code(&mut second, now, &second_code), PairCodeVerdict::AttemptsExhausted);
+
+        let mut expired = Some(ActivePairCode {
+            code: "12345678".to_string(),
+            expires_at_epoch: now + PAIR_CODE_TTL_SECS,
+            consumed: false,
+            failed_attempts: 0,
+        });
+        assert_eq!(consume_pair_code(&mut expired, now + PAIR_CODE_TTL_SECS, "12345678"), PairCodeVerdict::Expired);
+
+        let mut none: Option<ActivePairCode> = None;
+        assert_eq!(consume_pair_code(&mut none, now, "12345678"), PairCodeVerdict::NoActiveCode);
+    }
+
+    #[test]
+    fn enrollment_binds_the_exact_origin_and_survives_reload() {
+        let root = temp_registry_root("enroll");
+        let enrolled = enroll_client_at(&root, "chrome-extension://shuttle", 10).unwrap();
+        assert!(is_enrolled_origin("chrome-extension://shuttle", &enrolled));
+        assert!(!is_enrolled_origin("chrome-extension://other", &enrolled));
+
+        // Reload reads back the same registry from disk (atomic write round-trip).
+        let reloaded = load_pairing_registry_at(&root).unwrap();
+        assert_eq!(reloaded.clients, enrolled.clients);
+        assert_eq!(reloaded.epoch, enrolled.epoch);
+
+        // Idempotent re-enroll keeps one entry and one epoch.
+        let again = enroll_client_at(&root, "chrome-extension://shuttle", 20).unwrap();
+        assert_eq!(again.clients.len(), 1);
+        assert_eq!(again.epoch, enrolled.epoch);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn revoke_on_disk_removes_the_client_and_keeps_the_epoch() {
+        let root = temp_registry_root("revoke");
+        enroll_client_at(&root, "chrome-extension://shuttle", 10).unwrap();
+        let after = revoke_client_at(&root, "chrome-extension://shuttle").unwrap();
+        assert!(after.clients.is_empty());
+        let reloaded = load_pairing_registry_at(&root).unwrap();
+        assert!(reloaded.clients.is_empty());
+        // Epoch untouched: other clients (none here) and the token stay valid.
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn reset_rotates_the_epoch_and_kills_the_old_token() {
+        let root = temp_registry_root("reset");
+        let first = enroll_client_at(&root, "chrome-extension://shuttle", 10).unwrap();
+        let fresh = reset_pairing_at(&root).unwrap();
+        assert_ne!(first.epoch, fresh.epoch);
+        assert!(fresh.clients.is_empty());
+        // A token minted under the old epoch is dead against the new registry.
+        let old_token = token_for(first.epoch);
+        assert!(!is_authorized_bridge_request("chrome-extension://shuttle", "Bearer tok", &fresh, Some(&old_token)));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pairing_is_active_requires_clients_and_a_live_epoch_token() {
+        let registry = registry_with("chrome-extension://shuttle");
+        assert!(pairing_is_active(&registry, Some(&token_for(77))));
+        assert!(!pairing_is_active(&registry, Some(&token_for(76))), "stale-epoch token");
+        let empty = PairingRegistry { version: 2, epoch: 77, clients: vec![] };
+        assert!(!pairing_is_active(&empty, Some(&token_for(77))), "no clients");
+        assert!(!pairing_is_active(&registry, None), "no token");
+    }
+
+    #[test]
+    fn legacy_v1_token_file_fails_to_parse_and_cannot_authorize() {
+        // The pre-pairing token shape (no epoch). Unparsable under v2 => the
+        // no-grandfather switch: every previously issued token is dead.
+        let legacy = serde_json::from_str::<ShuttleTokenFile>(
+            r#"{ "version": 1, "token": "old", "created_at_epoch": 1 }"#,
+        );
+        // `epoch` defaults to 0 rather than failing, so a v1 string parses with
+        // epoch 0 — which can never match a random registry epoch.
+        let parsed = legacy.unwrap();
+        assert_eq!(parsed.epoch, 0);
+        let registry = registry_with("chrome-extension://shuttle");
+        assert_ne!(registry.epoch, 0, "random epoch must not be 0 in practice");
+        assert!(!is_authorized_bridge_request("chrome-extension://shuttle", "Bearer old", &registry, Some(&parsed)));
     }
 }
