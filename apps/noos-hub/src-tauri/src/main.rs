@@ -1766,6 +1766,10 @@ fn bcr_evaluator_config_payload() -> Value {
 const EVALUATOR_INPUT_MAX_EXCERPT: usize = 8_000;
 const EVALUATOR_INPUT_MAX_GOAL: usize = 4_000;
 const EVALUATOR_TIMEOUT_SECS: u64 = 30;
+/// Hard ceiling on the upstream response body (review F2): max_tokens is a
+/// request the provider may ignore, so the proxy bounds what it will buffer
+/// and forward. 64 KiB is ~200x the expected 300-token JSON answer.
+const EVALUATOR_UPSTREAM_MAX_BODY: u64 = 64 * 1024;
 
 #[derive(Deserialize)]
 struct EvaluatorProxyRequest {
@@ -1879,8 +1883,21 @@ fn call_evaluator_upstream(request: &EvaluatorProxyRequest) -> Result<String, Ev
         // so nothing the provider echoes can leak through this proxy.
         return Err(EvaluatorProxyRejection::Input("evaluator_upstream_error"));
     }
-    let payload: Value = response
-        .json()
+    // Bounded read (review F2): never buffer an unbounded upstream body. Take
+    // one byte MORE than the cap so an oversized body is detected explicitly
+    // rather than silently truncated into a parse error.
+    let mut body = Vec::new();
+    {
+        use std::io::Read;
+        let mut limited = response.take(EVALUATOR_UPSTREAM_MAX_BODY + 1);
+        limited
+            .read_to_end(&mut body)
+            .map_err(|_| EvaluatorProxyRejection::Input("evaluator_bad_response"))?;
+    }
+    if body.len() as u64 > EVALUATOR_UPSTREAM_MAX_BODY {
+        return Err(EvaluatorProxyRejection::Input("evaluator_response_oversized"));
+    }
+    let payload: Value = serde_json::from_slice(&body)
         .map_err(|_| EvaluatorProxyRejection::Input("evaluator_bad_response"))?;
     let content = payload
         .get("choices")
