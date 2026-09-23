@@ -122,6 +122,7 @@ function harness(status: { kind: string; itemId?: string; operationId?: string }
     claim: async () => { calls.push("claim"); return undefined; },
     get: async () => { calls.push("get"); return operation; },
     record: async () => { calls.push("record"); return operation; },
+    refuse: async () => { calls.push("refuse"); return operation; },
     reconcile: async (): Promise<SubmissionReconcileResult> => { calls.push("reconcile"); return { outcome: "STILL_AMBIGUOUS", operation }; }
   };
   const client = createOutboxClient({
@@ -249,6 +250,7 @@ describe("outbox storage integration", () => {
         claim: async () => undefined,
         get: async () => undefined,
         record: async () => undefined,
+        refuse: async () => undefined,
         reconcile: async () => ({ outcome: "STILL_AMBIGUOUS" })
       },
       sendMessage: async () => undefined,

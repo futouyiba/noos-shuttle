@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { GoalReanchorLedger, type GoalReanchorState, type GoalReanchorStore } from "../src/core/goal-reanchor";
-import { SubmissionOperationLedger, createChromeSubmissionStore, fingerprintSubmissionPayload } from "../src/core/submission-operation";
+import { SubmissionOperationLedger, createChromeSubmissionStore, fingerprintSubmissionPayload, provenNotActuatedRefusal } from "../src/core/submission-operation";
 
 class MemoryStore implements GoalReanchorStore {
   value?: GoalReanchorState;
@@ -195,5 +195,36 @@ describe("GoalReanchorLedger", () => {
     expect(result).toMatchObject({ completed: true, operation: { status: "COMPLETED" } });
     expect(ledger.state).toMatchObject({ anchorRevision: 1, designTurnsSinceAnchor: 0 });
     expect((await submissionLedger.get("anchor-1"))?.operationKind).toBe("REANCHOR_GOAL");
+  });
+
+  it("converges a proven pre-write refusal to PREPARED instead of UNCERTAIN (issue #108)", async () => {
+    let value: Record<string, unknown> = {};
+    const store = {
+      get: async (_key: string) => value,
+      set: async (next: Record<string, unknown>) => { Object.assign(value, next); }
+    };
+    const submissionLedger = new SubmissionOperationLedger(createChromeSubmissionStore(store, { claimViaCoordinator: false, lock: async work => work() }));
+    const claimContext = { logicalThreadId: "pdlt-1", providerConversationRef: "c1", targetCarrierRef: "tab-1",
+      bindingEpoch: 1, leaseGeneration: 1, leaseOwnerRef: "owner", explicitGo: true,
+      carrierState: "READY" as const, logicalControl: "CONTINUE" as const, sourceEpoch: 1, sourceObservedAt: 10 };
+    await submissionLedger.initializeAuthority(claimContext);
+    const ledger = new GoalReanchorLedger({ verifySubstantive: value => value.substantive, logicalThreadId: "pdlt-1", experimentalN: 1 });
+    ledger.recordDesignGeneration(evidence("g1"));
+    const result = await ledger.executeReanchor("experimental_n", "anchor-1", {
+      carrierState: "READY", logicalControl: "CONTINUE", targetCarrierRef: "tab-1",
+      providerConversationRef: "c1", claimContext,
+      baseline: { routeRef: "/c/c1", conversationRef: "c1", assistantMessageCount: 1,
+        userMessageCount: 1, headFingerprint: "h1", observedAt: 10 },
+      // The carrier's composer held a draft: the refusal happened before any
+      // provider-facing write, so it is provably not actuated.
+      dispatch: async () => { throw provenNotActuatedRefusal("chatgpt_composer_not_empty"); }
+    }, submissionLedger, { workItemId: "w1", payload: "anchor",
+      payloadFingerprint: fingerprintSubmissionPayload("anchor"), now: 10 });
+    // The anchor cycle did not complete — the transport simply did not happen.
+    expect(result).toMatchObject({ operation: { status: "PENDING" } });
+    const operation = await submissionLedger.get("anchor-1");
+    expect(operation?.state).toBe("PREPARED");
+    expect(operation?.dispatchReceipt?.outcome).toBe("refused");
+    expect(operation?.error).toBe("chatgpt_composer_not_empty");
   });
 });

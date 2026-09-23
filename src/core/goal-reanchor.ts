@@ -14,6 +14,7 @@ import type {
   SubmissionOperationLedger,
   SubmissionObservation
 } from "./submission-operation";
+import { isProvenNotActuatedRefusal } from "./submission-operation";
 
 export type GoalReanchorTrigger =
   | "experimental_n"
@@ -313,6 +314,14 @@ export class GoalReanchorLedger {
       return completed?.state === "COMPLETED"
         ? this.completeReanchor(operationId, completed.lastObservedAt) : requested;
     } catch (error) {
+      // A proven-not-actuated refusal is not delivery ambiguity (issue #108):
+      // the dispatch refused before any provider-facing write, so the transport
+      // converges to PREPARED — retryable on the next probe — instead of
+      // parking as execution-owning UNCERTAIN.
+      if (isProvenNotActuatedRefusal(error)) {
+        await submissionLedger.refuse(submissionOperationId, error.message, details.now).catch(() => undefined);
+        return requested;
+      }
       await submissionLedger.record(submissionOperationId, "UNCERTAIN", {
         now: details.now,
         error: error instanceof Error ? error.message : "reanchor dispatch failed"

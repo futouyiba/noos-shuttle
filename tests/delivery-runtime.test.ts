@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ChildWorkerLedger, createChromeChildWorkerStore } from "../src/core/child-worker";
 import { ResultDeliveryLedger, createChromeResultDeliveryStore, resultDeliveryKey } from "../src/core/result-delivery";
-import { SubmissionOperationLedger, createChromeSubmissionStore, fingerprintSubmissionPayload, type SubmissionClaimContext, type SubmissionObservation } from "../src/core/submission-operation";
+import { SubmissionOperationLedger, createChromeSubmissionStore, fingerprintSubmissionPayload, provenNotActuatedRefusal, type SubmissionClaimContext, type SubmissionObservation } from "../src/core/submission-operation";
 import { prepareChildDeliveryTransport } from "../src/core/deliver-child-result";
 import { ProviderExecutionJournal, createChromeExecutionJournalStore } from "../src/core/execution-journal";
 import { DurableOperationalStateReducer, createChromeOperationalStateReducerStore } from "../src/core/durable-operational-state-reducer";
@@ -155,6 +155,34 @@ describe("runChildDeliveryProbe", () => {
     const second = await runChildDeliveryProbe({ context: context(), baseline }, storage, deps, async () => { redispatch += 1; return observation(); });
     expect(second.dispatched).toBe(0);
     expect(redispatch).toBe(0);
+  });
+
+  it("converges a proven pre-write refusal to PREPARED and re-delivers on the next probe (issue #108)", async () => {
+    const { deps, storage, backing } = harness();
+    backing.noosWorkItemInbox = WORK_ITEM;
+    await seedResultReadyChild(deps);
+    await deps.deliveries.setWait("pdlt-l1", { kind: "WAIT_WORKER", childThreadId: "child-l2" }, 5);
+    // The carrier's composer held a draft: refused before any write.
+    const refused = await runChildDeliveryProbe({ context: context(), baseline }, storage, deps, async () => {
+      throw provenNotActuatedRefusal("chatgpt_composer_not_empty");
+    });
+    expect(refused.dispatched).toBe(0);
+    const operation = (await deps.submissions.list())[0];
+    expect(operation.state).toBe("PREPARED");
+    expect(operation.dispatchReceipt?.outcome).toBe("refused");
+    expect(operation.error).toBe("chatgpt_composer_not_empty");
+
+    // The recovery half: a PREPARED transport is exactly this probe's own
+    // re-claim lane, so the next round delivers the same operation instead of
+    // wedging the way UNCERTAIN did.
+    await advancePastClaimTick();
+    let dispatches = 0;
+    const delivered = await runChildDeliveryProbe({ context: context(), baseline }, storage, deps, async () => { dispatches += 1; return observation(); });
+    expect(delivered.dispatched).toBe(1);
+    expect(dispatches).toBe(1);
+    const after = (await deps.submissions.list())[0];
+    expect(after.state).toBe("DISPATCHING");
+    expect(after.dispatchReceipt?.outcome).toBe("dispatched");
   });
 
   it("recovers an UNCERTAIN transport into a closed delivery with the wait cleared", async () => {

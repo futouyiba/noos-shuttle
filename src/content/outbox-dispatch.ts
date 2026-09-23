@@ -20,6 +20,7 @@ import type {
   SubmissionOperation
 } from "../core/submission-operation";
 import { HumanGoRuntime, type HumanGoCarrierSnapshot, type HumanGoLedger } from "../core/human-go-runtime";
+import { provenNotActuatedRefusal } from "../core/proven-refusal";
 import type { CarrierObservation } from "./runtime-observer";
 import { getChatComposer, isChatComposerEmpty, insertIntoChatInput, submitChatInput } from "./chatgpt-dom";
 
@@ -190,13 +191,17 @@ export async function dispatchOutboxMessage(
         // Includes the cross-conversation case (issue #99): the probe read
         // conversation A, the SPA moved to B, and B's composer is empty — so the
         // composer check alone would have passed and delivered into B.
-        throw new Error("chatgpt_carrier_moved");
+        // Pre-write, so provably nothing was sent (issue #108).
+        throw provenNotActuatedRefusal("chatgpt_carrier_moved");
       }
       const composer = getChatComposer();
       // Hard gate, re-checked at the composer itself: a draft that appeared
       // between the probe and this instant is never overwritten (#63 C2).
-      if (!composer || !isChatComposerEmpty()) throw new Error("chatgpt_composer_not_empty");
+      // Also pre-write, so also provably not actuated (issue #108).
+      if (!composer || !isChatComposerEmpty()) throw provenNotActuatedRefusal("chatgpt_composer_not_empty");
       if (!insertIntoChatInput(payload, composer) || !(await submitChatInput(composer))) {
+        // Post-write: the payload may be in the composer or a send may have
+        // fired — genuinely ambiguous, deliberately NOT marked.
         throw new Error("chatgpt_composer_unavailable");
       }
     }
@@ -226,6 +231,13 @@ export async function dispatchOutboxMessage(
     return { status: "BLOCKED", reason: error instanceof Error ? error.message : "outbox_dispatch_failed" };
   }
   if (result.status === "BLOCKED") return { status: "BLOCKED", reason: result.reason };
+  // A proven-not-actuated refusal sent nothing and converged the reservation
+  // back to PREPARED (issue #108). Nothing was delivered, so this is BLOCKED —
+  // the item keeps its reservation and the queue retries — never RECONCILED,
+  // which the caller would read as progress. Re-claiming that PREPARED
+  // reservation is PR #121's retarget lane; until it lands, the honest state
+  // is a visible wait.
+  if (result.status === "REFUSED") return { status: "BLOCKED", reason: `refused:${result.reason}` };
   // The claim is what makes this Run epoch's expected Human turn accountable;
   // the caller turns this into the run projection's own bookkeeping.
   return result.status === "DISPATCHED"

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { HumanGoRuntime, type HumanGoCarrierSnapshot, type HumanGoRequest } from "../src/core/human-go-runtime";
-import { SubmissionOperationLedger } from "../src/core/submission-operation";
+import { SubmissionOperationLedger, provenNotActuatedRefusal } from "../src/core/submission-operation";
+import { provenNotActuatedRefusal as contentRefusal } from "../src/core/proven-refusal";
+import type { HumanGoLedger } from "../src/core/human-go-runtime";
+import type { SubmissionOperation } from "../src/core/submission-operation";
 
 function baseline() { return { routeRef: "/c/conversation-a", assistantMessageCount: 1, userMessageCount: 1, observedAt: 1 }; }
 function carrier(overrides: Partial<HumanGoCarrierSnapshot> = {}): HumanGoCarrierSnapshot {
@@ -239,5 +242,69 @@ describe("HumanGoRuntime", () => {
     expect(result).toEqual({ status: "BLOCKED", reason: "fence_mismatch" });
     expect(dispatches).toBe(0);
     expect((await ledger.get("go-1"))?.state).toBe("PREPARED");
+  });
+});
+
+describe("proven-not-actuated refusal (issue #108)", () => {
+  // The two directions of the disposition's delta 5, at the runtime layer:
+  // a proven pre-write refusal converges to PREPARED and stays retryable; an
+  // ambiguous failure stays UNCERTAIN and blocks a blind retry.
+  it("converges a proven pre-write refusal to PREPARED and a later claim proceeds", async () => {
+    const ledger = new SubmissionOperationLedger(memoryStore());
+    let dispatches = 0;
+    const runtime = new HumanGoRuntime(ledger, {
+      readCurrentCarrier: async () => carrier(),
+      dispatch: async () => { dispatches += 1; throw provenNotActuatedRefusal("chatgpt_composer_not_empty"); }
+    });
+    const result = await runtime.execute(request());
+    expect(result.status).toBe("REFUSED");
+    expect(result.status === "REFUSED" && result.reason).toBe("chatgpt_composer_not_empty");
+    const after = await ledger.get("go-1");
+    expect(after?.state).toBe("PREPARED");
+    expect(after?.dispatchReceipt?.outcome).toBe("refused");
+    expect(after?.error).toBe("chatgpt_composer_not_empty");
+    // The wedge this replaces: the very next attempt claims again.
+    const retried = new HumanGoRuntime(ledger, {
+      readCurrentCarrier: async () => carrier(),
+      dispatch: async () => { dispatches += 1; }
+    });
+    const second = await retried.execute(request());
+    expect(second.status).toBe("DISPATCHED");
+    expect((await ledger.get("go-1"))?.state).toBe("DISPATCHING");
+    expect((await ledger.get("go-1"))?.dispatchReceipt?.outcome).toBe("dispatched");
+    expect(dispatches).toBe(2);
+  });
+
+  it("an ambiguous post-write failure stays UNCERTAIN and blocks the blind retry", async () => {
+    const ledger = new SubmissionOperationLedger(memoryStore());
+    let dispatches = 0;
+    const runtime = new HumanGoRuntime(ledger, {
+      readCurrentCarrier: async () => carrier(),
+      dispatch: async () => { dispatches += 1; throw new Error("chatgpt_composer_unavailable"); }
+    });
+    const result = await runtime.execute(request());
+    expect(result.status).toBe("UNCERTAIN");
+    expect((await ledger.get("go-1"))?.state).toBe("UNCERTAIN");
+    const retried = new HumanGoRuntime(ledger, {
+      readCurrentCarrier: async () => carrier(),
+      dispatch: async () => { dispatches += 1; }
+    });
+    const second = await retried.execute(request());
+    // Claim is refused: the UNCERTAIN operation still owns execution, so the
+    // retry never actuates again.
+    expect(second.status).toBe("UNCERTAIN");
+    expect(dispatches).toBe(1);
+  });
+
+  it("recognizes the content-reachable construction of the signal", async () => {
+    // The signal crosses a bundle boundary by name, not class identity; pin
+    // that the runtime's check accepts the content module's construction.
+    const ledger = new SubmissionOperationLedger(memoryStore());
+    const runtime = new HumanGoRuntime(ledger, {
+      readCurrentCarrier: async () => carrier(),
+      dispatch: async () => { throw contentRefusal("chatgpt_composer_not_empty"); }
+    });
+    const result = await runtime.execute(request());
+    expect(result.status).toBe("REFUSED");
   });
 });
