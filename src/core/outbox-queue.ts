@@ -351,6 +351,56 @@ export function planUncertainCancel(item: OutboxItem, operation: SubmissionOpera
   return { allowed: true };
 }
 
+/** The ledger surface cancelling an unresolved item needs. Nothing more. */
+export interface OutboxCancelLedger {
+  get(operationId: string): Promise<SubmissionOperation | undefined>;
+  record(operationId: string, state: "CANCELLED", details: { now?: number }): Promise<SubmissionOperation | undefined>;
+}
+
+/**
+ * Cancels one item, retiring an unresolved reservation's operation first.
+ *
+ * Extracted from the service worker (review 5791080411's F2: the load-bearing
+ * ordering lived in entry-point code no test could reach). The queue reducer is
+ * pure and cannot see the ledger, so the policy lives here, between the two:
+ *
+ * 1. `planUncertainCancel` decides against the operation's durable state.
+ * 2. The retire happens BEFORE the item is cancelled. If the process dies in
+ *    between, the durable state is (op CANCELLED, item UNCERTAIN), and the
+ *    next probe converges it — the gate reports RECONCILE for an UNCERTAIN
+ *    head whose operation is terminal, and the fold parks the item. The
+ *    reverse order would orphan an execution-owning operation and block every
+ *    later dispatch to that target forever.
+ * 3. The reducer records the outcome; the caller persists the returned state.
+ */
+export async function cancelOutboxItem(
+  state: OutboxQueueState,
+  itemId: string,
+  ledger: OutboxCancelLedger,
+  now: number
+): Promise<OutboxMutationResult> {
+  const item = state.items.find(candidate => candidate.itemId === itemId);
+  if (item?.state !== "UNCERTAIN") {
+    // Every other state is the reducer's own call: QUEUED/BLOCKED cancel
+    // outright, DISPATCHING/DELIVERED are refused.
+    return reduceOutboxQueue(state, { type: "cancel", itemId, now });
+  }
+  const operation = item.submissionOperationId === undefined
+    ? undefined
+    : await ledger.get(item.submissionOperationId);
+  const plan = planUncertainCancel(item, operation);
+  if (!plan.allowed) return { ok: false, error: plan.reason, state };
+  if (plan.retireOperationId !== undefined) {
+    const retired = await ledger.record(plan.retireOperationId, "CANCELLED", { now });
+    if (retired?.state !== "CANCELLED") {
+      // The retire must actually take, or the operation stays
+      // execution-owning behind a cancelled item — the wedge, one level down.
+      return { ok: false, error: "operation_retire_failed", state };
+    }
+  }
+  return reduceOutboxQueue(state, { type: "cancel", itemId, now });
+}
+
 /** True when the queue still holds a reservation this Run epoch has not accounted for. */
 export function hasOutstandingOutboxReservation(state: OutboxQueueState, runId: string): boolean {
   return state.items.some(item => item.reservationRunId === runId && item.state !== "DELIVERED" && item.state !== "CANCELLED");
@@ -544,7 +594,11 @@ export function reduceOutboxQueue(state: OutboxQueueState, mutation: OutboxMutat
     case "release_attempt": {
       const item = findItem(state, mutation.itemId);
       if (!item) return fail(state, "item_not_found");
-      if (item.state !== "DISPATCHING") return fail(state, `item_${item.state.toLowerCase()}`);
+      // An UNCERTAIN item whose attempt was proven not accepted resolves the
+      // same way a DISPATCHING one does: release it for a fresh attempt. (The
+      // fold itself only reaches UNCERTAIN items since the gate learned to
+      // consult the backing operation — see classifyOutboxHead.)
+      if (item.state !== "DISPATCHING" && item.state !== "UNCERTAIN") return fail(state, `item_${item.state.toLowerCase()}`);
       if (item.attempts + 1 >= OUTBOX_MAX_ATTEMPTS) {
         // The cap is spent: park visibly rather than retry into a loop.
         const parked: OutboxItem = { ...item, state: "BLOCKED", attempts: item.attempts + 1, updatedAt: mutation.now, lastOutcome: mutation.reason };

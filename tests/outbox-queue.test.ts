@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   OUTBOX_MAX_ATTEMPTS,
   canEditOutboxItem,
+  cancelOutboxItem,
   expectedUserTurnAccounting,
   extractOutboxQueueState,
   hasOutstandingOutboxReservation,
@@ -11,7 +12,12 @@ import {
   reduceOutboxQueue,
   type OutboxQueueState
 } from "../src/core/outbox-queue";
-import type { SubmissionOperation, SubmissionOperationState } from "../src/core/submission-operation";
+import {
+  SubmissionOperationLedger,
+  fingerprintSubmissionPayload,
+  type SubmissionOperation,
+  type SubmissionOperationState
+} from "../src/core/submission-operation";
 import { decideRunIntervention } from "../src/core/run-intervention";
 
 const CONVERSATION = "conv-1";
@@ -448,5 +454,149 @@ describe("outbox durable shape", () => {
 
     expect(extractOutboxQueueState({ noosOutboxQueue: { items: [{ itemId: "broken" }] } }).items).toHaveLength(0);
     expect(extractOutboxQueueState(undefined)).toEqual({ revision: 0, sequence: 0, paused: false, items: [] });
+  });
+});
+
+describe("cancelOutboxItem retires the reservation before cancelling the item", () => {
+  /**
+   * The service-worker ordering, extracted into the core precisely so it can
+   * be tested (review 5791080411's F2: mutating the entry-point branch left
+   * the suite green, i.e. the load-bearing ordering had no test). A real
+   * ledger stands behind it, so "the retire actually took" is asserted against
+   * the ledger's own durable state, not a mock's call log.
+   */
+  const PAYLOAD = "queued human message";
+
+  function ledgerWith(operationId: string): SubmissionOperationLedger {
+    return new SubmissionOperationLedger({
+      get: async (_key?: string) => storeValue,
+      set: async (next: Record<string, unknown>) => { storeValue = next; },
+      getAuthority: async (thread: string) => thread === "thread:conv-1"
+        ? { ...claimContext(), authorityGeneration: 1, authorityEstablishedAt: 1 }
+        : undefined,
+      ensureAuthority: async () => undefined
+    });
+  }
+  let storeValue: unknown;
+  const claimContext = () => ({
+    logicalThreadId: "thread:conv-1",
+    providerConversationRef: "conv-1",
+    bindingEpoch: 1, leaseGeneration: 1, leaseOwnerRef: "owner-1", targetCarrierRef: "browser-tab:1",
+    carrierState: "READY" as const, logicalControl: "CONTINUE" as const, explicitGo: true,
+    sourceEpoch: 1, sourceObservedAt: 1
+  });
+
+  async function ledgerWithUncertainOp(operationId: string): Promise<SubmissionOperationLedger> {
+    storeValue = undefined;
+    const ledger = ledgerWith(operationId);
+    await ledger.prepare({
+      operationId, operationKind: "OUTBOX_MESSAGE", workItemId: "shuttle-outbox",
+      logicalThreadId: "thread:conv-1", targetCarrierRef: "browser-tab:1", providerConversationRef: "conv-1",
+      dispatchFence: claimContext(), payloadFingerprint: fingerprintSubmissionPayload(PAYLOAD), payload: PAYLOAD,
+      runId: RUN,
+      preSubmitBaseline: { conversationRef: "conv-1", routeRef: "/c/1", assistantMessageCount: 0, userMessageCount: 4, observedAt: 1 }
+    });
+    await ledger.claim(operationId, claimContext(), 10);
+    await ledger.record(operationId, "UNCERTAIN", { now: 20 });
+    return ledger;
+  }
+
+  function uncertainQueue(operationId: string): OutboxQueueState {
+    let state = enqueue({ revision: 0, sequence: 0, paused: false, items: [] }, "a", PAYLOAD, 1);
+    state = claim(state, "a", operationId, RUN, 2, 4);
+    return reduceOutboxQueue(state, {
+      type: "record_submission",
+      outcome: { operationId, state: "UNCERTAIN", now: 3 }
+    }).state;
+  }
+
+  it("cancels the item and lands the operation CANCELLED — retire actually took", async () => {
+    const ledger = await ledgerWithUncertainOp("op-a");
+    const result = await cancelOutboxItem(uncertainQueue("op-a"), "a", ledger, 100);
+    expect(result.ok).toBe(true);
+    expect(result.item?.state).toBe("CANCELLED");
+    expect((await ledger.get("op-a"))?.state).toBe("CANCELLED");
+  });
+
+  it("covers the retire-first crash window: a retired operation still lets the cancel through", async () => {
+    // Durable state exactly as a crash after the retire leaves it.
+    const ledger = await ledgerWithUncertainOp("op-a");
+    await ledger.record("op-a", "CANCELLED", { now: 50 });
+    const result = await cancelOutboxItem(uncertainQueue("op-a"), "a", ledger, 100);
+    expect(result.ok).toBe(true);
+    expect(result.item?.state).toBe("CANCELLED");
+  });
+
+  it("refuses when the ledger has proven the delivery, leaving both untouched", async () => {
+    const ledger = await ledgerWithUncertainOp("op-a");
+    await ledger.reconcile("op-a", {
+      conversationRef: "conv-1", routeRef: "/c/1", assistantMessageCount: 0, userMessageCount: 5,
+      lastUserMessageFingerprint: fingerprintSubmissionPayload(PAYLOAD),
+      observedAt: 30, sourceEpoch: 1, generationActive: true, dispatchFence: claimContext()
+    });
+    expect((await ledger.get("op-a"))?.state).toBe("OBSERVED_ACCEPTED");
+
+    const result = await cancelOutboxItem(uncertainQueue("op-a"), "a", ledger, 100);
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("delivery_accepted");
+    expect(result.state.items[0].state).toBe("UNCERTAIN");
+    expect((await ledger.get("op-a"))?.state).toBe("OBSERVED_ACCEPTED");
+  });
+
+  it("keeps the reducer's own rules for every other state", async () => {
+    let queued = enqueue({ revision: 0, sequence: 0, paused: false, items: [] }, "a", PAYLOAD, 1);
+    const cancelled = await cancelOutboxItem(queued, "a", ledgerWith("unused"), 10);
+    expect(cancelled.item?.state).toBe("CANCELLED");
+
+    const dispatching = claim(queued, "a", "op-x", RUN, 2, 4);
+    const refused = await cancelOutboxItem(dispatching, "a", ledgerWith("unused"), 10);
+    expect(refused.ok).toBe(false);
+    expect(refused.error).toBe("cancel_requires_resolution");
+  });
+});
+
+describe("the fold reaches an UNCERTAIN item whose operation went terminal behind it", () => {
+  /**
+   * Review 5791080411's F1: the gate used to short-circuit on the item state,
+   * so a terminal operation behind an UNCERTAIN item never folded and the
+   * retire-first crash window never converged. These pin the fold itself; the
+   * gate's half is pinned in outbox-gate.test.ts.
+   */
+  function uncertain(operationId: string): OutboxQueueState {
+    let state = enqueue(enqueue({ revision: 0, sequence: 0, paused: false, items: [] }, "a", "one", 1), "b", "two", 2);
+    state = claim(state, "a", operationId, RUN, 3, 4);
+    return reduceOutboxQueue(state, {
+      type: "record_submission",
+      outcome: { operationId, state: "UNCERTAIN", now: 4 }
+    }).state;
+  }
+
+  it("parks the item when the operation was retired to CANCELLED", () => {
+    const parked = reduceOutboxQueue(uncertain("op-a"), {
+      type: "record_submission",
+      outcome: { operationId: "op-a", state: "CANCELLED", now: 10 }
+    });
+    expect(parked.ok).toBe(true);
+    expect(parked.item?.state).toBe("BLOCKED");
+    expect(expectedUserTurnAccounting(parked.state, RUN, "conv-1")).toBeUndefined();
+  });
+
+  it("delivers the item when the operation proved acceptance", () => {
+    const delivered = reduceOutboxQueue(uncertain("op-a"), {
+      type: "record_submission",
+      outcome: { operationId: "op-a", state: "OBSERVED_ACCEPTED", baselineUserMessageCount: 4, now: 10 }
+    });
+    expect(delivered.item?.state).toBe("DELIVERED");
+  });
+
+  it("releases the item for a fresh attempt when the operation was proven not accepted", () => {
+    let state = uncertain("op-a");
+    state = reduceOutboxQueue(state, {
+      type: "record_submission",
+      outcome: { operationId: "op-a", state: "FAILED_SAFE", baselineUserMessageCount: 4, now: 10 }
+    }).state;
+    const released = reduceOutboxQueue(state, { type: "release_attempt", itemId: "a", reason: "PROVEN_NOT_ACCEPTED", now: 11 });
+    expect(released.item?.state).toBe("QUEUED");
+    expect(released.item?.submissionOperationId).toBeUndefined();
   });
 });

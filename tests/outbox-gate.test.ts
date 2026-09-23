@@ -257,3 +257,61 @@ describe("retiring an ambiguous reservation unblocks later dispatches (#92 revie
     expect(hasExecutionInFlight([foreign], carrier())).toBe(false);
   });
 });
+
+describe("an UNCERTAIN head is classified by its operation, not its snapshot alone", () => {
+  /**
+   * Review 5791080411's F1: this used to short-circuit to BLOCKED_UNCERTAIN on
+   * the item state, which stranded the retire-first cancel's crash window
+   * (op CANCELLED, item UNCERTAIN) and every other terminal operation behind
+   * an unresolved item. The gate now consults the operation: terminal means
+   * the item's state is stale and must fold (RECONCILE); only genuine
+   * ambiguity holds the queue.
+   */
+  function uncertainQueue(operationId?: string): OutboxQueueState {
+    let state = queued();
+    const item = state.items[0];
+    state = reduceOutboxQueue(state, {
+      type: "claim_dispatch",
+      itemId: "item-1",
+      input: {
+        operationId: operationId ?? "op-1",
+        reservation: { itemId: "item-1", revision: item.revision, submissionOperationId: operationId ?? "op-1", runId: "bcr-run-1", expectedOperationKind: "OUTBOX_MESSAGE", observedUserMessageCount: 4 },
+        now: 1_000
+      }
+    }).state;
+    return reduceOutboxQueue(state, {
+      type: "record_submission",
+      outcome: { operationId: operationId ?? "op-1", state: "UNCERTAIN", now: 1_500 }
+    }).state;
+  }
+
+  it("holds the queue only while the operation is genuinely ambiguous", () => {
+    for (const ambiguous of ["UNCERTAIN", "DISPATCHING"] as const) {
+      const ledgers = { authority: authority(), executionInFlight: true, operations: [operation("OUTBOX_MESSAGE", ambiguous, "op-1")] };
+      expect(classifyOutboxHead(uncertainQueue().items[0], input({ ledgers }), NOW, deps))
+        .toEqual({ kind: "BLOCKED_UNCERTAIN", itemId: "item-1" });
+    }
+  });
+
+  it("asks for the fold once the operation is terminal — including the retire crash window", () => {
+    for (const terminal of ["CANCELLED", "FAILED_SAFE", "OBSERVED_ACCEPTED", "COMPLETED"] as const) {
+      const ledgers = { authority: authority(), executionInFlight: false, operations: [operation("OUTBOX_MESSAGE", terminal, "op-1")] };
+      expect(classifyOutboxHead(uncertainQueue().items[0], input({ ledgers }), NOW, deps))
+        .toEqual({ kind: "RECONCILE", itemId: "item-1", operationId: "op-1" });
+    }
+  });
+
+  it("holds an orphaned reservation visibly: the Human cancel still works on it", () => {
+    const missing = input({ ledgers: { authority: authority(), executionInFlight: false, operations: [] } });
+    expect(classifyOutboxHead(uncertainQueue("op-gone").items[0], missing, NOW, deps))
+      .toEqual({ kind: "BLOCKED_UNCERTAIN", itemId: "item-1" });
+  });
+
+  it("holds an UNCERTAIN item with no reservation id at all", () => {
+    // Constructed directly: the crash window cannot produce this (the item
+    // carries its reservation until cancelled), but the gate must not crash
+    // or misclassify if it ever sees one.
+    const bare = { ...uncertainQueue().items[0], submissionOperationId: undefined };
+    expect(classifyOutboxHead(bare, input(), NOW, deps)).toEqual({ kind: "BLOCKED_UNCERTAIN", itemId: "item-1" });
+  });
+});

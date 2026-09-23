@@ -20,7 +20,7 @@ import { runChildDeliveryProbe } from "./delivery-runtime";
 import {
   OUTBOX_MAX_ATTEMPTS,
   OUTBOX_STORE_KEY,
-  planUncertainCancel,
+  cancelOutboxItem,
   createOutboxReservation,
   emptyOutboxQueueState,
   extractOutboxQueueState,
@@ -173,30 +173,18 @@ async function handleOutboxMutation(mutation: OutboxMutation): Promise<OutboxMut
     const persisted = await storage.get(OUTBOX_STORE_KEY);
     const state = extractOutboxQueueState(persisted);
     // Cancelling an UNRESOLVED item is the Human's delta-7 escape, and it has a
-    // ledger half the pure reducer cannot do: the backing operation must be
-    // retired first, or it stays execution-owning forever and blocks every
-    // later dispatch to this target. Retire-first also makes the crash window
-    // converge (op CANCELLED + item still UNCERTAIN folds to a parked item on
-    // the next probe); the reverse order would orphan the wedge.
+    // ledger half the pure reducer cannot do. The flow (plan against the
+    // operation's durable state, retire first, then cancel) lives in the core
+    // as `cancelOutboxItem` so its ordering is testable; this handler only
+    // supplies the ledger and persists the outcome.
+    let result: OutboxMutationResult;
     if (mutation.type === "cancel") {
-      const item = state.items.find(candidate => candidate.itemId === mutation.itemId);
-      if (item?.state === "UNCERTAIN") {
-        const submissions = getSubmissionOperationCoordinator();
-        if (!submissions) return { ok: false, error: "coordinator_unavailable", state };
-        const operation = item.submissionOperationId === undefined
-          ? undefined
-          : await submissions.get(item.submissionOperationId);
-        const plan = planUncertainCancel(item, operation);
-        if (!plan.allowed) return { ok: false, error: plan.reason, state };
-        if (plan.retireOperationId !== undefined) {
-          const retired = await submissions.record(plan.retireOperationId, "CANCELLED", { now: Date.now() });
-          if (retired?.state !== "CANCELLED") {
-            return { ok: false, error: "operation_retire_failed", state };
-          }
-        }
-      }
+      const submissions = getSubmissionOperationCoordinator();
+      if (!submissions) return { ok: false, error: "coordinator_unavailable", state };
+      result = await cancelOutboxItem(state, mutation.itemId, submissions, Date.now());
+    } else {
+      result = reduceOutboxQueue(state, mutation);
     }
-    const result = reduceOutboxQueue(state, mutation);
     if (result.ok && result.state !== state) await storage.set({ [OUTBOX_STORE_KEY]: result.state });
     return result;
   });
@@ -379,7 +367,11 @@ async function recordOutboxOutcome(
   queue: OutboxQueueState
 ): Promise<{ queue: OutboxQueueState; recorded?: OutboxSubmissionOutcome }> {
   const head = headOutboxItem(queue);
-  if (!head || head.state !== "DISPATCHING" || head.submissionOperationId === undefined) return { queue };
+  // An UNCERTAIN head folds too: its operation may have gone terminal behind
+  // it (the retire-first cancel's crash window, or a policy resolution), and
+  // without this fold the item stays wedged on stale evidence.
+  if (!head || (head.state !== "DISPATCHING" && head.state !== "UNCERTAIN") ||
+    head.submissionOperationId === undefined) return { queue };
   const operation = await submissions.get(head.submissionOperationId);
   if (!operation || operation.operationKind !== "OUTBOX_MESSAGE") return { queue };
   const terminal = operation.state === "OBSERVED_ACCEPTED" || operation.state === "COMPLETED" ||

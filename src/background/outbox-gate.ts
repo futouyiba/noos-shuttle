@@ -120,7 +120,7 @@ export type OutboxHeadDecision =
   | Exclude<OutboxProbeStatus, { kind: "IDLE" }>;
 
 export function classifyOutboxHead(head: OutboxItem, input: OutboxProbeInput, now: number, deps: OutboxProbeDeps): OutboxHeadDecision {
-  if (head.state === "UNCERTAIN") return { kind: "BLOCKED_UNCERTAIN", itemId: head.itemId };
+  if (head.state === "UNCERTAIN") return classifyUncertainHead(head, input);
   if (head.state === "BLOCKED" || head.attempts >= deps.maxAttempts) {
     return { kind: "WAIT", itemId: head.itemId, reason: "attempt_failed" };
   }
@@ -129,6 +129,37 @@ export function classifyOutboxHead(head: OutboxItem, input: OutboxProbeInput, no
   const blocked = gateBlockReason(head, input, now);
   if (blocked) return { kind: "WAIT", itemId: head.itemId, reason: blocked };
   return { kind: "DISPATCH", itemId: head.itemId, operationId: deps.mintOperationId(head, now), head };
+}
+
+/**
+ * An unresolved head is only "blocked" while its operation is genuinely
+ * ambiguous. The item's UNCERTAIN state is a *snapshot* of a moment; the
+ * operation may since have been retired (the retire-first cancel's crash
+ * window) or resolved by policy — and those states must fold, or the queue
+ * stays wedged on evidence that no longer exists.
+ *
+ * Review 5791080411's F1: this used to short-circuit to BLOCKED_UNCERTAIN on
+ * the item state alone, which made the retire-first ordering's crash
+ * convergence claim false — the fold never ran for an UNCERTAIN item.
+ */
+function classifyUncertainHead(head: OutboxItem, input: OutboxProbeInput): OutboxHeadDecision {
+  const operationId = head.submissionOperationId;
+  if (operationId === undefined) return { kind: "BLOCKED_UNCERTAIN", itemId: head.itemId };
+  const operation = input.ledgers.operations.find(candidate =>
+    candidate.operationId === operationId && candidate.operationKind === "OUTBOX_MESSAGE");
+  // No such operation: the reservation is an orphan. Still surfaced as
+  // blocked — the Human's cancel works on it (the plan needs no retire for a
+  // missing operation).
+  if (!operation) return { kind: "BLOCKED_UNCERTAIN", itemId: head.itemId };
+  if (operation.state === "DISPATCHING" || operation.state === "UNCERTAIN") {
+    // Genuinely ambiguous: delta 7's head-of-line hold, with the Human cancel
+    // as the authorized exit.
+    return { kind: "BLOCKED_UNCERTAIN", itemId: head.itemId };
+  }
+  // CANCELLED / FAILED_SAFE / OBSERVED_ACCEPTED / COMPLETED: the operation is
+  // terminal, so the item's UNCERTAIN state is stale. Report RECONCILE — the
+  // background's fold converges the item (park / release / deliver).
+  return { kind: "RECONCILE", itemId: head.itemId, operationId };
 }
 
 function classifyReservedHead(head: OutboxItem, input: OutboxProbeInput, now: number): OutboxHeadDecision {
