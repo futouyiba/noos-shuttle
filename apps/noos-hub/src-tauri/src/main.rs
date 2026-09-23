@@ -1548,6 +1548,46 @@ fn handle_local_write_request(mut stream: TcpStream) -> Result<(), String> {
         return write_json_response(&mut stream, status, &response);
     }
 
+    // Evaluator proxy (#100 slice 2): bearer + enrolled origin, structured
+    // input only, key never leaves. Upstream and authorization failures are
+    // distinct error codes; no response path serializes the key.
+    if method == "POST" && path == "/v1/bcr/evaluate" {
+        if !is_authorized_bridge_request(&origin, &header_value(&headers, "authorization").unwrap_or_default(), &registry, read_shuttle_token().as_ref()) {
+            return write_json_response(
+                &mut stream,
+                401,
+                &write_error("unauthorized", "Browser Shuttle is not connected to NOOS Hub."),
+            );
+        }
+        let body_start = end + 4;
+        let body_end = body_start + content_length;
+        let body = &buffer[body_start..body_end.min(buffer.len())];
+        let request: EvaluatorProxyRequest = match serde_json::from_slice(body) {
+            Ok(request) => request,
+            Err(_) => return write_json_response(&mut stream, 400, &write_error("input_rejected", "Malformed evaluator request.")),
+        };
+        if let Err(EvaluatorProxyRejection::Input(reason)) = validate_evaluator_proxy_request(&request) {
+            return write_json_response(&mut stream, 400, &write_error(reason, "Evaluator input rejected."));
+        }
+        return match call_evaluator_upstream(&request) {
+            Ok(content) => write_json_response(
+                &mut stream,
+                200,
+                &json!({ "ok": true, "content": content }),
+            ),
+            Err(EvaluatorProxyRejection::Unconfigured) => write_json_response(
+                &mut stream,
+                409,
+                &write_error("evaluator_unconfigured", "The Hub has no evaluator configuration."),
+            ),
+            Err(EvaluatorProxyRejection::Input(reason)) => write_json_response(
+                &mut stream,
+                502,
+                &write_error(reason, "The evaluator upstream failed."),
+            ),
+        };
+    }
+
     if method == "POST" && path == "/v1/actions" {
         if !is_authorized_bridge_request(&origin, &header_value(&headers, "authorization").unwrap_or_default(), &registry, read_shuttle_token().as_ref()) {
             return write_json_response(
@@ -1670,6 +1710,9 @@ const BCR_EVALUATOR_ALLOWED_HOST: &str = "api.deepseek.com";
 /// pull payload served to the Shuttle extension. `configured` requires both
 /// fields; the key travels only over the paired, token-authorized localhost
 /// bridge and is re-validated extension-side before it is ever stored.
+/// #100 slice 2: the raw apiKey is never serialized out of the Hub anymore.
+/// The payload answers "is the Hub configured to evaluate" and with what
+/// model/baseUrl — the key itself stays in config.json, server-side only.
 fn bcr_evaluator_config_payload_from(config: &Value) -> Value {
     let evaluator = config
         .get("bcrEvaluator")
@@ -1692,7 +1735,6 @@ fn bcr_evaluator_config_payload_from(config: &Value) -> Value {
         "ok": true,
         "configured": configured,
         "baseUrl": format!("https://{BCR_EVALUATOR_ALLOWED_HOST}"),
-        "apiKey": if configured { Value::String(api_key) } else { Value::Null },
         "model": if configured { Value::String(model) } else { Value::Null },
     })
 }
@@ -1704,6 +1746,151 @@ fn bcr_evaluator_config_payload() -> Value {
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
         .unwrap_or_else(|| json!({}));
     bcr_evaluator_config_payload_from(&config)
+}
+
+// ---------------------------------------------------------------------------
+// BCR evaluator proxy (#100 slice 2). The extension sends a structured,
+// length-bounded input; the Hub alone reads the provider key and calls the
+// one allowlisted provider; the response carries the provider's message
+// content only. Deliberately NOT a general relay:
+//   - the upstream URL is built from a constant, never from the wire;
+//   - the prompt is assembled server-side from a fixed template with the
+//     structured fields as data — the wire cannot supply a prompt;
+//   - input lengths are capped before anything is forwarded;
+//   - the key appears in no response body and no error string.
+// The verdict itself (gate, veto, stop-reason mapping) stays in the
+// extension's single adjudicated implementation in continuation-eligibility
+// — porting it here would fork the gate the harness fixtures certify.
+// ---------------------------------------------------------------------------
+
+const EVALUATOR_INPUT_MAX_EXCERPT: usize = 8_000;
+const EVALUATOR_INPUT_MAX_GOAL: usize = 4_000;
+const EVALUATOR_TIMEOUT_SECS: u64 = 30;
+
+#[derive(Deserialize)]
+struct EvaluatorProxyRequest {
+    #[serde(default)]
+    goal: String,
+    #[serde(default)]
+    scope: String,
+    assistant_turn_excerpt: String,
+}
+
+enum EvaluatorProxyRejection {
+    Input(&'static str),
+    Unconfigured,
+}
+
+/// Fixed prompt template — the structured fields land as data, never as
+/// instructions. Mirrors buildEvaluatorMessages in continuation-evaluator.ts;
+/// the default-goal contract is the Human decision of 2026-09-17.
+fn evaluator_proxy_messages(request: &EvaluatorProxyRequest) -> Value {
+    const DEFAULT_CONTINUATION_GOAL: &str = "Continue the assistant's own stated next step: the harness sends a locale-selected continuation token (zh '继续', en 'go on') so the assistant executes its own declared direction. Do not expand scope. Report any human decision, review/evidence/external wait, completed work, or scope expansion faithfully as the matching stop condition.";
+    let goal = {
+        let trimmed = request.goal.trim();
+        if trimmed.is_empty() { DEFAULT_CONTINUATION_GOAL.to_string() } else { trimmed.to_string() }
+    };
+    let scope = {
+        let trimmed = request.scope.trim();
+        if trimmed.is_empty() { goal.clone() } else { trimmed.to_string() }
+    };
+    let system = [
+        "You are the NOOS Continuation Evaluator: an isolated classifier over a bounded design conversation.",
+        "You classify ONLY the state of the deliberation relative to the frozen goal and scope below.",
+        "You must NOT plan, invent methods, choose between options, or propose new work. A next-action hint is optional and may only restate an action the assistant turn explicitly stated or clearly entailed.",
+        "Any uncertainty resolves to the UNCERTAIN enum value; never guess.",
+        "Reply with STRICT JSON only (no prose, no code fences) using exactly these keys:",
+        "{\"goal_status\":\"IN_PROGRESS|SATISFIED|UNCERTAIN\",\"focus_status\":\"OPEN_ADVANCING|SATISFIED|REFINED|BLOCKED|STALLED_SUSPECTED|UNCERTAIN\",\"scope_relation\":\"WITHIN_SCOPE|OPTIONAL_EXTENSION|OUT_OF_SCOPE|UNCERTAIN\",\"dependency\":\"NONE|NEEDS_HUMAN|NEEDS_REVIEW|NEEDS_EVIDENCE|NEEDS_EXTERNAL|UNCERTAIN\",\"anchor_need\":\"NONE|SOFT|REBASE_SUSPECTED\",\"confidence\":\"HIGH|MEDIUM|LOW\"}",
+        "Guidance: SATISFIED/UNCERTAIN goal, human choices, review/evidence/external waits, optional future work, scope drift, and stalls must all be reported faithfully — the harness stops on every one of them. A turn that advanced the current focus without stating an explicit next step is OPEN_ADVANCING, and that is a faithful report, not an invitation to invent one.",
+    ].join(" ");
+    let user = [
+        format!("Current Goal (frozen for this run): {goal}"),
+        format!("Current Scope: {scope}"),
+        "Completed Assistant Turn (excerpt, tail):".to_string(),
+        request.assistant_turn_excerpt.clone(),
+    ].join("\n");
+    json!([
+        { "role": "system", "content": system },
+        { "role": "user", "content": user }
+    ])
+}
+
+fn validate_evaluator_proxy_request(request: &EvaluatorProxyRequest) -> Result<(), EvaluatorProxyRejection> {
+    if request.assistant_turn_excerpt.trim().is_empty() || request.assistant_turn_excerpt.chars().count() > EVALUATOR_INPUT_MAX_EXCERPT {
+        return Err(EvaluatorProxyRejection::Input("excerpt_out_of_bounds"));
+    }
+    if request.goal.chars().count() > EVALUATOR_INPUT_MAX_GOAL || request.scope.chars().count() > EVALUATOR_INPUT_MAX_GOAL {
+        return Err(EvaluatorProxyRejection::Input("goal_scope_too_long"));
+    }
+    Ok(())
+}
+
+/// The upstream call. Reads the key from config.json, builds the fixed
+/// request, and returns the provider's message content. Auth-vs-upstream
+/// failures are distinguished by the caller from the Err variants — the key
+/// never appears in any error string.
+/// Pure: the (key, model) the proxy would use from a config.json value.
+/// Returned as Option so tests can assert the unconfigured path without
+/// touching the filesystem or the NOOS_HOME environment.
+fn evaluator_credentials_from(config: &Value) -> Option<(String, String)> {
+    let evaluator = config.get("bcrEvaluator").cloned().unwrap_or_else(|| json!({}));
+    let api_key = evaluator.get("apiKey").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let model = evaluator.get("model").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    if api_key.is_empty() || model.is_empty() {
+        return None;
+    }
+    Some((api_key, model))
+}
+
+fn call_evaluator_upstream(request: &EvaluatorProxyRequest) -> Result<String, EvaluatorProxyRejection> {
+    let config_path = noos_home().join("config.json");
+    let config = fs::read_to_string(&config_path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .unwrap_or_else(|| json!({}));
+    let Some((api_key, model)) = evaluator_credentials_from(&config) else {
+        return Err(EvaluatorProxyRejection::Unconfigured);
+    };
+    // Constant URL: the proxy cannot be pointed anywhere else by any input.
+    let url = format!("https://{BCR_EVALUATOR_ALLOWED_HOST}/chat/completions");
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(EVALUATOR_TIMEOUT_SECS))
+        .build()
+        .map_err(|_| EvaluatorProxyRejection::Input("evaluator_client_failed"))?;
+    let response = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({
+            "model": model,
+            "messages": evaluator_proxy_messages(request),
+            "temperature": 0,
+            "max_tokens": 300,
+            "response_format": { "type": "json_object" }
+        }))
+        .send();
+    let response = match response {
+        Ok(response) => response,
+        // Transport failure (timeout, DNS, TLS). No key material can appear
+        // in reqwest's transport errors for a request we built ourselves.
+        Err(_) => return Err(EvaluatorProxyRejection::Input("evaluator_unreachable")),
+    };
+    if !response.status().is_success() {
+        // Upstream refused. Status only — response bodies are not forwarded,
+        // so nothing the provider echoes can leak through this proxy.
+        return Err(EvaluatorProxyRejection::Input("evaluator_upstream_error"));
+    }
+    let payload: Value = response
+        .json()
+        .map_err(|_| EvaluatorProxyRejection::Input("evaluator_bad_response"))?;
+    let content = payload
+        .get("choices")
+        .and_then(|choices| choices.get(0))
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("content"))
+        .and_then(|content| content.as_str())
+        .unwrap_or("")
+        .to_string();
+    Ok(content)
 }
 
 fn run_browser_hub_action(request: HubActionRequest) -> HubActionResponse {
@@ -7906,7 +8093,9 @@ mod tests {
     fn bcr_evaluator_config_payload_requires_both_fields_and_serves_allowlisted_host() {
         let payload = bcr_evaluator_config_payload_from(&json!({}));
         assert_eq!(payload["configured"], json!(false));
-        assert_eq!(payload["apiKey"], json!(null));
+        // #100 slice 2: the key has no serialized form at all — not even null,
+        // so no client can even detect its presence from the payload shape.
+        assert!(payload.get("apiKey").is_none());
         assert_eq!(payload["baseUrl"], json!("https://api.deepseek.com"));
 
         let partial = bcr_evaluator_config_payload_from(&json!({
@@ -7919,7 +8108,8 @@ mod tests {
             "bcrEvaluator": { "apiKey": " sk-abc ", "model": " deepseek-chat " }
         }));
         assert_eq!(complete["configured"], json!(true));
-        assert_eq!(complete["apiKey"], json!("sk-abc"));
+        // Even fully configured, the key never leaves the Hub.
+        assert!(complete.get("apiKey").is_none());
         assert_eq!(complete["model"], json!("deepseek-chat"));
         assert_eq!(complete["ok"], json!(true));
     }
@@ -9449,5 +9639,71 @@ See [Spec](.assets/feishu_docx_abc123/spec.pdf).
         let registry = registry_with("chrome-extension://shuttle");
         assert_ne!(registry.epoch, 0, "random epoch must not be 0 in practice");
         assert!(!is_authorized_bridge_request("chrome-extension://shuttle", "Bearer old", &registry, Some(&parsed)));
+    }
+
+    // -----------------------------------------------------------------
+    // #100 slice 2: evaluator proxy.
+    // -----------------------------------------------------------------
+
+    fn proxy_request(goal: &str, scope: &str, excerpt: &str) -> EvaluatorProxyRequest {
+        EvaluatorProxyRequest {
+            goal: goal.to_string(),
+            scope: scope.to_string(),
+            assistant_turn_excerpt: excerpt.to_string(),
+        }
+    }
+
+    #[test]
+    fn proxy_input_bounds_reject_empty_and_oversized_before_any_upstream_call() {
+        assert!(matches!(validate_evaluator_proxy_request(&proxy_request("", "", "   ")), Err(EvaluatorProxyRejection::Input("excerpt_out_of_bounds"))));
+        let oversized = "x".repeat(EVALUATOR_INPUT_MAX_EXCERPT + 1);
+        assert!(matches!(validate_evaluator_proxy_request(&proxy_request("", "", &oversized)), Err(EvaluatorProxyRejection::Input("excerpt_out_of_bounds"))));
+        let long_goal = "g".repeat(EVALUATOR_INPUT_MAX_GOAL + 1);
+        assert!(matches!(validate_evaluator_proxy_request(&proxy_request(&long_goal, "", "ok excerpt")), Err(EvaluatorProxyRejection::Input("goal_scope_too_long"))));
+        let long_scope = "s".repeat(EVALUATOR_INPUT_MAX_GOAL + 1);
+        assert!(matches!(validate_evaluator_proxy_request(&proxy_request("", &long_scope, "ok excerpt")), Err(EvaluatorProxyRejection::Input("goal_scope_too_long"))));
+        // Boundary values pass: caps are inclusive.
+        let at_caps = proxy_request(&"g".repeat(EVALUATOR_INPUT_MAX_GOAL), &"s".repeat(EVALUATOR_INPUT_MAX_GOAL), &"x".repeat(EVALUATOR_INPUT_MAX_EXCERPT));
+        assert!(validate_evaluator_proxy_request(&at_caps).is_ok());
+    }
+
+    #[test]
+    fn proxy_messages_use_the_fixed_template_with_structured_fields_as_data() {
+        let messages = evaluator_proxy_messages(&proxy_request("ship the gate", "auth only", "assistant said next: write tests"));
+        let system = messages[0]["content"].as_str().unwrap();
+        let user = messages[1]["content"].as_str().unwrap();
+        assert!(system.contains("NOOS Continuation Evaluator"));
+        assert!(system.contains("STRICT JSON only"));
+        // The structured fields appear only in the user data block.
+        assert!(user.contains("ship the gate"));
+        assert!(user.contains("write tests"));
+        assert!(!system.contains("ship the gate"));
+        // Default contract fills empty goal/scope.
+        let defaulted = evaluator_proxy_messages(&proxy_request("", "", "some turn"));
+        let defaulted_user = defaulted[1]["content"].as_str().unwrap();
+        assert!(defaulted_user.contains("Continue the assistant's own stated next step"));
+    }
+
+    #[test]
+    fn proxy_request_structurally_cannot_carry_a_target_url() {
+        // The wire shape has no URL field: a body that tries to supply one is
+        // ignored by serde, and the upstream URL is built from a constant —
+        // there is no input path to redirect the proxy.
+        let parsed: EvaluatorProxyRequest = serde_json::from_str(
+            r#"{ "goal": "g", "scope": "s", "assistant_turn_excerpt": "e", "url": "https://evil.example", "baseUrl": "https://evil.example" }"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.goal, "g");
+        let messages = evaluator_proxy_messages(&parsed);
+        let serialized = serde_json::to_string(&messages).unwrap();
+        assert!(!serialized.contains("evil.example"));
+    }
+
+    #[test]
+    fn proxy_credentials_pure_parsing() {
+        assert!(evaluator_credentials_from(&json!({})).is_none());
+        assert!(evaluator_credentials_from(&json!({ "bcrEvaluator": { "apiKey": "sk-abc" } })).is_none(), "model missing");
+        let creds = evaluator_credentials_from(&json!({ "bcrEvaluator": { "apiKey": " sk-abc ", "model": " deepseek-chat " } })).unwrap();
+        assert_eq!(creds, ("sk-abc".to_string(), "deepseek-chat".to_string()));
     }
 }

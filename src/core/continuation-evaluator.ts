@@ -164,6 +164,30 @@ function parseEvaluatorContent(content: string): ContinuationAssessment {
   return parseAssessment(JSON.parse(jsonText));
 }
 
+/**
+ * The single-source verdict computation (#100 slice 2): given the provider's
+ * message content, apply the adjudicated gate, veto, and stop-reason mapping.
+ * The Hub-side evaluator proxy returns exactly that content, so production and
+ * the harness fixtures certify ONE implementation of the gate — the Hub never
+ * computes a verdict of its own, and the extension never holds the key.
+ */
+export function verdictFromContent(input: EvaluatorInput, content: string): EvaluatorVerdict {
+  try {
+    const assessment = parseEvaluatorContent(content);
+    const veto = stopVetoHit(input.assistantTurnExcerpt);
+    let decision = decideContinuation(assessment);
+    let stopReason: ContinuationStopReason | undefined;
+    if (decision === "WOULD_STOP") stopReason = mapStopReason(assessment);
+    if (veto && decision === "WOULD_CONTINUE") {
+      decision = "WOULD_STOP";
+      stopReason = "WAIT_HUMAN";
+    }
+    return { decision, assessment, stopReason, vetoHit: veto };
+  } catch (error) {
+    return { decision: "WOULD_STOP", stopReason: "EVALUATOR_UNAVAILABLE", error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 export async function evaluateContinuation(input: EvaluatorInput, config: ContinuationEvaluatorConfig, fetchImpl: typeof fetch = fetch): Promise<EvaluatorVerdict> {
   try {
     const controller = new AbortController();
@@ -191,16 +215,7 @@ export async function evaluateContinuation(input: EvaluatorInput, config: Contin
     if (!response.ok) return { decision: "WOULD_STOP", stopReason: "EVALUATOR_UNAVAILABLE", error: `evaluator_http_${response.status}` };
     const payload = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
     const content = payload.choices?.[0]?.message?.content ?? "";
-    const assessment = parseEvaluatorContent(content);
-    const veto = stopVetoHit(input.assistantTurnExcerpt);
-    let decision = decideContinuation(assessment);
-    let stopReason: ContinuationStopReason | undefined;
-    if (decision === "WOULD_STOP") stopReason = mapStopReason(assessment);
-    if (veto && decision === "WOULD_CONTINUE") {
-      decision = "WOULD_STOP";
-      stopReason = "WAIT_HUMAN";
-    }
-    return { decision, assessment, stopReason, vetoHit: veto };
+    return verdictFromContent(input, content);
   } catch (error) {
     return { decision: "WOULD_STOP", stopReason: "EVALUATOR_UNAVAILABLE", error: error instanceof Error ? error.message : String(error) };
   }

@@ -66,7 +66,7 @@ import {
   BCR_EVALUATOR_ALLOWED_HOST,
   BCR_EVALUATOR_CONFIG_KEY,
   BCR_EVALUATOR_DEFAULT_MODEL,
-  evaluateContinuation,
+  verdictFromContent,
   isEvaluatorExcerptUsable,
   normalizeEvaluatorConfig
 } from "../core/continuation-evaluator";
@@ -143,6 +143,7 @@ const HUB_VAULT_OBJECT_URL = "http://127.0.0.1:17642/v1/vault/object";
 const HUB_WIKI_TARGET_URL = "http://127.0.0.1:17642/v1/wiki/default-target";
 const HUB_ACTION_URL = "http://127.0.0.1:17642/v1/actions";
 const HUB_BCR_EVALUATOR_CONFIG_URL = "http://127.0.0.1:17642/v1/bcr/evaluator-config";
+const HUB_BCR_EVALUATE_URL = "http://127.0.0.1:17642/v1/bcr/evaluate";
 const HUB_TOKEN_STORAGE_KEY = "noosHubShuttleToken";
 const workItemStorage = {
   get: (key: string) => chrome.storage.local.get(key) as Promise<Record<string, unknown>>,
@@ -436,9 +437,6 @@ async function handleContinuationEvaluate(message: { runId?: unknown; assistantT
   if (!isEvaluatorExcerptUsable(excerpt)) {
     return { ok: true, decision: "WOULD_STOP", stopReason: "EXCERPT_UNAVAILABLE", error: "excerpt_unavailable" };
   }
-  const rawConfig = (await storage.get(BCR_EVALUATOR_CONFIG_KEY))[BCR_EVALUATOR_CONFIG_KEY];
-  const config = normalizeEvaluatorConfig(rawConfig);
-  if (!config) return { ok: false, error: "evaluator_unconfigured" };
   const persisted = await storage.get(CONTINUATION_RUN_STORE_KEY);
   const store: ContinuationRunStore = isContinuationRunStoreShape(persisted[CONTINUATION_RUN_STORE_KEY])
     ? persisted[CONTINUATION_RUN_STORE_KEY]
@@ -447,11 +445,48 @@ async function handleContinuationEvaluate(message: { runId?: unknown; assistantT
   if (!run || run.status !== "ACTIVE" || run.mode !== "AUTO_X5" || run.phase !== "EVALUATING") {
     return { ok: false, error: "no_active_auto_run" };
   }
-  const verdict = await evaluateContinuation({
+  // #100 slice 2: evaluation runs through the Hub proxy. The extension sends
+  // the structured input; the Hub holds the key and calls the allowlisted
+  // provider; the verdict is computed HERE, in the single adjudicated gate
+  // implementation the harness fixtures certify.
+  const token = await getHubToken();
+  if (!token) {
+    // Fail closed in the verdict shape: the run stops with an explicit
+    // pairing reason rather than a transport error, and the surface can tell
+    // it apart from an upstream failure by the error code.
+    return { ok: true, decision: "WOULD_STOP" as const, stopReason: "EVALUATOR_UNAVAILABLE" as const, error: "pairing_required" };
+  }
+  const input = {
     goal: run.goal,
     scope: run.scope ?? run.goal,
     assistantTurnExcerpt: excerpt
-  }, config);
+  };
+  let content: string | undefined;
+  let proxyError: string | undefined;
+  try {
+    const response = await fetch(HUB_BCR_EVALUATE_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify(input)
+    });
+    const payload = (await response.json().catch(() => ({}))) as { ok?: boolean; content?: unknown; error_code?: unknown };
+    if (response.ok && payload.ok === true && typeof payload.content === "string") {
+      content = payload.content;
+    } else {
+      proxyError = typeof payload.error_code === "string" ? payload.error_code : "evaluator_unreachable";
+    }
+  } catch {
+    proxyError = "hub_unreachable";
+  }
+  if (content === undefined) {
+    // Upstream/auth failures map to the existing fail-closed verdict shape,
+    // with the Hub's own code preserved so the surface can tell them apart.
+    return { ok: true, decision: "WOULD_STOP", stopReason: "EVALUATOR_UNAVAILABLE", error: proxyError };
+  }
+  const verdict = verdictFromContent(input, content);
   return {
     ok: true,
     decision: verdict.decision,
@@ -465,26 +500,42 @@ async function handleContinuationEvaluate(message: { runId?: unknown; assistantT
   };
 }
 
-/** Evaluator config read/write. The key never echoes back to the content script; empty key input preserves the stored one. */
-async function handleContinuationEvalConfig(message: { config?: unknown }): Promise<Record<string, unknown>> {  const storage = chrome.storage?.local;
+/**
+ * #100 slice 2: manual key entry is retired — the key lives only in the Hub's
+ * config. This handler now reports the proxy-era status and scrubs any key the
+ * pre-proxy build may have left in local storage.
+ */
+async function handleContinuationEvalConfig(_message: { config?: unknown }): Promise<Record<string, unknown>> {
+  const storage = chrome.storage?.local;
   if (!storage) return { ok: false, error: "storage_unavailable" };
-  if (message.config !== undefined && message.config !== null) {
-    const config = message.config as { apiKey?: unknown; model?: unknown };
-    const current = normalizeEvaluatorConfig((await storage.get(BCR_EVALUATOR_CONFIG_KEY))[BCR_EVALUATOR_CONFIG_KEY]);
-    const apiKey = typeof config.apiKey === "string" && config.apiKey.trim() !== "" ? config.apiKey.trim() : current?.apiKey;
-    const model = typeof config.model === "string" && config.model.trim() !== "" ? config.model.trim() : current?.model ?? BCR_EVALUATOR_DEFAULT_MODEL;
-    if (!apiKey) return { ok: false, error: "api_key_required" };
-    if (apiKey.length > 300 || model.length > 120) return { ok: false, error: "config_too_long" };
-    await storage.set({ [BCR_EVALUATOR_CONFIG_KEY]: { baseUrl: `https://${BCR_EVALUATOR_ALLOWED_HOST}`, apiKey, model } });
-  }
-  const after = normalizeEvaluatorConfig((await storage.get(BCR_EVALUATOR_CONFIG_KEY))[BCR_EVALUATOR_CONFIG_KEY]);
-  return { ok: true, evaluatorConfigured: Boolean(after), model: after?.model ?? BCR_EVALUATOR_DEFAULT_MODEL };
+  await scrubLegacyEvaluatorKey(storage);
+  const status = await hubEvaluatorStatus();
+  return {
+    ok: true,
+    evaluatorConfigured: status.configured,
+    model: status.model,
+    note: "evaluator_config_is_hub_side"
+  };
 }
 
-/** Explicit pull of the Hub-side evaluator config into the local store. Never automatic: the Hub sync always overrides the local key/model, so it only runs on the user's click. The payload is re-validated against the same allowlist the evaluator enforces. */
+/** Removes the pre-proxy stored key: nothing in the extension needs it now. */
+async function scrubLegacyEvaluatorKey(storage: { remove(keys: string | string[]): Promise<unknown> }): Promise<void> {
+  try {
+    await storage.remove(BCR_EVALUATOR_CONFIG_KEY);
+  } catch {
+    // A failed scrub is harmless: the value is simply unused.
+  }
+}
+
+/**
+ * Keyless status pull (#100 slice 2): the endpoint answers configured/model
+ * with no key field, so there is nothing to store — the sync button becomes
+ * a status refresh, and any legacy stored key is scrubbed on the way.
+ */
 async function handleContinuationEvalSync(): Promise<Record<string, unknown>> {
   const storage = chrome.storage?.local;
   if (!storage) return { ok: false, error: "storage_unavailable" };
+  await scrubLegacyEvaluatorKey(storage);
   let payload: unknown;
   try {
     payload = await fetchHubJsonWithRepair(HUB_BCR_EVALUATOR_CONFIG_URL);
@@ -492,18 +543,32 @@ async function handleContinuationEvalSync(): Promise<Record<string, unknown>> {
     return { ok: false, error: "hub_unreachable" };
   }
   if (!payload || typeof payload !== "object") return { ok: false, error: "hub_unreachable" };
-  const body = payload as { ok?: unknown; errorCode?: unknown; configured?: unknown; baseUrl?: unknown; apiKey?: unknown; model?: unknown };
+  const body = payload as { ok?: unknown; errorCode?: unknown; configured?: unknown; model?: unknown; apiKey?: unknown };
   // The Hub helper family reports transport/pairing failures as error-shaped
   // payloads ({ok:false, errorCode}) rather than throwing.
   if (body.ok === false || typeof body.errorCode === "string") return { ok: false, error: "hub_unreachable" };
-  if (body.ok !== true || body.configured !== true || typeof body.baseUrl !== "string" ||
-    typeof body.apiKey !== "string" || body.apiKey === "" || typeof body.model !== "string" || body.model === "") {
+  // The keyless contract, asserted: even a hostile/misconfigured Hub response
+  // carrying a key is not accepted as configuration — there is nothing to
+  // configure locally anymore.
+  if (body.apiKey !== undefined && body.apiKey !== null) return { ok: false, error: "hub_contract_violation" };
+  if (body.ok !== true || body.configured !== true || typeof body.model !== "string" || body.model === "") {
     return { ok: true, synced: false, reason: "hub_not_configured" };
   }
-  const config = normalizeEvaluatorConfig({ baseUrl: body.baseUrl, apiKey: body.apiKey, model: body.model });
-  if (!config) return { ok: true, synced: false, reason: "hub_config_invalid" };
-  await storage.set({ [BCR_EVALUATOR_CONFIG_KEY]: config });
-  return { ok: true, synced: true, model: config.model };
+  return { ok: true, synced: true, model: body.model };
+}
+
+/** The proxy-era status source: configured/model from the keyless endpoint. */
+async function hubEvaluatorStatus(): Promise<{ configured: boolean; model: string }> {
+  try {
+    const payload = await fetchHubJsonWithRepair(HUB_BCR_EVALUATOR_CONFIG_URL);
+    const body = payload as { ok?: unknown; configured?: unknown; model?: unknown } | undefined;
+    if (body?.ok === true && body.configured === true && typeof body.model === "string" && body.model !== "") {
+      return { configured: true, model: body.model };
+    }
+  } catch {
+    // Status falls back to unconfigured when the Hub is unreachable.
+  }
+  return { configured: false, model: BCR_EVALUATOR_DEFAULT_MODEL };
 }
 
 function isKnownContinuationRunMutation(mutation: ContinuationRunMutation): boolean {  switch (mutation.type) {

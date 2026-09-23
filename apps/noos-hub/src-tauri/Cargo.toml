@@ -9,6 +9,9 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# Both already in the lock graph via tauri-plugin-updater; making them direct
+# adds no new compilation. reqwest serves the evaluator proxy (#100 slice 2).
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls"] }
 getrandom = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
