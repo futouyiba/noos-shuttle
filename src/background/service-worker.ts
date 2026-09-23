@@ -2207,6 +2207,21 @@ export async function pairWithHub(code: string): Promise<HubPairOutcome> {
   if (!/^\d{8}$/.test(trimmed)) {
     return { status: "pairing_required", errorCode: "pairing_code_invalid" };
   }
+  // The first accepted submission parks as "pending approval" — the Human
+  // sees THIS extension's origin in the Hub panel and approves it there.
+  // Poll until approved (token), rejected, or the window closes (~90 s).
+  const deadline = Date.now() + 100_000;
+  for (;;) {
+    const outcome = await submitPairCodeOnce(trimmed);
+    if (outcome.status !== "pairing_required" || outcome.errorCode !== "pairing_pending_approval") return outcome;
+    if (Date.now() >= deadline) {
+      return { status: "pairing_required", errorCode: "pairing_pending_timeout" };
+    }
+    await new Promise(resolve => setTimeout(resolve, 2_000));
+  }
+}
+
+async function submitPairCodeOnce(trimmed: string): Promise<HubPairOutcome> {
   try {
     const response = await fetch(HUB_PAIR_URL, {
       method: "POST",

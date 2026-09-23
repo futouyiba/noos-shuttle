@@ -10,13 +10,13 @@
  *
  * Usage: node scripts/noos-hub-allow-dev-extension.mjs chrome-extension://abc...
  */
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 
 const origin = process.argv[2];
-if (!origin || !/^(-moz-|chrome-|moz-)extension:\/\/[a-z0-9-]+$/i.test(origin)) {
+if (!origin || !/^(chrome|moz)-extension:\/\/[A-Za-z0-9-]+$/.test(origin)) {
   console.error("usage: noos-hub-allow-dev-extension.mjs chrome-extension://<id>");
   process.exit(1);
 }
@@ -40,5 +40,10 @@ if (!registry.clients.some((client) => client.origin === origin)) {
 }
 
 mkdirSync(dirname(registryPath), { recursive: true });
-writeFileSync(registryPath, `${JSON.stringify(registry, null, 2)}\n`);
+// Atomic like the Rust path: write-then-rename, so a crash never leaves a
+// truncated registry (which the Hub would silently replace with a fresh one —
+// new epoch, every token dead).
+const temp = `${registryPath}.tmp`;
+writeFileSync(temp, `${JSON.stringify(registry, null, 2)}\n`);
+renameSync(temp, registryPath);
 console.log(`enrolled ${origin} (epoch ${registry.epoch}, ${registry.clients.length} client(s))`);

@@ -661,7 +661,8 @@ interface PairingClient {
 interface PairingStatus {
   ok: boolean;
   epoch: number;
-  activeCode: { code: string; expiresAtEpoch: number; secondsLeft: number } | null;
+  activeCode: { code: string; expiresAtEpoch: number; secondsLeft: number; attemptsLeft: number } | null;
+  pending: { origin: string; approved: boolean; secondsLeft: number } | null;
   clients: PairingClient[];
   tokenEpochValid: boolean;
   paired: boolean;
@@ -684,12 +685,29 @@ function renderPairingPanel(status: PairingStatus): string {
     ? `<div class="sys-row">
         <div class="sys-row-body">
           <strong class="pairing-code">${escapeHtml(status.activeCode.code)}</strong>
-          <span>valid ${status.activeCode.secondsLeft}s · single use · enter it in the NOOS Shuttle panel</span>
+          <span>valid ${status.activeCode.secondsLeft}s · single use · ${status.activeCode.attemptsLeft} wrong attempts left · the NEXT extension to submit this code gains access — approve only the origin you recognize</span>
         </div>
         <span class="pill pill--ready">active</span>
       </div>`
     : "";
+  const pending = status.pending
+    ? `<div class="sys-row">
+        <div class="sys-row-body">
+          <strong>Approval requested</strong>
+          <span>${escapeHtml(status.pending.origin)} · ${status.pending.secondsLeft}s left${
+            status.pending.approved ? " · approved — the extension is completing pairing" : ""
+          }</span>
+        </div>
+        ${
+          status.pending.approved
+            ? '<span class="pill pill--ready">approved</span>'
+            : `<button type="button" class="text-link" data-pairing="approve">Approve</button>
+               <button type="button" class="text-link" data-pairing="reject">Reject</button>`
+        }
+      </div>`
+    : "";
   return `
+    ${pending}
     ${sysRowPairing(
       "Shuttle extension",
       status.paired ? "at least one enrolled client with a live token" : "not paired — generate a code and enter it in the Shuttle panel",
@@ -765,6 +783,10 @@ function bindPairingEvents(root: ParentNode): void {
       try {
         if (action === "generate") {
           await invoke("generate_pair_code_command");
+        } else if (action === "approve") {
+          await invoke("approve_pending_enrollment");
+        } else if (action === "reject") {
+          await invoke("reject_pending_enrollment");
         } else if (action === "reset") {
           if (!window.confirm("Reset all pairing? Every paired browser will be disconnected and must re-enter a new code.")) {
             return;

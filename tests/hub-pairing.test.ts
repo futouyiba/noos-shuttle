@@ -106,4 +106,48 @@ describe("an unauthorized reply surfaces re-pairing; it never silently re-pairs"
     expect(storageRemove).toHaveBeenCalledWith("noosHubShuttleToken");
     expect(pairingCalls).toBe(0);
   });
+
+describe("pairWithHub waits for the Human's approval in the Hub", () => {
+  beforeEach(() => { vi.resetModules(); });
+
+  it("polls through pairing_pending_approval and lands the token once approved", async () => {
+    vi.useFakeTimers();
+    try {
+      const responses = [
+        { status: 401, body: { ok: false, error_code: "pairing_pending_approval" } },
+        { status: 401, body: { ok: false, error_code: "pairing_pending_approval" } },
+        { status: 200, body: { ok: true, token: "tok-2", origin: "chrome-extension://x" } }
+      ];
+      let call = 0;
+      const fetchMock = vi.fn(async () => {
+        const r = responses[Math.min(call, responses.length - 1)];
+        call += 1;
+        return jsonResponse(r.status, r.body);
+      });
+      const { storageSet } = installChrome(fetchMock, null);
+      const { pairWithHub } = await import("../src/background/service-worker");
+
+      const pending = pairWithHub("12345678");
+      // Let the 2 s poll interval fire twice.
+      await vi.advanceTimersByTimeAsync(2_100);
+      await vi.advanceTimersByTimeAsync(2_100);
+      const outcome = await pending;
+      expect(outcome).toEqual({ status: "paired", token: "tok-2" });
+      expect(fetchMock.mock.calls.length).toBe(3);
+      expect(storageSet).toHaveBeenCalledWith({ noosHubShuttleToken: "tok-2" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops at a definite refusal instead of polling forever", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse(401, { ok: false, error_code: "pairing_code_expired" }));
+    installChrome(fetchMock, null);
+    const { pairWithHub } = await import("../src/background/service-worker");
+
+    const outcome = await pairWithHub("12345678");
+    expect(outcome).toEqual({ status: "pairing_required", errorCode: "pairing_code_expired" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
 });

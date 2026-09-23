@@ -608,6 +608,20 @@ fn get_pairing_status() -> Result<Value, String> {
                 "code": active.code,
                 "expiresAtEpoch": active.expires_at_epoch,
                 "secondsLeft": active.expires_at_epoch.saturating_sub(now_epoch()),
+                "attemptsLeft": PAIR_CODE_MAX_FAILED_ATTEMPTS.saturating_sub(active.failed_attempts),
+            })
+        })
+        .unwrap_or(Value::Null);
+    let pending = PENDING_ENROLLMENT
+        .lock()
+        .map_err(|error| error.to_string())?
+        .as_ref()
+        .filter(|p| now_epoch() < p.expires_at_epoch)
+        .map(|p| {
+            json!({
+                "origin": p.origin,
+                "approved": p.approved,
+                "secondsLeft": p.expires_at_epoch.saturating_sub(now_epoch()),
             })
         })
         .unwrap_or(Value::Null);
@@ -615,10 +629,45 @@ fn get_pairing_status() -> Result<Value, String> {
         "ok": true,
         "epoch": registry.epoch,
         "activeCode": code,
+        "pending": pending,
         "clients": registry.clients,
         "tokenEpochValid": token.as_ref().is_some_and(|t| t.epoch == registry.epoch),
         "paired": pairing_is_active(&registry, token.as_ref()),
     }))
+}
+
+/// The Human approves the pending enrollment shown in the panel. The next
+/// POST from that exact origin consumes the code and receives the token.
+#[tauri::command]
+fn approve_pending_enrollment() -> Result<Value, String> {
+    let mut pending = PENDING_ENROLLMENT
+        .lock()
+        .map_err(|error| error.to_string())?;
+    match pending.as_mut() {
+        Some(p) if !p.approved => {
+            p.approved = true;
+            Ok(json!({ "ok": true, "origin": p.origin }))
+        }
+        _ => Err("no pending enrollment to approve".to_string()),
+    }
+}
+
+/// The Human rejects it: the pending slot clears AND the code burns, so a
+/// rejected suitor cannot keep hammering with the same code.
+#[tauri::command]
+fn reject_pending_enrollment() -> Result<Value, String> {
+    let mut pending = PENDING_ENROLLMENT
+        .lock()
+        .map_err(|error| error.to_string())?;
+    if pending.take().is_none() {
+        return Err("no pending enrollment to reject".to_string());
+    }
+    if let Ok(mut code) = ACTIVE_PAIR_CODE.lock() {
+        if let Some(active) = code.as_mut() {
+            active.consumed = true;
+        }
+    }
+    Ok(json!({ "ok": true }))
 }
 
 #[tauri::command]
@@ -629,6 +678,9 @@ fn generate_pair_code_command() -> Result<Value, String> {
     *ACTIVE_PAIR_CODE
         .lock()
         .map_err(|error| error.to_string())? = Some(active);
+    if let Ok(mut pending) = PENDING_ENROLLMENT.lock() {
+        *pending = None;
+    }
     Ok(json!({ "ok": true, "code": code, "expiresAtEpoch": expires_at, "secondsLeft": PAIR_CODE_TTL_SECS }))
 }
 
@@ -930,6 +982,8 @@ fn main() {
             read_config,
             write_config,
             get_pairing_status,
+            approve_pending_enrollment,
+            reject_pending_enrollment,
             generate_pair_code_command,
             revoke_paired_client,
             enroll_dev_origin,
@@ -1322,9 +1376,11 @@ fn handle_local_write_request(mut stream: TcpStream) -> Result<(), String> {
                 ),
             );
         }
-        let registry = load_pairing_registry();
-        let verdict = {
-            let mut guard = ACTIVE_PAIR_CODE
+        let decision = {
+            let mut code_guard = ACTIVE_PAIR_CODE
+                .lock()
+                .map_err(|error| error.to_string())?;
+            let mut pending_guard = PENDING_ENROLLMENT
                 .lock()
                 .map_err(|error| error.to_string())?;
             let now = now_epoch();
@@ -1336,10 +1392,10 @@ fn handle_local_write_request(mut stream: TcpStream) -> Result<(), String> {
                     .map_err(|error| error.to_string())?
                     .code
             };
-            consume_pair_code(&mut guard, now, &submitted)
+            decide_pair_submission(&mut code_guard, &mut pending_guard, now, &origin, &submitted)
         };
-        let (status, code, message) = match verdict {
-            PairCodeVerdict::Enrolled => {
+        match decision {
+            PairSubmitDecision::IssueToken => {
                 let registry = enroll_client_at(&noos_home(), &origin, now_epoch())
                     .map_err(|error| error.to_string())?;
                 let token = ensure_shuttle_token_for_epoch(registry.epoch)
@@ -1350,14 +1406,43 @@ fn handle_local_write_request(mut stream: TcpStream) -> Result<(), String> {
                     &json!({ "ok": true, "token": token.token, "origin": origin }),
                 );
             }
-            PairCodeVerdict::NoActiveCode => (401, "pairing_code_absent", "No pairing code is active. Generate one in NOOS Hub."),
-            PairCodeVerdict::Expired => (401, "pairing_code_expired", "The pairing code expired. Generate a new one in NOOS Hub."),
-            PairCodeVerdict::AlreadyConsumed => (401, "pairing_code_consumed", "The pairing code was already used."),
-            PairCodeVerdict::AttemptsExhausted => (401, "pairing_code_locked", "Too many wrong codes. Generate a new one in NOOS Hub."),
-            PairCodeVerdict::Mismatch => (401, "pairing_code_invalid", "The pairing code does not match."),
-        };
-        let _ = registry;
-        return write_json_response(&mut stream, status, &write_error(code, message));
+            PairSubmitDecision::AwaitApproval => {
+                return write_json_response(
+                    &mut stream,
+                    401,
+                    &write_error(
+                        "pairing_pending_approval",
+                        "Waiting for the Human to approve this extension in NOOS Hub.",
+                    ),
+                );
+            }
+            PairSubmitDecision::OtherOriginPending => {
+                return write_json_response(
+                    &mut stream,
+                    401,
+                    &write_error(
+                        "pairing_other_origin_pending",
+                        "A different extension is awaiting pairing approval in NOOS Hub.",
+                    ),
+                );
+            }
+            PairSubmitDecision::Code(PairCodeVerdict::NoActiveCode) => {
+                return write_json_response(&mut stream, 401, &write_error("pairing_code_absent", "No pairing code is active. Generate one in NOOS Hub."));
+            }
+            PairSubmitDecision::Code(PairCodeVerdict::Expired) => {
+                return write_json_response(&mut stream, 401, &write_error("pairing_code_expired", "The pairing code expired. Generate a new one in NOOS Hub."));
+            }
+            PairSubmitDecision::Code(PairCodeVerdict::AlreadyConsumed) => {
+                return write_json_response(&mut stream, 401, &write_error("pairing_code_consumed", "The pairing code was already used."));
+            }
+            PairSubmitDecision::Code(PairCodeVerdict::AttemptsExhausted) => {
+                return write_json_response(&mut stream, 401, &write_error("pairing_code_locked", "Too many wrong codes. Generate a new one in NOOS Hub."));
+            }
+            PairSubmitDecision::Code(PairCodeVerdict::Mismatch) => {
+                return write_json_response(&mut stream, 401, &write_error("pairing_code_invalid", "The pairing code does not match."));
+            }
+            PairSubmitDecision::Code(PairCodeVerdict::Enrolled) => unreachable!("probe verdicts never surface Enrolled"),
+        }
     }
 
     // General gate: the Hub's own surfaces, same-UID local tools (empty
@@ -6890,10 +6975,6 @@ fn reset_browser_connection() -> Result<String, String> {
     ))
 }
 
-fn ensure_shuttle_token() -> Result<ShuttleTokenFile, String> {
-    ensure_shuttle_token_for_epoch(current_pairing_epoch())
-}
-
 /// Only a token whose epoch matches the live registry is current; anything
 /// else (missing, unparsable v1, stale epoch) is minted fresh under the live
 /// epoch. Called from successful enrollment and explicit reset — never from a
@@ -7021,6 +7102,7 @@ const PAIRING_REGISTRY_RELATIVE_PATH: &str = "runtime/paired-clients.json";
 const PAIR_CODE_LENGTH: usize = 8;
 const PAIR_CODE_TTL_SECS: u64 = 180;
 const PAIR_CODE_MAX_FAILED_ATTEMPTS: u32 = 5;
+const PENDING_ENROLLMENT_TTL_SECS: u64 = 90;
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 struct PairedClient {
@@ -7049,6 +7131,104 @@ struct ActivePairCode {
 }
 
 static ACTIVE_PAIR_CODE: Mutex<Option<ActivePairCode>> = Mutex::new(None);
+
+/// One enrollment request awaiting the Human's explicit approval (ruling risk
+/// ①: the code proves a Human is present, not WHO is asking — so the panel
+/// shows this origin and the Human approves or rejects it BEFORE the code is
+/// consumed and any token is issued). Memory-only, like the code itself.
+struct PendingEnrollment {
+    origin: String,
+    expires_at_epoch: u64,
+    approved: bool,
+}
+
+static PENDING_ENROLLMENT: Mutex<Option<PendingEnrollment>> = Mutex::new(None);
+
+/// The POST /pair decision, pure so the whole protocol is unit-testable:
+/// nothing here touches the network, the registry, or the token file.
+#[derive(PartialEq, Debug)]
+enum PairSubmitDecision {
+    /// Approved for this exact origin: consume the code, enroll, return the token.
+    IssueToken,
+    /// Recorded (or already recorded) for this origin; the Human has not
+    /// approved yet. The extension keeps polling with the same code.
+    AwaitApproval,
+    /// A different origin holds the pending slot. Nothing is consumed; the
+    /// Human sees the pending origin in the panel and can reject it.
+    OtherOriginPending,
+    Code(PairCodeVerdict),
+}
+
+fn decide_pair_submission(
+    code_state: &mut Option<ActivePairCode>,
+    pending: &mut Option<PendingEnrollment>,
+    now: u64,
+    origin: &str,
+    submitted: &str,
+) -> PairSubmitDecision {
+    // Pending expiry clears the slot without burning the code: the Human
+    // simply did not look at the panel.
+    if pending
+        .as_ref()
+        .is_some_and(|p| now >= p.expires_at_epoch)
+    {
+        *pending = None;
+    }
+    match pending.as_ref() {
+        Some(p) if p.origin == origin && p.approved => {
+            // The Human approved THIS origin. Now the code is consumed —
+            // single-use is enforced at the moment a token is actually issued.
+            match consume_pair_code(code_state, now, submitted) {
+                PairCodeVerdict::Enrolled => {
+                    *pending = None;
+                    PairSubmitDecision::IssueToken
+                }
+                verdict => PairSubmitDecision::Code(verdict),
+            }
+        }
+        Some(p) if p.origin == origin => PairSubmitDecision::AwaitApproval,
+        Some(_) => PairSubmitDecision::OtherOriginPending,
+        None => match consume_pair_code_probe(code_state, now, submitted) {
+            PairCodeVerdict::Enrolled => {
+                *pending = Some(PendingEnrollment {
+                    origin: origin.to_string(),
+                    expires_at_epoch: now + PENDING_ENROLLMENT_TTL_SECS,
+                    approved: false,
+                });
+                PairSubmitDecision::AwaitApproval
+            }
+            verdict => PairSubmitDecision::Code(verdict),
+        },
+    }
+}
+
+/// Like consume_pair_code but WITHOUT consuming or counting a failure: the
+/// first submission only asks to be shown to the Human. Attempts are counted
+/// and the code is consumed only at issue time or on a definite mismatch at
+/// approval time.
+fn consume_pair_code_probe(
+    state: &mut Option<ActivePairCode>,
+    now: u64,
+    submitted: &str,
+) -> PairCodeVerdict {
+    let Some(active) = state.as_mut() else {
+        return PairCodeVerdict::NoActiveCode;
+    };
+    if active.consumed {
+        return PairCodeVerdict::AlreadyConsumed;
+    }
+    if now >= active.expires_at_epoch {
+        return PairCodeVerdict::Expired;
+    }
+    if active.failed_attempts >= PAIR_CODE_MAX_FAILED_ATTEMPTS {
+        return PairCodeVerdict::AttemptsExhausted;
+    }
+    if !constant_time_eq(submitted.as_bytes(), active.code.as_bytes()) {
+        active.failed_attempts += 1;
+        return PairCodeVerdict::Mismatch;
+    }
+    PairCodeVerdict::Enrolled
+}
 
 fn pairing_registry_path_at(root: &Path) -> PathBuf {
     root.join(PAIRING_REGISTRY_RELATIVE_PATH)
@@ -7096,20 +7276,12 @@ fn save_pairing_registry_at(root: &Path, registry: &PairingRegistry) -> Result<(
     write_json_file_atomic(&pairing_registry_path_at(root), &text)
 }
 
-fn save_pairing_registry(registry: &PairingRegistry) -> Result<(), String> {
-    save_pairing_registry_at(&noos_home(), registry)
-}
-
 fn load_pairing_registry() -> PairingRegistry {
     load_pairing_registry_at(&noos_home()).unwrap_or_else(|_| PairingRegistry {
         version: 2,
         epoch: 0,
         clients: Vec::new(),
     })
-}
-
-fn current_pairing_epoch() -> u64 {
-    load_pairing_registry().epoch
 }
 
 fn random_epoch() -> u64 {
@@ -7120,6 +7292,9 @@ fn random_epoch() -> u64 {
 
 /// Enrolls one exact origin. Idempotent for an already-enrolled origin.
 fn enroll_client_at(root: &Path, origin: &str, now: u64) -> Result<PairingRegistry, String> {
+    if !is_extension_scheme_origin(origin) {
+        return Err("origin must be an exact chrome-extension:// or moz-extension:// origin".to_string());
+    }
     let mut registry = load_pairing_registry_at(root)?;
     if !registry.clients.iter().any(|client| client.origin == origin) {
         registry.clients.push(PairedClient {
@@ -7156,11 +7331,24 @@ fn reset_pairing_at(root: &Path) -> Result<PairingRegistry, String> {
 
 // --- pure decision helpers (the whole auth table is unit-tested through these) ---
 
-/// A syntactic format check ONLY. Extension scheme proves nothing about
-/// identity; it just routes a request into the pairing flow, where the
-/// Human-displayed code is the actual proof.
+/// EXACT extension-origin check: scheme plus one non-empty id segment and
+/// nothing else — no path, no query, no fragment, no bare scheme. The
+/// registry's "exact origin" invariant starts here; a prefix check would let
+/// `chrome-extension://id/anything` masquerade as a different client.
 fn is_extension_scheme_origin(origin: &str) -> bool {
-    origin.starts_with("chrome-extension://") || origin.starts_with("moz-extension://")
+    let Some(rest) = origin
+        .strip_prefix("chrome-extension://")
+        .or_else(|| origin.strip_prefix("moz-extension://"))
+    else {
+        return false;
+    };
+    !rest.is_empty()
+        && rest
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && !rest.contains('/')
+        && !rest.contains('?')
+        && !rest.contains('#')
 }
 
 /// The Hub's own surfaces: the dev frontend and the Tauri webview. Fixed,
@@ -9117,6 +9305,87 @@ See [Spec](.assets/feishu_docx_abc123/spec.pdf).
         let empty = PairingRegistry { version: 2, epoch: 77, clients: vec![] };
         assert!(!pairing_is_active(&empty, Some(&token_for(77))), "no clients");
         assert!(!pairing_is_active(&registry, None), "no token");
+    }
+
+    #[test]
+    fn extension_origin_check_is_exact_not_a_prefix() {
+        assert!(is_extension_scheme_origin("chrome-extension://abcdefghijklmnopabcdefghijklmnop"));
+        assert!(is_extension_scheme_origin("moz-extension://8a2b3c4d-1234-5678-9abc-def012345678"));
+        // The review's counterexamples: bare scheme, path suffix, query,
+        // fragment, empty id. None of these are exact origins.
+        assert!(!is_extension_scheme_origin("chrome-extension://"));
+        assert!(!is_extension_scheme_origin("moz-extension://"));
+        assert!(!is_extension_scheme_origin("chrome-extension://abc/anything"));
+        assert!(!is_extension_scheme_origin("chrome-extension://abc?x=1"));
+        assert!(!is_extension_scheme_origin("chrome-extension://abc#f"));
+        assert!(!is_extension_scheme_origin("chrome-extension://abc/"));
+        assert!(!is_extension_scheme_origin("https://evil.example"));
+        assert!(!is_extension_scheme_origin(""));
+    }
+
+    #[test]
+    fn pair_submission_requires_human_approval_before_issue() {
+        let now = 1_000_u64;
+        let origin = "chrome-extension://shuttle";
+        let mut code_state = Some(generate_pair_code(now).unwrap());
+        let code = code_state.as_ref().unwrap().code.clone();
+        let mut pending: Option<PendingEnrollment> = None;
+
+        // First correct submission: parked for approval, code NOT consumed.
+        assert_eq!(decide_pair_submission(&mut code_state, &mut pending, now, origin, &code), PairSubmitDecision::AwaitApproval);
+        assert!(!code_state.as_ref().unwrap().consumed, "code stays live until a token is issued");
+
+        // A different origin holding no slot gets nothing; code still live.
+        assert_eq!(decide_pair_submission(&mut code_state, &mut pending, now, "chrome-extension://attacker", &code), PairSubmitDecision::OtherOriginPending);
+        assert!(!code_state.as_ref().unwrap().consumed);
+
+        // Human approves; the SAME origin's resubmit consumes and issues.
+        pending.as_mut().unwrap().approved = true;
+        assert_eq!(decide_pair_submission(&mut code_state, &mut pending, now, origin, &code), PairSubmitDecision::IssueToken);
+        assert!(code_state.as_ref().unwrap().consumed, "single-use enforced at issuance");
+        assert!(pending.is_none(), "pending slot clears on issue");
+
+        // Replay after issue: the code is dead.
+        let mut no_pending: Option<PendingEnrollment> = None;
+        assert_eq!(
+            decide_pair_submission(&mut code_state, &mut no_pending, now, origin, &code),
+            PairSubmitDecision::Code(PairCodeVerdict::AlreadyConsumed)
+        );
+    }
+
+    #[test]
+    fn pending_expiry_reopens_the_slot_without_burning_the_code() {
+        let now = 1_000_u64;
+        let origin = "chrome-extension://shuttle";
+        let mut code_state = Some(generate_pair_code(now).unwrap());
+        let code = code_state.as_ref().unwrap().code.clone();
+        let mut pending: Option<PendingEnrollment> = None;
+
+        assert_eq!(decide_pair_submission(&mut code_state, &mut pending, now, origin, &code), PairSubmitDecision::AwaitApproval);
+        // Past the pending TTL the slot clears; the same code can re-park.
+        let later = now + PENDING_ENROLLMENT_TTL_SECS + 1;
+        assert_eq!(decide_pair_submission(&mut code_state, &mut pending, later, origin, &code), PairSubmitDecision::AwaitApproval);
+        assert!(!code_state.as_ref().unwrap().consumed);
+    }
+
+    #[test]
+    fn approval_of_one_origin_never_lets_another_issue() {
+        let now = 1_000_u64;
+        let mut code_state = Some(generate_pair_code(now).unwrap());
+        let code = code_state.as_ref().unwrap().code.clone();
+        let mut pending: Option<PendingEnrollment> = None;
+
+        // Shuttle parked and approved…
+        assert_eq!(decide_pair_submission(&mut code_state, &mut pending, now, "chrome-extension://shuttle", &code), PairSubmitDecision::AwaitApproval);
+        pending.as_mut().unwrap().approved = true;
+        // …but an attacker origin resubmitting the leaked code gets nothing,
+        // and does not disturb the pending slot.
+        assert_eq!(
+            decide_pair_submission(&mut code_state, &mut pending, now, "chrome-extension://attacker", &code),
+            PairSubmitDecision::OtherOriginPending
+        );
+        assert!(!code_state.as_ref().unwrap().consumed);
+        assert!(pending.is_some());
     }
 
     #[test]
