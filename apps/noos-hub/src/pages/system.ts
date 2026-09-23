@@ -59,6 +59,11 @@ export function renderSystem(health: HubHealth, config: ConfigData | null): stri
       </details>
     </section>
 
+    <section class="system-section" aria-label="Browser pairing">
+      <h2>Browser pairing</h2>
+      <div id="pairing-panel" data-pairing-state="loading"><span class="sys-pill">…</span></div>
+    </section>
+
     <section class="system-section" aria-label="${e(c.system.diagnostics)}">
       <h2>${e(c.system.diagnostics)}</h2>
       ${sysRow(

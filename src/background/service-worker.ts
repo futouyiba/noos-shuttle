@@ -591,6 +591,26 @@ function getControlStateReducer(): Promise<DurableOperationalStateReducer> | und
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Hub pairing panel messages (#100). Kept INSIDE this listener rather than
+  // a separate registration: smoke tooling routes carrier-dispatch messages to
+  // a positionally-indexed listener, and any extra registration here would
+  // shift those indices — and one listener is the better MV3 shape anyway.
+  if (message?.type === "NOOS_HUB_SUBMIT_PAIR_CODE") {
+    if (sender.id !== chrome.runtime.id) { sendResponse({ ok: false, errorCode: "sender_not_allowed" }); return false; }
+    pairWithHub(String(message.code ?? ""))
+      .then(outcome => sendResponse(
+        outcome.status === "paired"
+          ? { ok: true }
+          : { ok: false, errorCode: outcome.errorCode }
+      ))
+      .catch(() => sendResponse({ ok: false, errorCode: "hub_unreachable" }));
+    return true;
+  }
+  if (message?.type === "NOOS_HUB_PAIRING_STATE") {
+    if (sender.id !== chrome.runtime.id) { sendResponse({ ok: false }); return false; }
+    getHubToken().then(token => sendResponse({ ok: true, paired: token !== null }));
+    return true;
+  }
   if (isWorkItemMessage(message)) {
     handleWorkItemMessage(message, sender)
       .then(sendResponse)
@@ -1960,26 +1980,24 @@ async function postAuthorizedHubJson(url: string, body: unknown): Promise<unknow
   return payload;
 }
 
-/** Authorized Hub GET with one re-pair attempt after an unauthorized reply (mirrors saveMarkdownToHub). */
-async function fetchHubJsonWithRepair(url: string): Promise<unknown> {
+/**
+ * Authorized Hub GET. A 401 means the stored token is dead (reset, revoked
+ * origin, or pre-pairing build): the token is dropped so the surface can show
+ * the re-pair state. It does NOT re-pair — pairing needs the Human's code.
+ */
+export async function fetchHubJsonWithRepair(url: string): Promise<unknown> {
   const first = await getAuthorizedHubJson(url);
   if ((first as { errorCode?: string })?.errorCode === "unauthorized") {
     await clearHubToken();
-    if (await pairWithHub()) {
-      return getAuthorizedHubJson(url);
-    }
   }
   return first;
 }
 
-/** Authorized Hub POST with one re-pair attempt after an unauthorized reply (mirrors saveMarkdownToHub). */
-async function postHubJsonWithRepair(url: string, body: unknown): Promise<unknown> {
+/** Authorized Hub POST; same no-silent-repair rule as fetchHubJsonWithRepair. */
+export async function postHubJsonWithRepair(url: string, body: unknown): Promise<unknown> {
   const first = await postAuthorizedHubJson(url, body);
   if ((first as { errorCode?: string })?.errorCode === "unauthorized") {
     await clearHubToken();
-    if (await pairWithHub()) {
-      return postAuthorizedHubJson(url, body);
-    }
   }
   return first;
 }
@@ -2089,13 +2107,11 @@ async function saveMarkdownToHub(
     return firstAttempt;
   }
 
+  // Dead token (reset / revoked / pre-pairing build): drop it so the surface
+  // shows the re-pair state. Recovery is the Human entering a code, not a
+  // silent re-pair.
   await clearHubToken();
-  const pairedToken = await pairWithHub();
-  if (!pairedToken) {
-    return firstAttempt;
-  }
-
-  return postMarkdownToHub(filename, content, kind, pairedToken, sourceUrl);
+  return { ...firstAttempt, errorCode: "pairing_required" };
 }
 
 async function postMarkdownToHub(
@@ -2228,25 +2244,62 @@ async function downloadArtifactsToMirror(
   };
 }
 
-async function pairWithHub(): Promise<string | null> {
-  try {
-    const response = await fetch(HUB_PAIR_URL);
-    if (!response.ok) {
-      return null;
+export type HubPairOutcome =
+  | { status: "paired"; token: string }
+  | { status: "pairing_required"; errorCode: string };
+
+/**
+ * Pairing is an explicit, Human-mediated act (#100): the one-time code is
+ * shown in NOOS Hub and typed here. There is no silent pairing path anymore —
+ * a GET to /pair is refused by design and never returns a token.
+ */
+export async function pairWithHub(code: string): Promise<HubPairOutcome> {
+  const trimmed = code.trim();
+  if (!/^\d{8}$/.test(trimmed)) {
+    return { status: "pairing_required", errorCode: "pairing_code_invalid" };
+  }
+  // The first accepted submission parks as "pending approval" — the Human
+  // sees THIS extension's origin in the Hub panel and approves it there.
+  // Poll until approved (token), rejected, or the window closes (~90 s).
+  const deadline = Date.now() + 100_000;
+  for (;;) {
+    const outcome = await submitPairCodeOnce(trimmed);
+    if (outcome.status !== "pairing_required" || outcome.errorCode !== "pairing_pending_approval") return outcome;
+    if (Date.now() >= deadline) {
+      return { status: "pairing_required", errorCode: "pairing_pending_timeout" };
     }
-    const payload = (await response.json()) as { token?: string };
-    if (!payload.token) {
-      return null;
-    }
-    await chrome.storage.local.set({ [HUB_TOKEN_STORAGE_KEY]: payload.token });
-    return payload.token;
-  } catch {
-    return null;
+    await new Promise(resolve => setTimeout(resolve, 2_000));
   }
 }
 
+async function submitPairCodeOnce(trimmed: string): Promise<HubPairOutcome> {
+  try {
+    const response = await fetch(HUB_PAIR_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: trimmed })
+    });
+    const payload = (await response.json().catch(() => ({}))) as { token?: string; error_code?: string };
+    if (response.ok && payload.token) {
+      await chrome.storage.local.set({ [HUB_TOKEN_STORAGE_KEY]: payload.token });
+      return { status: "paired", token: payload.token };
+    }
+    return {
+      status: "pairing_required",
+      errorCode: payload.error_code ?? (response.status === 401 ? "pairing_required" : "hub_unavailable")
+    };
+  } catch {
+    return { status: "pairing_required", errorCode: "hub_unreachable" };
+  }
+}
+
+/**
+ * A stored token or nothing. On a 401 the caller clears the token and the
+ * surface moves to the "re-pair in Hub" state; nothing here re-pairs on its
+ * own — the code has to come from the Human.
+ */
 async function getOrPairHubToken(): Promise<string | null> {
-  return (await getHubToken()) ?? (await pairWithHub());
+  return getHubToken();
 }
 
 async function getHubToken(): Promise<string | null> {
