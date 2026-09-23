@@ -591,6 +591,26 @@ function getControlStateReducer(): Promise<DurableOperationalStateReducer> | und
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Hub pairing panel messages (#100). Kept INSIDE this listener rather than
+  // a separate registration: smoke tooling routes carrier-dispatch messages to
+  // a positionally-indexed listener, and any extra registration here would
+  // shift those indices — and one listener is the better MV3 shape anyway.
+  if (message?.type === "NOOS_HUB_SUBMIT_PAIR_CODE") {
+    if (sender.id !== chrome.runtime.id) { sendResponse({ ok: false, errorCode: "sender_not_allowed" }); return false; }
+    pairWithHub(String(message.code ?? ""))
+      .then(outcome => sendResponse(
+        outcome.status === "paired"
+          ? { ok: true }
+          : { ok: false, errorCode: outcome.errorCode }
+      ))
+      .catch(() => sendResponse({ ok: false, errorCode: "hub_unreachable" }));
+    return true;
+  }
+  if (message?.type === "NOOS_HUB_PAIRING_STATE") {
+    if (sender.id !== chrome.runtime.id) { sendResponse({ ok: false }); return false; }
+    getHubToken().then(token => sendResponse({ ok: true, paired: token !== null }));
+    return true;
+  }
   if (isWorkItemMessage(message)) {
     handleWorkItemMessage(message, sender)
       .then(sendResponse)
@@ -2320,27 +2340,3 @@ function sanitizePathSegment(value: string): string {
     .replace(/^\.+/, "")
     .trim();
 }
-
-// Registered LAST on purpose: tests and tooling address the earliest
-// NOOS_CONTINUATION/observation listeners positionally, and this pairing
-// handler must not sit in front of them. It is passive for every other
-// message type.
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message?.type === "NOOS_HUB_SUBMIT_PAIR_CODE") {
-    if (sender.id !== chrome.runtime.id) { sendResponse({ ok: false, errorCode: "sender_not_allowed" }); return false; }
-    pairWithHub(String(message.code ?? ""))
-      .then(outcome => sendResponse(
-        outcome.status === "paired"
-          ? { ok: true }
-          : { ok: false, errorCode: outcome.errorCode }
-      ))
-      .catch(() => sendResponse({ ok: false, errorCode: "hub_unreachable" }));
-    return true;
-  }
-  if (message?.type === "NOOS_HUB_PAIRING_STATE") {
-    if (sender.id !== chrome.runtime.id) { sendResponse({ ok: false }); return false; }
-    getHubToken().then(token => sendResponse({ ok: true, paired: token !== null }));
-    return true;
-  }
-  return false;
-});
