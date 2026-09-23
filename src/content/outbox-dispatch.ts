@@ -131,7 +131,10 @@ export async function dispatchOutboxMessage(
   // A reservation that already owns execution is reconciled, never re-actuated:
   // re-preparing the same id would be an idempotent no-op or a payload conflict,
   // and neither is a delivery. A retired reservation is likewise never reused —
-  // the queue folds it and mints a fresh id for the next attempt.
+  // the queue folds it and mints a fresh id for the next attempt. A PREPARED
+  // reservation falls through to the claim path below instead: its claim never
+  // actuated, and the retarget step there re-claims this very operation — a
+  // delivery of the same reservation, never a resend.
   const existing = await ledger.get(request.operationId);
   if (existing) {
     if (existing.operationKind !== "OUTBOX_MESSAGE") return { status: "BLOCKED", reason: "reservation_kind_mismatch" };
@@ -140,19 +143,6 @@ export async function dispatchOutboxMessage(
     }
     if (existing.state === "FAILED_SAFE" || existing.state === "CANCELLED") {
       return { status: "RECONCILED", operation: existing };
-    }
-    // PREPARED with the fence still intact: the claim never actuated, and the
-    // normal path below re-claims this very operation (create-or-get is
-    // idempotent, so this is a delivery of the same reservation, not a resend).
-    //
-    // PREPARED with a fence that no longer holds is refused rather than
-    // re-fenced. The gate only reports a reservation for a carrier it has
-    // already checked holds this thread's lease, so a stale fence here is one
-    // the gate could not see, and re-preparing under a mismatched fence would
-    // throw a reuse conflict instead of delivering. The head keeps waiting
-    // visibly, which is the honest outcome for a reservation nothing can claim.
-    if (existing.state === "PREPARED" && existing.dispatchFence && !sameFence(existing, observation)) {
-      return { status: "BLOCKED", reason: "reservation_fence_stale" };
     }
   }
 
@@ -174,6 +164,24 @@ export async function dispatchOutboxMessage(
     ...request.evidence,
     observedAt: observation.observedAt
   };
+
+  // A PREPARED reservation is re-claimed through the ledger's retarget lane,
+  // never by a bare retry. The claim can only run under the fence the
+  // reservation was prepared with, and prepare's create-or-get only tolerates a
+  // retry whose identity matches — but the pre-submit baseline this carrier
+  // holds now is never the one a dead attempt prepared under (the observation
+  // has moved on, if only by its timestamp), so a bare retry is a reuse
+  // conflict, not a delivery. Retarget is the sanctioned re-fence for exactly
+  // this state: it moves fence and baseline to the context the lease check
+  // above just proven this carrier holds, and the claim then delivers this same
+  // reservation — never a resend, because the operation was never claimed. A
+  // refusal leaves the reservation exactly as it was; the gate retries once its
+  // conditions hold again, which is the honest outcome while nothing can claim
+  // this reservation.
+  if (existing?.state === "PREPARED") {
+    const retargeted = await ledger.retarget(request.operationId, context, baseline, observation.observedAt);
+    if (!retargeted) return { status: "BLOCKED", reason: "reservation_retarget_refused" };
+  }
 
   const humanGo = new HumanGoRuntime(ledger, {
     // Actually re-reads the page. The fence the probe captured is a claim about
@@ -246,9 +254,15 @@ async function reconcileReserved(
   itemId: string
 ): Promise<OutboxDispatchResult> {
   if (operation.state === "COMPLETED" || operation.state === "FAILED_SAFE" ||
-    operation.state === "CANCELLED" || operation.state === "PREPARED") {
+    operation.state === "CANCELLED") {
     return { status: "RECONCILED", operation };
   }
+  // The gate routes a PREPARED reservation back through the delivery gate, not
+  // here: reconciliation only settles operations that own execution, so a
+  // PREPARED one would be a no-op reported as progress — exactly the wedge this
+  // consumer must not reproduce. Kept as a defensive refusal for any caller
+  // that reaches it anyway.
+  if (operation.state === "PREPARED") return { status: "BLOCKED", reason: "reservation_unclaimed" };
   if (!operation.dispatchFence) return { status: "BLOCKED", reason: "reservation_fence_missing" };
   const result = await ledger.reconcile(operation.operationId, {
     conversationRef: observation.providerConversationRef,
@@ -331,14 +345,4 @@ function contextFor(observation: CarrierObservation): SubmissionClaimContext {
     logicalControl: "CONTINUE",
     explicitGo: true
   };
-}
-
-function sameFence(operation: SubmissionOperation, observation: CarrierObservation): boolean {
-  const fence = operation.dispatchFence;
-  return Boolean(fence &&
-    fence.providerConversationRef === observation.providerConversationRef &&
-    fence.bindingEpoch === observation.sourceEpoch &&
-    fence.leaseGeneration === observation.sourceEpoch &&
-    fence.leaseOwnerRef === observation.executionInstanceRef &&
-    fence.targetCarrierRef === observation.carrierRef);
 }

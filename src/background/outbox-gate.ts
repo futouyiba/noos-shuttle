@@ -141,9 +141,23 @@ function classifyReservedHead(head: OutboxItem, input: OutboxProbeInput, now: nu
   if (reserved.length === 0) return { kind: "BLOCKED_UNCERTAIN", itemId: head.itemId };
   const operation = reserved[0];
   if (operation.state === "PREPARED") {
-    // The claim never actuated: the reservation is intact but unconsumed. Let
-    // the carrier re-claim the same operation id — idempotent, never a resend.
-    return { kind: "RECONCILE", itemId: head.itemId, operationId };
+    // The claim never actuated: the reservation is intact but unconsumed, and
+    // reconciliation can never settle it — the ledger only reconciles
+    // operations that own execution, so a RECONCILE here would be a no-op that
+    // strands the head. Give a claim that may still be in flight the same
+    // grace a claimed one gets, then route the reservation back through the
+    // delivery gate: when conditions hold, the carrier re-claims the same
+    // operation id — a delivery of the same reservation, never a resend —
+    // re-fencing through the ledger's retarget lane when the identity the dead
+    // attempt prepared under no longer matches.
+    const sinceDispatch = now - (head.dispatchedAt ?? now);
+    if (sinceDispatch < OUTBOX_RECONCILE_GRACE_MS) {
+      return { kind: "DISPATCHING", itemId: head.itemId, operationId };
+    }
+    if (input.queue.paused) return { kind: "WAIT", itemId: head.itemId, reason: "paused" };
+    const blocked = gateBlockReason(head, input, now);
+    if (blocked) return { kind: "WAIT", itemId: head.itemId, reason: blocked };
+    return { kind: "DISPATCH", itemId: head.itemId, operationId, head };
   }
   if (operation.state === "UNCERTAIN") return { kind: "BLOCKED_UNCERTAIN", itemId: head.itemId };
   if (operation.state === "FAILED_SAFE" || operation.state === "CANCELLED") {

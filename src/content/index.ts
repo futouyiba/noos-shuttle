@@ -2335,6 +2335,8 @@ function createContentSubmissionLedger(): HumanGoLedger {
       return result;
     },
     claim: (operationId, context, now) => mutate<SubmissionOperation>({ type: "claim", operationId, context, now: now ?? Date.now() }),
+    retarget: (operationId, context, baseline, now) =>
+      mutate<SubmissionOperation>({ type: "retarget", operationId, context, baseline, now: now ?? Date.now() }),
     get: async operationId => {
       const records = await mutate<SubmissionOperation[]>({ type: "list" });
       return records?.find(operation => operation.operationId === operationId);
