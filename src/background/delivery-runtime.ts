@@ -4,6 +4,7 @@ import type {
   SubmissionObservation,
   SubmissionOperation,
 } from "../core/submission-operation";
+import { isProvenNotActuatedRefusal } from "../core/submission-operation";
 import type { ChildWorkerLedger, ChildWorkerRecord } from "../core/child-worker";
 import { resultDeliveryKey, type ResultDeliveryLedger } from "../core/result-delivery";
 import type { ProviderExecutionJournal, ExecutionJournalEntry } from "../core/execution-journal";
@@ -341,7 +342,15 @@ async function dispatchOnce(
         fence: claimed.dispatchFence!
       }
     });
-  } catch {
+  } catch (error) {
+    // A proven-not-actuated refusal sent nothing (issue #108): the transport
+    // goes back to PREPARED — this probe's own `existing.state === "PREPARED"`
+    // lane re-claims it on the next round — instead of parking as
+    // execution-owning UNCERTAIN.
+    if (isProvenNotActuatedRefusal(error)) {
+      await deps.submissions.refuse(claimed.operationId, error.message, Date.now()).catch(() => undefined);
+      return false;
+    }
     // Lost acknowledgement: park as UNCERTAIN for conservative reconciliation.
     await deps.submissions.record(claimed.operationId, "UNCERTAIN", { now: Date.now(), error: "delivery_dispatch_uncertain" }).catch(() => undefined);
     return false;

@@ -52,7 +52,7 @@ import {
 } from "./focus-runtime";
 import { ProviderExecutionJournal, createChromeExecutionJournalStore } from "../core/execution-journal";
 import { DurableOperationalStateReducer, createChromeOperationalStateReducerStore } from "../core/durable-operational-state-reducer";
-import { SubmissionOperationLedger, createChromeSubmissionStore, isSubmissionOperation, type SubmissionOperation, type SubmissionOperationMutation } from "../core/submission-operation";
+import { SubmissionOperationLedger, createChromeSubmissionStore, isSubmissionOperation, provenNotActuatedRefusal, type SubmissionOperation, type SubmissionOperationMutation } from "../core/submission-operation";
 import {
   BCR_EXPERIMENTAL_MAX_BUDGET,
   CONTINUATION_RUN_STORE_KEY,
@@ -697,6 +697,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     runGoalReanchorProbe(message, chrome.storage.local, coordinator, async operation => {
       const result = await chrome.tabs.sendMessage(sender.tab!.id!, { type: "NOOS_DISPATCH_GOAL_REANCHOR", operation }, { frameId: 0 });
+      // A carrier answer carrying a refusal reason is the listener's *pre-write*
+      // refusal (#98 shell): provably nothing was sent, so it routes to the
+      // ledger's refusal lane (issue #108) instead of parking as UNCERTAIN. A
+      // bare `{ok:false}` is deliberately NOT mapped: the wire cannot tell the
+      // listener's pre-write gate refusal from its post-submit catch, so the
+      // conservative reading stands there.
+      if (!result?.ok && isProvenRefusalReason((result as { reason?: unknown } | undefined)?.reason)) {
+        throw provenNotActuatedRefusal(String((result as { reason: string }).reason));
+      }
       if (!result?.ok || !isObservation(result.observation)) throw new Error("reanchor_dispatch_uncertain");
       await coordinator.record(operation.operationId, "DISPATCHING", { now: result.observation.observedAt,
         dispatchReceipt: { claimedAt: operation.dispatchClaimedAt!, attemptedAt: result.observation.observedAt,
@@ -724,6 +733,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       control
     }, async operation => {
       const result = await chrome.tabs.sendMessage(sender.tab!.id!, { type: "NOOS_DISPATCH_DELIVER_CHILD_RESULT", operation }, { frameId: 0 });
+      // Same mapping as the reanchor lane above: a refusal reason is the
+      // listener's proven pre-write refusal (#98 shell); a bare `{ok:false}`
+      // stays conservative (issue #108).
+      if (!result?.ok && isProvenRefusalReason((result as { reason?: unknown } | undefined)?.reason)) {
+        throw provenNotActuatedRefusal(String((result as { reason: string }).reason));
+      }
       if (!result?.ok || !isObservation(result.observation)) throw new Error("delivery_dispatch_uncertain");
       return result.observation;
     })).then(result => sendResponse({ ok: true, result })).catch(error => sendResponse({ ok: false, error: String(error) }));
@@ -1046,6 +1061,8 @@ async function applySubmissionMutation(coordinator: SubmissionOperationLedger, m
       return coordinator.retarget(mutation.operationId, mutation.context, mutation.baseline, mutation.now);
     case "record":
       return coordinator.record(mutation.operationId, mutation.state, mutation.details);
+    case "refuse":
+      return coordinator.refuse(mutation.operationId, mutation.reason, mutation.now);
     case "rearm":
       return coordinator.rearm(mutation.operationId, mutation.baseline, mutation.fence, mutation.now);
     case "reconcile":
@@ -1053,6 +1070,19 @@ async function applySubmissionMutation(coordinator: SubmissionOperationLedger, m
     default:
       throw new Error("unsupported_submission_mutation");
   }
+}
+
+/**
+ * The carrier answers the two background dispatch messages with
+ * `{ ok: false, reason }` only for its *pre-write* insert refusal (#98 shell):
+ * `chatgpt_composer_not_empty` (a draft is pending) and
+ * `chatgpt_composer_unavailable` (no usable composer at insert time). Both
+ * provably sent nothing, so both map to the ledger's refusal lane (issue #108).
+ * A bare `{ ok: false }` is deliberately NOT recognized here — see the call
+ * sites.
+ */
+function isProvenRefusalReason(reason: unknown): reason is string {
+  return reason === "chatgpt_composer_not_empty" || reason === "chatgpt_composer_unavailable";
 }
 
 function isAllowedProviderSender(sender: chrome.runtime.MessageSender): boolean {
@@ -1077,6 +1107,7 @@ function isSubmissionOperationMutation(value: unknown): value is SubmissionOpera
   if (mutation.type === "retarget") return Boolean(isOperationId(mutation.operationId) && isFiniteInteger(mutation.now) && isClaimContext(mutation.context) && isBaseline(mutation.baseline));
   if (mutation.type === "prepare") return isPrepareInput(mutation.input);
   if (mutation.type === "record") return Boolean(isOperationId(mutation.operationId) && isRecordableState(mutation.state) && isRecordDetails(mutation.details));
+  if (mutation.type === "refuse") return Boolean(isOperationId(mutation.operationId) && isNonEmptyString(mutation.reason) && isFiniteInteger(mutation.now));
   if (mutation.type === "rearm") return Boolean(isOperationId(mutation.operationId) && isFiniteInteger(mutation.now) && isBaseline(mutation.baseline) && isDispatchFence(mutation.fence));
   if (mutation.type === "reconcile") return Boolean(isOperationId(mutation.operationId) && isObservation(mutation.observation));
   return false;

@@ -24,7 +24,15 @@ export interface SubmissionObservation extends Omit<SubmissionBaseline, "observe
 export interface SubmissionDispatchReceipt {
   claimedAt: number;
   attemptedAt: number;
-  outcome: "dispatched" | "uncertain";
+  /**
+   * `dispatched` — the carrier actuated and holds a receipt for it.
+   * `uncertain` — the attempt may have actuated; provider acceptance unknown.
+   * `refused` — **proven not actuated**: the carrier refused *before* any
+   * provider-facing write, so nothing was sent and nothing can have landed
+   * (issue #108). Recordable only through the ledger's dedicated `refuse`
+   * mutation; never a `record`-lane state change.
+   */
+  outcome: "dispatched" | "uncertain" | "refused";
   fence: SubmissionDispatchFence;
 }
 export interface SubmissionDispatchFence { providerConversationRef: string; bindingEpoch: number; leaseGeneration: number; leaseOwnerRef: string; targetCarrierRef: string; }
@@ -60,6 +68,7 @@ export type SubmissionOperationMutation =
   | { type: "claim"; operationId: string; context: SubmissionClaimContext; now: number }
   | { type: "retarget"; operationId: string; context: SubmissionClaimContext; baseline: SubmissionBaseline; now: number }
   | { type: "record"; operationId: string; state: SubmissionOperationState; details: { now?: number; error?: string; resultingTurnRef?: string; dispatchReceipt?: SubmissionDispatchReceipt } }
+  | { type: "refuse"; operationId: string; reason: string; now: number }
   | { type: "rearm"; operationId: string; baseline: SubmissionBaseline; fence: SubmissionDispatchFence; now: number }
   | { type: "reconcile"; operationId: string; observation: SubmissionObservation };
 /**
@@ -109,6 +118,31 @@ export const SUBMISSION_AUTHORITY_KEY = "noosSubmissionAuthority";
 export const SUBMISSION_STABLE_WINDOW_MS = 2_000;
 const terminalStates = new Set<SubmissionOperationState>(["COMPLETED", "FAILED_SAFE", "CANCELLED"]);
 const executionOwningStates = new Set<SubmissionOperationState>(["DISPATCHING", "UNCERTAIN", "OBSERVED_ACCEPTED"]);
+
+/**
+ * The wire name of the "proven not actuated" refusal signal (issue #108).
+ *
+ * A dispatch callback throws an Error carrying this `name` (and the original
+ * refusal reason) when it refused **before any provider-facing write** — the
+ * composer-draft refusal being the canonical case. Runtimes recognize the
+ * signal *structurally* (by `name`), not by class identity, because it crosses
+ * a bundle boundary: the content bundle cannot value-import this module (it
+ * would become a chunk an MV3 classic content script cannot load), so the
+ * content side carries its own copy in `src/core/proven-refusal.ts` (reachable
+ * from the content entry only). A test pins both sides to the same string.
+ */
+export const PROVEN_NOT_ACTUATED_REFUSAL_NAME = "ProvenNotActuatedRefusal";
+
+/** Construct the "proven not actuated" refusal signal for `reason`. */
+export function provenNotActuatedRefusal(reason: string): Error {
+  return Object.assign(new Error(reason), { name: PROVEN_NOT_ACTUATED_REFUSAL_NAME });
+}
+
+/** Structural recognition of the refusal signal — see the constant above. */
+export function isProvenNotActuatedRefusal(value: unknown): value is Error & { reason: string } {
+  return Boolean(value && typeof value === "object" && (value as { name?: unknown }).name === PROVEN_NOT_ACTUATED_REFUSAL_NAME &&
+    typeof (value as { message?: unknown }).message === "string" && (value as { message: string }).message !== "");
+}
 
 export class SubmissionOperationLedger {
   private queue: Promise<void> = Promise.resolve();
@@ -275,6 +309,62 @@ export class SubmissionOperationLedger {
       if (details.error !== undefined) operation.error = details.error;
       if (details.resultingTurnRef !== undefined) operation.resultingTurnRef = details.resultingTurnRef;
       if (details.dispatchReceipt !== undefined) operation.dispatchReceipt = { ...details.dispatchReceipt, fence: { ...details.dispatchReceipt.fence } };
+      return { records, result: operation };
+    });
+  }
+  /**
+   * Converge a **claimed** operation whose actuation was *proven not to have
+   * happened* back to `PREPARED` (issue #108's disposition, delta 1–2).
+   *
+   * This is the durable, provable refusal outcome a post-claim local guard
+   * produces — the composer-draft refusal being the canonical case. It exists
+   * because the alternative encodings are both wrong: `UNCERTAIN` claims
+   * provider acceptance is unknown (false — nothing was ever sent, so nothing
+   * can have been accepted) and, being execution-owning, it blocks every later
+   * claim on this target; a silent no-op would leave the operation claiming a
+   * dispatch that never happened.
+   *
+   * Guards, deliberately narrow:
+   *  - only from `DISPATCHING`: the claim must already exist (a `PREPARED`
+   *    operation has nothing to refuse — callers handle that by not asking),
+   *    and any state beyond it means something else already resolved the
+   *    attempt, so the refusal is stale and refused outright;
+   *  - the reason is recorded verbatim as `error`, and a receipt with outcome
+   *    `"refused"` stamps the attempt (claimedAt from the refused claim, the
+   *    claim's own fence) so the audit trail shows an attempt happened and was
+   *    refused — not that the operation was never claimed;
+   *  - `now` is monotonic, like every other writer.
+   *
+   * Retryability after a refusal is the ordinary `PREPARED` semantics: a later
+   * claim under the *current* fence (the ledger's claim gate re-checks
+   * `matchesDispatchFence`, so a fence the page moved past cannot be blindly
+   * reused — the retry must re-fence through `retarget`), or the lane mints a
+   * fresh operation id, which every actuator already does per attempt. Like
+   * every receipt slot, the refused receipt is the latest attempt's record and
+   * is superseded by the next attempt's receipt — the same single-slot
+   * convention `retarget`'s fresh-attempt reset already follows.
+   */
+  async refuse(operationId: string, reason: string, now = Date.now()): Promise<SubmissionOperation | undefined> {
+    if (!isStableOperationId(operationId) || typeof reason !== "string" || reason.trim() === "" ||
+      !Number.isSafeInteger(now) || now < 0) return undefined;
+    if (this.store.dispatch) return this.store.dispatch({ type: "refuse", operationId, reason, now }) as Promise<SubmissionOperation | undefined>;
+    return this.mutate(records => {
+      const operation = records.find(item => item.operationId === operationId);
+      if (!operation || operation.state !== "DISPATCHING" || !operation.dispatchFence || now < operation.lastObservedAt ||
+        // The receipt stamps attemptedAt >= claimedAt; a now below the refused
+        // claim's stamp would mint an invalid receipt, so refuse it outright.
+        (operation.dispatchClaimedAt !== undefined && now < operation.dispatchClaimedAt)) {
+        return { records, result: undefined };
+      }
+      operation.dispatchReceipt = {
+        claimedAt: operation.dispatchClaimedAt ?? now,
+        attemptedAt: now,
+        outcome: "refused",
+        fence: { ...operation.dispatchFence }
+      };
+      operation.error = reason;
+      operation.state = "PREPARED";
+      operation.lastObservedAt = now;
       return { records, result: operation };
     });
   }
@@ -706,7 +796,7 @@ function isDispatchReceiptValue(value: unknown): value is SubmissionDispatchRece
   const receipt = value as SubmissionDispatchReceipt;
   return Number.isSafeInteger(receipt.claimedAt) && receipt.claimedAt >= 0 &&
     Number.isSafeInteger(receipt.attemptedAt) && receipt.attemptedAt >= receipt.claimedAt &&
-    (receipt.outcome === "dispatched" || receipt.outcome === "uncertain") &&
+    (receipt.outcome === "dispatched" || receipt.outcome === "uncertain" || receipt.outcome === "refused") &&
     isDispatchFenceValue(receipt.fence);
 }
 function isReceiptForOperation(operation: SubmissionOperation, receipt: SubmissionDispatchReceipt): boolean {

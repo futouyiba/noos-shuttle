@@ -31,6 +31,7 @@
 
 import type { CarrierObservation } from "./runtime-observer";
 import { insertIntoFreeChatInput, submitChatInput } from "./chatgpt-dom";
+import { provenNotActuatedRefusal } from "../core/proven-refusal";
 
 export interface GovernedActuationDeps {
   /** A fresh reading of the page, taken at the instant of actuation. */
@@ -49,10 +50,20 @@ export interface GovernedActuationDeps {
  *  - `chatgpt_composer_unavailable` — no usable composer, the fence no longer
  *    holds, or the submit did not land;
  *  - `chatgpt_composer_not_empty` — the Human's unsent text has priority.
+ *
+ * Which failures carry the **proven-not-actuated** signal (issue #108) is a
+ * claim about the provider, so it follows exactly the pre-write boundary: the
+ * fence check and the composer refusal both happen *before anything is
+ * written*, so they are provably un-actuated and marked; a submit that failed
+ * *after* insertion may have left the payload in the composer or fired a send,
+ * so it stays an ordinary error and the ledger records `UNCERTAIN`.
  */
 export async function actuateGovernedPayload(payload: string, deps: GovernedActuationDeps): Promise<void> {
-  if (!deps.isFenceCurrent(deps.readCurrent())) throw new Error("chatgpt_composer_unavailable");
+  if (!deps.isFenceCurrent(deps.readCurrent())) throw provenNotActuatedRefusal("chatgpt_composer_unavailable");
   const inserted = insertIntoFreeChatInput(payload);
-  if (!inserted.ok) throw new Error(inserted.reason);
+  // Pre-write refusal: provably nothing was sent (issue #108).
+  if (!inserted.ok) throw provenNotActuatedRefusal(inserted.reason);
+  // Post-write failure: the payload may already be in the composer or a send
+  // may have fired — genuinely ambiguous, deliberately NOT marked.
   if (!(await submitChatInput(inserted.composer))) throw new Error("chatgpt_composer_unavailable");
 }
