@@ -3,6 +3,7 @@ import {
   OUTBOX_EXTRA_QUIET_MS,
   OUTBOX_RECONCILE_GRACE_MS,
   classifyOutboxHead,
+  hasExecutionInFlight,
   type OutboxGateCarrier,
   type OutboxGateObservation,
   type OutboxProbeInput
@@ -225,5 +226,34 @@ describe("outbox reserved head (#63 delta 7)", () => {
     const ledgers = { authority: authority(), executionInFlight: true, operations: [operation("GO", "DISPATCHING", "op-1")] };
     expect(classifyOutboxHead(state.items[0], input({ queue: state, ledgers }), NOW, deps))
       .toEqual({ kind: "BLOCKED_UNCERTAIN", itemId: "item-1" });
+  });
+});
+
+describe("retiring an ambiguous reservation unblocks later dispatches (#92 review F2)", () => {
+  /**
+   * `hasExecutionInFlight` is why the retire step exists at all: while the
+   * operation behind an UNCERTAIN item stays execution-owning, no later item
+   * can be dispatched to that target. Cancelling the queue item alone —
+   * without retiring the operation — would leave exactly that wedge behind.
+   */
+  const op = (state: SubmissionOperation["state"]): SubmissionOperation =>
+    operation("OUTBOX_MESSAGE", state, "op-a");
+
+  it("counts an UNCERTAIN operation as holding the target", () => {
+    expect(hasExecutionInFlight([op("UNCERTAIN")], carrier())).toBe(true);
+  });
+
+  it("stops counting it once retired to CANCELLED", () => {
+    expect(hasExecutionInFlight([op("CANCELLED")], carrier())).toBe(false);
+  });
+
+  it("still counts operations that genuinely own execution", () => {
+    expect(hasExecutionInFlight([op("DISPATCHING")], carrier())).toBe(true);
+    expect(hasExecutionInFlight([op("OBSERVED_ACCEPTED")], carrier())).toBe(true);
+  });
+
+  it("ignores operations on another target", () => {
+    const foreign = { ...op("UNCERTAIN"), targetCarrierRef: "browser-tab:9" };
+    expect(hasExecutionInFlight([foreign], carrier())).toBe(false);
   });
 });

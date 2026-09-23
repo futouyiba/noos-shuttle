@@ -158,6 +158,22 @@ function classifyReservedHead(head: OutboxItem, input: OutboxProbeInput, now: nu
   return { kind: "RECONCILE", itemId: head.itemId, operationId };
 }
 
+/**
+ * Does any execution-owning operation still hold this exact target?
+ *
+ * Lives here (not in the service worker) so the property that matters to the
+ * outbox — that retiring an UNCERTAIN operation to CANCELLED stops blocking
+ * later dispatches — is directly testable. CANCELLED is terminal, not
+ * execution-owning: after a Human retires an ambiguous reservation, the next
+ * queued item is dispatchable again.
+ */
+export function hasExecutionInFlight(operations: SubmissionOperation[], carrier: OutboxGateCarrier): boolean {
+  return operations.some(operation =>
+    (operation.state === "DISPATCHING" || operation.state === "UNCERTAIN" || operation.state === "OBSERVED_ACCEPTED") &&
+    operation.targetCarrierRef === carrier.targetCarrierRef &&
+    operation.providerConversationRef === carrier.providerConversationRef);
+}
+
 export function gateBlockReason(head: OutboxItem, input: OutboxProbeInput, now: number): OutboxBlockReason | undefined {
   const { carrier, observation, ledgers } = input;
   // Target identity: the item actuates into exactly one conversation, and the

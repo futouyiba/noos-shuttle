@@ -468,7 +468,11 @@ function render(app: HTMLElement): void {
   installDragHandlers(app);
 
   app.querySelectorAll<HTMLButtonElement>("button[data-action]").forEach((element) => {
-    element.addEventListener("click", () => handleAction(element.dataset.action ?? "", app));
+    // The element rides along so per-row actions (outbox cancel/edit) target
+    // the pressed row, not the first row that happens to carry the same
+    // action — cancelling the wrong queued message is exactly the quiet
+    // misdelivery of intent this surface must not do.
+    element.addEventListener("click", () => handleAction(element.dataset.action ?? "", app, element));
   });
 
   app.querySelector<HTMLSelectElement>("select[data-action='select-thread']")?.addEventListener("change", () => {
@@ -676,7 +680,14 @@ function renderOutboxSection(copy: (typeof COPY)[ShuttleLocale]): string {
                  editable
                    ? `<button type="button" data-action="outbox-edit" data-outbox-id="${escapeAttribute(item.itemId)}">${escapeHtml(copy.outboxEdit)}</button>
                       <button type="button" data-action="outbox-cancel" data-outbox-id="${escapeAttribute(item.itemId)}">${escapeHtml(copy.outboxCancel)}</button>`
-                   : `<span class="bcr-note">${escapeHtml(copy.outboxEditLocked)}</span>`
+                   : item.state === "UNCERTAIN"
+                     ? // The delta-7 escape: an unresolved delivery can be
+                       // abandoned by the Human. Cancel is the only honest
+                       // action — editing a payload that may already be in the
+                       // conversation would rewrite history.
+                       `<button type="button" data-action="outbox-cancel" data-outbox-id="${escapeAttribute(item.itemId)}">${escapeHtml(copy.outboxCancel)}</button>
+                        <span class="bcr-note">${escapeHtml(copy.outboxUncertainItemNote)}</span>`
+                     : `<span class="bcr-note">${escapeHtml(copy.outboxEditLocked)}</span>`
                }
              </div>`
       }
@@ -1225,7 +1236,7 @@ function renderVaultFolderTree(): string {
   </div>`;
 }
 
-async function handleAction(action: string, app: HTMLElement): Promise<void> {
+async function handleAction(action: string, app: HTMLElement, source?: HTMLElement): Promise<void> {
   const copy = COPY[viewState.locale];
 
   if (action === "modal-close") {
@@ -1483,7 +1494,7 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
   }
 
   if (action.startsWith("outbox-")) {
-    await handleOutboxAction(action, app);
+    await handleOutboxAction(action, app, source);
     return;
   }
 
@@ -1557,7 +1568,7 @@ async function handleAction(action: string, app: HTMLElement): Promise<void> {
  * fingerprint the only honest controls are "wait" and "cancel the unresolved
  * item", so the surface offers exactly those.
  */
-async function handleOutboxAction(action: string, app: HTMLElement): Promise<void> {
+async function handleOutboxAction(action: string, app: HTMLElement, source?: HTMLElement): Promise<void> {
   const client = createOutboxClientIfAvailable();
   if (!client) return;
   const observation = runtimeObservationLedger.value;
@@ -1574,9 +1585,8 @@ async function handleOutboxAction(action: string, app: HTMLElement): Promise<voi
     return;
   }
   if (action === "outbox-edit") {
-    // The first pre-claim row's edit button is the only one the surface can
-    // offer at a time (every later row is behind it), so this is unambiguous.
-    const button = app.querySelector<HTMLElement>("[data-action='outbox-edit']:not([disabled])");
+    // The pressed row, falling back to the single enabled edit button.
+    const button = source ?? app.querySelector<HTMLElement>("[data-action='outbox-edit']:not([disabled])");
     viewState.outboxEditingItemId = button?.dataset.outboxId ?? null;
     render(app);
     return;
@@ -1587,7 +1597,7 @@ async function handleOutboxAction(action: string, app: HTMLElement): Promise<voi
     return;
   }
   if (action === "outbox-save-edit") {
-    const button = app.querySelector<HTMLElement>("[data-action='outbox-save-edit']");
+    const button = source ?? app.querySelector<HTMLElement>("[data-action='outbox-save-edit']");
     const itemId = button?.dataset.outboxId;
     const item = outboxState.items.find(candidate => candidate.itemId === itemId);
     const input = itemId ? app.querySelector<HTMLTextAreaElement>(`[data-outbox-edit-input='${itemId}']`) : null;
@@ -1599,7 +1609,7 @@ async function handleOutboxAction(action: string, app: HTMLElement): Promise<voi
     return;
   }
   if (action === "outbox-cancel") {
-    const pressed = app.querySelector<HTMLElement>("[data-action='outbox-cancel']");
+    const pressed = source ?? app.querySelector<HTMLElement>("[data-action='outbox-cancel']");
     const itemId = pressed?.dataset.outboxId;
     if (itemId) await client.cancel(itemId);
     render(app);

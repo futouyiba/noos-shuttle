@@ -208,3 +208,45 @@ describe("OUTBOX_MESSAGE is a first-class SubmissionOperation kind", () => {
     expect(completed?.state).toBe("COMPLETED");
   });
 });
+
+describe("an UNCERTAIN operation can be retired by authorized policy", () => {
+  /**
+   * The ledger half of the Human's delta-7 escape: cancelling an unresolved
+   * outbox item must also retire its operation, or the operation stays
+   * execution-owning forever and blocks every later dispatch to that target.
+   * `record(CANCELLED)` from UNCERTAIN is that retire, and it must actually
+   * take — a refused transition would leave the wedge in place.
+   */
+  it("accepts record(CANCELLED) from UNCERTAIN and lands terminal", async () => {
+    const ledger = new SubmissionOperationLedger(memoryStore());
+    await ledger.prepare(outboxInput("outbox-retire"));
+    await ledger.claim("outbox-retire", context(), 10);
+    await ledger.record("outbox-retire", "UNCERTAIN", { now: 20 });
+    expect((await ledger.get("outbox-retire"))?.state).toBe("UNCERTAIN");
+
+    const retired = await ledger.record("outbox-retire", "CANCELLED", { now: 30 });
+    expect(retired?.state).toBe("CANCELLED");
+    expect((await ledger.get("outbox-retire"))?.state).toBe("CANCELLED");
+  });
+
+  it("refuses to cancel an operation the ledger has already proven accepted", async () => {
+    const ledger = new SubmissionOperationLedger(memoryStore());
+    await ledger.prepare(outboxInput("outbox-proven"));
+    await ledger.claim("outbox-proven", context(), 10);
+    await ledger.reconcile("outbox-proven", {
+      ...baseline(),
+      userMessageCount: 5,
+      lastUserMessageFingerprint: FINGERPRINT,
+      generationActive: true,
+      observedAt: 20,
+      sourceEpoch: 0,
+      dispatchFence: context()
+    });
+    expect((await ledger.get("outbox-proven"))?.state).toBe("OBSERVED_ACCEPTED");
+    // CANCELLED is not a legal transition from OBSERVED_ACCEPTED — the ledger
+    // keeps the cancel honest even if the policy layer misses.
+    const refused = await ledger.record("outbox-proven", "CANCELLED", { now: 30 });
+    expect(refused?.state).not.toBe("CANCELLED");
+    expect((await ledger.get("outbox-proven"))?.state).toBe("OBSERVED_ACCEPTED");
+  });
+});

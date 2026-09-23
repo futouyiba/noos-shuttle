@@ -7,9 +7,11 @@ import {
   hasOutstandingOutboxReservation,
   headOutboxItem,
   outboxQueueStatus,
+  planUncertainCancel,
   reduceOutboxQueue,
   type OutboxQueueState
 } from "../src/core/outbox-queue";
+import type { SubmissionOperation, SubmissionOperationState } from "../src/core/submission-operation";
 import { decideRunIntervention } from "../src/core/run-intervention";
 
 const CONVERSATION = "conv-1";
@@ -92,16 +94,119 @@ describe("outbox queue identity, ordering and revisions", () => {
     expect(afterClaim.error).toBe("edit_after_claim_forbidden");
   });
 
-  it("cancels only pre-claim items; a claimed payload has no cancel path either", () => {
+  it("cancels pre-claim items; an in-flight dispatch and a proven turn stay non-cancellable", () => {
     const queued = enqueue({ revision: 0, sequence: 0, paused: false, items: [] }, "a", "draft", 1);
     const cancelled = reduceOutboxQueue(queued, { type: "cancel", itemId: "a", now: 2 });
     expect(cancelled.item?.state).toBe("CANCELLED");
     expect(headOutboxItem(cancelled.state)).toBeUndefined();
 
-    const claimed = claim(queued, "a", "op-1", RUN, 3);
-    const refused = reduceOutboxQueue(claimed, { type: "cancel", itemId: "a", now: 4 });
+    const dispatching = claim(queued, "a", "op-1", RUN, 3);
+    expect(dispatching.items[0].state).toBe("DISPATCHING");
+    const refused = reduceOutboxQueue(dispatching, { type: "cancel", itemId: "a", now: 4 });
     expect(refused.ok).toBe(false);
     expect(refused.error).toBe("cancel_requires_resolution");
+
+    const delivered = markDelivered(dispatching, "op-1", 4, 5);
+    const refusedToo = reduceOutboxQueue(delivered, { type: "cancel", itemId: "a", now: 6 });
+    expect(refusedToo.ok).toBe(false);
+    expect(refusedToo.error).toBe("cancel_requires_resolution");
+  });
+});
+
+describe("cancelling an unresolved item is the Human's escape (#63 delta 7)", () => {
+  function uncertainQueue(): OutboxQueueState {
+    let state = enqueue(enqueue({ revision: 0, sequence: 0, paused: false, items: [] }, "a", "queued one", 1), "b", "queued two", 2);
+    state = claim(state, "a", "op-a", RUN, 3, 4);
+    state = reduceOutboxQueue(state, {
+      type: "record_submission",
+      outcome: { operationId: "op-a", state: "UNCERTAIN", now: 4 }
+    }).state;
+    expect(state.items[0].state).toBe("UNCERTAIN");
+    return state;
+  }
+
+  /**
+   * The hole PR #92's review found (finding F2): an ambiguous delivery froze
+   * the queue forever, blocked every later dispatch to the target, and held
+   * the Run at AMBIGUOUS_HOLD — with the surface offering no way out. Delta 7
+   * names the exit: "resolved/cancelled by authorized policy", and the Human
+   * is the authorized actor in this tree.
+   */
+  it("cancels an UNCERTAIN item and releases everything it was holding", () => {
+    const state = uncertainQueue();
+    expect(outboxQueueStatus(state)).toEqual({ kind: "BLOCKED_UNCERTAIN", itemId: "a" });
+    expect(hasOutstandingOutboxReservation(state, RUN)).toBe(true);
+
+    const cancelled = reduceOutboxQueue(state, { type: "cancel", itemId: "a", now: 5 });
+    expect(cancelled.ok).toBe(true);
+    expect(cancelled.item?.state).toBe("CANCELLED");
+    // The queue advances: the next item is the head again, not blocked.
+    expect(headOutboxItem(cancelled.state)?.itemId).toBe("b");
+    expect(outboxQueueStatus(cancelled.state)).toEqual({ kind: "WAIT", itemId: "b", reason: "conversation_absent" });
+    // The Run's tolerance is withdrawn and the priority gate lets go.
+    expect(expectedUserTurnAccounting(cancelled.state, RUN, "conv-1")).toBeUndefined();
+    expect(hasOutstandingOutboxReservation(cancelled.state, RUN)).toBe(false);
+    expect(decideRunIntervention({ governedExpectedUserCount: 4, observedUserCount: 5, outbox: undefined }).verdict)
+      .toBe("HUMAN_INTERVENTION");
+  });
+
+  it("keeps the reservation id on the cancelled item as its audit trail", () => {
+    const state = uncertainQueue();
+    const cancelled = reduceOutboxQueue(state, { type: "cancel", itemId: "a", now: 5 });
+    expect(cancelled.item?.submissionOperationId).toBe("op-a");
+    expect(cancelled.item?.reservationRunId).toBe(RUN);
+  });
+
+  it("is idempotent: cancelling twice stays cancelled", () => {
+    const state = uncertainQueue();
+    const once = reduceOutboxQueue(state, { type: "cancel", itemId: "a", now: 5 });
+    const twice = reduceOutboxQueue(once.state, { type: "cancel", itemId: "a", now: 6 });
+    expect(twice.ok).toBe(true);
+    expect(twice.item?.state).toBe("CANCELLED");
+  });
+});
+
+describe("planUncertainCancel decides against the ledger, not the queue alone", () => {
+  /**
+   * The reducer cannot see the ledger, so the background consults this plan
+   * first. The two refusal/retire rules are the honesty edges: never claim a
+   * delivery didn't happen when the ledger proved it did, and never leave an
+   * execution-owning operation behind to wedge every later dispatch.
+   */
+  function uncertainItem() {
+    let state = enqueue({ revision: 0, sequence: 0, paused: false, items: [] }, "a", "queued", 1);
+    state = claim(state, "a", "op-a", RUN, 2, 4);
+    return reduceOutboxQueue(state, {
+      type: "record_submission",
+      outcome: { operationId: "op-a", state: "UNCERTAIN", now: 3 }
+    }).state.items[0];
+  }
+
+  const operation = (state: SubmissionOperationState) =>
+    ({ operationId: "op-a", operationKind: "OUTBOX_MESSAGE", state }) as SubmissionOperation;
+
+  it("retires an UNCERTAIN operation first", () => {
+    expect(planUncertainCancel(uncertainItem(), operation("UNCERTAIN")))
+      .toEqual({ allowed: true, retireOperationId: "op-a" });
+  });
+
+  it("refuses when the ledger has already proven the delivery", () => {
+    for (const proven of ["OBSERVED_ACCEPTED", "COMPLETED"] as const) {
+      expect(planUncertainCancel(uncertainItem(), operation(proven)))
+        .toEqual({ allowed: false, reason: "delivery_accepted" });
+    }
+  });
+
+  it("needs no retire for a terminal operation or a missing one", () => {
+    for (const terminal of ["FAILED_SAFE", "CANCELLED"] as const) {
+      expect(planUncertainCancel(uncertainItem(), operation(terminal))).toEqual({ allowed: true });
+    }
+    expect(planUncertainCancel(uncertainItem(), undefined)).toEqual({ allowed: true });
+  });
+
+  it("passes non-UNCERTAIN items through to the reducer's own rules", () => {
+    const queued = enqueue({ revision: 0, sequence: 0, paused: false, items: [] }, "a", "queued", 1).items[0];
+    expect(planUncertainCancel(queued, operation("UNCERTAIN"))).toEqual({ allowed: true });
   });
 });
 

@@ -20,6 +20,7 @@ import { runChildDeliveryProbe } from "./delivery-runtime";
 import {
   OUTBOX_MAX_ATTEMPTS,
   OUTBOX_STORE_KEY,
+  planUncertainCancel,
   createOutboxReservation,
   emptyOutboxQueueState,
   extractOutboxQueueState,
@@ -32,6 +33,7 @@ import {
 } from "../core/outbox-queue";
 import {
   classifyOutboxHead,
+  hasExecutionInFlight,
   type OutboxGateCarrier,
   type OutboxGateObservation,
   type OutboxProbeInput,
@@ -170,6 +172,30 @@ async function handleOutboxMutation(mutation: OutboxMutation): Promise<OutboxMut
   return navigator.locks.request(OUTBOX_LOCK, async () => {
     const persisted = await storage.get(OUTBOX_STORE_KEY);
     const state = extractOutboxQueueState(persisted);
+    // Cancelling an UNRESOLVED item is the Human's delta-7 escape, and it has a
+    // ledger half the pure reducer cannot do: the backing operation must be
+    // retired first, or it stays execution-owning forever and blocks every
+    // later dispatch to this target. Retire-first also makes the crash window
+    // converge (op CANCELLED + item still UNCERTAIN folds to a parked item on
+    // the next probe); the reverse order would orphan the wedge.
+    if (mutation.type === "cancel") {
+      const item = state.items.find(candidate => candidate.itemId === mutation.itemId);
+      if (item?.state === "UNCERTAIN") {
+        const submissions = getSubmissionOperationCoordinator();
+        if (!submissions) return { ok: false, error: "coordinator_unavailable", state };
+        const operation = item.submissionOperationId === undefined
+          ? undefined
+          : await submissions.get(item.submissionOperationId);
+        const plan = planUncertainCancel(item, operation);
+        if (!plan.allowed) return { ok: false, error: plan.reason, state };
+        if (plan.retireOperationId !== undefined) {
+          const retired = await submissions.record(plan.retireOperationId, "CANCELLED", { now: Date.now() });
+          if (retired?.state !== "CANCELLED") {
+            return { ok: false, error: "operation_retire_failed", state };
+          }
+        }
+      }
+    }
     const result = reduceOutboxQueue(state, mutation);
     if (result.ok && result.state !== state) await storage.set({ [OUTBOX_STORE_KEY]: result.state });
     return result;
@@ -236,14 +262,6 @@ function isOutboxGateObservation(value: unknown): value is OutboxGateObservation
     typeof observation.composerInteractive === "boolean" &&
     typeof observation.composerEmpty === "boolean" &&
     (observation.userMessageCount === undefined || isFiniteInteger(observation.userMessageCount));
-}
-
-/** True when an execution-owning operation already holds this exact target. */
-function hasExecutionInFlight(operations: SubmissionOperation[], carrier: OutboxGateCarrier): boolean {
-  return operations.some(operation =>
-    (operation.state === "DISPATCHING" || operation.state === "UNCERTAIN" || operation.state === "OBSERVED_ACCEPTED") &&
-    operation.targetCarrierRef === carrier.targetCarrierRef &&
-    operation.providerConversationRef === carrier.providerConversationRef);
 }
 
 /**
