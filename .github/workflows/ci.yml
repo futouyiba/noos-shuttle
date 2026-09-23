@@ -35,6 +35,50 @@ jobs:
       - name: Test root
         run: npm test -- --exclude tests/content-ui-smoke.test.ts
 
+      - name: Build extension bundle
+        run: npm run build
+
+      # The root build has no gate of its own, and the MV3 two-entry constraint
+      # fails *silently*: rollup promotes any module both entries import into a
+      # shared chunk, the build stays green, and the extension then fails to load
+      # because an MV3 content script is a classic script and cannot import a
+      # sibling chunk. Assert the constraint instead of assuming it.
+      - name: Assert the extension bundle is self-contained
+        run: |
+          failed=0
+          for entry in content service-worker; do
+            file="dist/assets/$entry.js"
+            if [ ! -f "$file" ]; then
+              echo "::error::$file was not emitted by the build"
+              failed=1
+              continue
+            fi
+            siblings=$(grep -cE '(from|import)"\./' "$file") || true
+            if [ "$siblings" != "0" ]; then
+              echo "::error file=$file::$entry.js imports $siblings sibling module(s); an MV3 content script cannot load a shared chunk"
+              failed=1
+            fi
+          done
+          if [ "$failed" != "0" ]; then exit 1; fi
+          echo "content.js and service-worker.js import no sibling chunks."
+
+      # The smoke suite drives the built content script inside a real Chromium
+      # against an in-page mock ChatGPT: a local fixture with a stubbed chrome
+      # API, no provider, no Hub, no network. Pin the browser rather than using
+      # the runner image's Chrome so the Playwright version and the browser
+      # version move together.
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium
+
+      - name: Test content script smoke in a browser
+        env:
+          # The two integration tests that drive a real actuation into the mock
+          # provider DOM never reach their second-stage derived state on the ubuntu
+          # runner (issue #101). The test file names them and this is the only knob
+          # that turns them off, so a local run still exercises all 29.
+          NOOS_SMOKE_SKIP_CI_UNSTABLE: "1"
+        run: npm test -- tests/content-ui-smoke.test.ts
+
       - name: Install Hub dependencies
         run: npm --prefix apps/noos-hub ci
 
@@ -49,3 +93,55 @@ jobs:
 
       - name: Test LLM Wiki (mocked)
         run: npm run wiki:test
+
+  # Separate job on purpose: the Rust crates take minutes to compile and need a
+  # Linux Tauri toolchain, so they must not sit in the required `Verify` job's
+  # critical path. Nothing here touches a provider, a real LLM, or a live Hub —
+  # these are pure unit tests over local state.
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      # Mirror of the deps the vendored LLM Wiki workflow installs
+      # (apps/llm-wiki/.github/workflows/ci.yml): webkit2gtk/gtk for Tauri,
+      # protobuf-compiler for lance/lancedb's build scripts.
+      - name: Install Linux Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf protobuf-compiler
+
+      - name: Install root dependencies
+        run: npm ci
+
+      # `tauri-build` refuses the Hub crate while `resources/noos-shuttle-extension`
+      # is missing, so the extension has to be built and copied into the crate
+      # before a single Hub test can compile. This is the same preparation the Hub
+      # bundle script performs.
+      - name: Build the extension bundle the Hub crate embeds
+        run: npm run hub:prepare-extension
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            apps/noos-hub/src-tauri
+            apps/llm-wiki/src-tauri
+
+      - name: Report the Rust toolchain
+        run: cargo --version
+
+      - name: Test Hub (Rust)
+        run: cargo test --manifest-path apps/noos-hub/src-tauri/Cargo.toml
+
+      - name: Test LLM Wiki (Rust)
+        run: cargo test --manifest-path apps/llm-wiki/src-tauri/Cargo.toml
