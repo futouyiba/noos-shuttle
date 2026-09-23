@@ -9,6 +9,12 @@ import {
   type SubmissionReconcileResult
 } from "./submission-operation";
 import type { SubmissionOperationLedger } from "./submission-operation";
+// Value import, deliberately from this sibling module and not from
+// ./submission-operation: this runtime is bundled into the content entry (the
+// outbox carrier value-imports it), so a runtime import of the ledger module
+// would let the renderer hoist it into a shared chunk an MV3 classic content
+// script cannot load. See src/core/proven-refusal.ts.
+import { isProvenNotActuatedRefusal } from "./proven-refusal";
 
 export interface HumanGoCarrierSnapshot extends Omit<SubmissionClaimContext, "carrierState" | "logicalControl" | "explicitGo"> {
   carrierState: "READY" | "ATTACHING" | "STABILIZING" | "GENERATING" | "BROKEN";
@@ -46,7 +52,15 @@ export interface HumanGoRequest {
 export type HumanGoResult =
   | { status: "DISPATCHED"; operation: SubmissionOperation }
   | { status: "BLOCKED"; reason: "carrier_not_ready" | "control_not_continue" | "identity_missing" | "fence_mismatch" | "unresolved_operation" | "claim_lost" }
-  | { status: "UNCERTAIN"; operation: SubmissionOperation };
+  | { status: "UNCERTAIN"; operation: SubmissionOperation }
+  /**
+   * The dispatch refused **before any provider-facing write** and the ledger
+   * recorded it as proven-not-actuated (issue #108). Nothing was sent, the
+   * operation is back to `PREPARED` (not execution-owning), and a later
+   * authorized attempt may claim again. This is the recoverable counterpart of
+   * `UNCERTAIN`, which stays reserved for genuinely unresolved acceptance.
+   */
+  | { status: "REFUSED"; operation: SubmissionOperation; reason: string };
 
 export interface HumanGoRuntimeOptions {
   readCurrentCarrier: () => Promise<HumanGoCarrierSnapshot>;
@@ -65,6 +79,14 @@ export interface HumanGoLedger {
   claim(operationId: string, context: SubmissionClaimContext, now?: number): Promise<SubmissionOperation | undefined>;
   get(operationId: string): Promise<SubmissionOperation | undefined>;
   record(operationId: string, state: "DISPATCHING" | "COMPLETED" | "UNCERTAIN" | "CANCELLED", details?: Parameters<SubmissionOperationLedger["record"]>[2]): Promise<SubmissionOperation | undefined>;
+  /**
+   * Record a proven-not-actuated refusal and converge the claimed operation
+   * back to `PREPARED` (issue #108). Required, not optional, on purpose: a
+   * runtime whose ledger cannot record a refusal would have to encode it as
+   * `UNCERTAIN`, which the disposition forbids — degrading silently is exactly
+   * the failure mode this contract exists to remove.
+   */
+  refuse(operationId: string, reason: string, now?: number): Promise<SubmissionOperation | undefined>;
   reconcile(operationId: string, observation: SubmissionObservation): Promise<SubmissionReconcileResult>;
 }
 
@@ -120,7 +142,18 @@ export class HumanGoRuntime {
       }
       const uncertain = await this.recordUncertain(claimed.operationId, attemptedAt);
       return { status: "UNCERTAIN", operation: uncertain ?? recovered ?? claimed };
-    } catch {
+    } catch (error) {
+      // A refusal that is *proven* not to have actuated is not delivery
+      // ambiguity and must never be encoded as `UNCERTAIN` (issue #108): the
+      // signal means the dispatch refused before any provider-facing write, so
+      // the ledger records outcome "refused" and the operation returns to
+      // `PREPARED` — recoverable, not execution-owning. Anything else, including
+      // a refusal the ledger could no longer attest (the state already moved),
+      // stays on the conservative path below.
+      if (isProvenNotActuatedRefusal(error)) {
+        const refused = await this.recordRefusal(claimed.operationId, error.message, request.now);
+        if (refused) return { status: "REFUSED", operation: refused, reason: error.message };
+      }
       let uncertain = await this.recordUncertain(claimed.operationId, request.now);
       if (!uncertain) {
         // A worker may have committed the transition and lost only its response.
@@ -130,6 +163,14 @@ export class HumanGoRuntime {
       }
       uncertain ??= await this.ledger.get(claimed.operationId);
       return uncertain ? { status: "UNCERTAIN", operation: uncertain } : { status: "UNCERTAIN", operation: claimed };
+    }
+  }
+
+  private async recordRefusal(operationId: string, reason: string, now?: number): Promise<SubmissionOperation | undefined> {
+    try {
+      return await this.ledger.refuse(operationId, reason, now);
+    } catch {
+      return undefined;
     }
   }
 

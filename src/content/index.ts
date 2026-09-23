@@ -1748,6 +1748,18 @@ async function dispatchHumanGo(payload: string, context: PageContext, workItemId
     options.onResult?.("BLOCKED");
     return false;
   }
+  // A proven-not-actuated refusal sent nothing and converged the operation
+  // back to PREPARED (issue #108), so the Run takes no DISPATCH_ISSUED event —
+  // the round simply did not happen. Nothing is execution-owning, so unlike
+  // the UNCERTAIN path there is nothing to adopt into `activeSubmission`: the
+  // next GO is a fresh attempt, which for a run is exactly one Human press (or
+  // the next AUTO_X5 trigger) away.
+  if (result.status === "REFUSED") {
+    viewState.message = COPY[viewState.locale].outboxWaitComposerNotEmpty;
+    options.onResult?.("BLOCKED");
+    renderApp();
+    return false;
+  }
   options.onResult?.(result.status);
   activeSubmission = {
     operationId: result.operation.operationId,
@@ -2340,6 +2352,7 @@ function createContentSubmissionLedger(): HumanGoLedger {
       return records?.find(operation => operation.operationId === operationId);
     },
     record: (operationId, state, details) => mutate<SubmissionOperation>({ type: "record", operationId, state, details: details ?? {} }),
+    refuse: (operationId, reason, now) => mutate<SubmissionOperation>({ type: "refuse", operationId, reason, now: now ?? Date.now() }),
     reconcile: async (operationId, observation) =>
       (await mutate<SubmissionReconcileResult>({ type: "reconcile", operationId, observation })) ??
       { outcome: "STILL_AMBIGUOUS" }
