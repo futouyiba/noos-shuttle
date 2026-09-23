@@ -445,10 +445,8 @@ function render(app: HTMLElement): void {
                       <input class="bcr-eval-input" type="text" inputmode="numeric" maxlength="8" data-hub-pairing-input placeholder="${escapeAttribute(copy.hubPairingPlaceholder)}" autocomplete="off" />
                       <button type="button" data-action="hub-pairing-submit">${escapeHtml(copy.hubPairingSubmit)}</button>
                       <div class="settings-label">${copy.bcrSettingsTitle}</div>
-                      <input class="bcr-eval-input" type="password" data-action="bcr-eval-key" placeholder="${escapeAttribute(copy.bcrSettingsKey)}" autocomplete="off" />
-                      <input class="bcr-eval-input" type="text" data-action="bcr-eval-model" placeholder="${escapeAttribute(copy.bcrSettingsModel)}" value="${escapeAttribute(bcrEvalModel)}" />
+                      <span class="bcr-note">${bcrAutoConfigured ? escapeHtml(`${copy.bcrAutoBadge} · ${bcrEvalModel}`) : escapeHtml(copy.bcrHubSideNote)}</span>
                       <button type="button" data-action="bcr-eval-sync">${escapeHtml(copy.bcrSyncFromHub)}</button>
-                      <span class="bcr-note">${bcrAutoConfigured ? escapeHtml(copy.bcrAutoBadge) : escapeHtml(copy.bcrAssistedNote)}</span>
                     </div>`
                   : ""
               }
@@ -522,18 +520,6 @@ function render(app: HTMLElement): void {
     render(app);
   });
 
-  app.querySelectorAll<HTMLInputElement>("input[data-action='bcr-eval-key'], input[data-action='bcr-eval-model']").forEach((element) => {
-    element.addEventListener("change", () => {
-      const key = app.querySelector<HTMLInputElement>("input[data-action='bcr-eval-key']");
-      const model = app.querySelector<HTMLInputElement>("input[data-action='bcr-eval-model']");
-      const patch: { apiKey?: string; model?: string } = {};
-      if (key?.value.trim()) patch.apiKey = key.value.trim();
-      if (model?.value.trim()) patch.model = model.value.trim();
-      if (patch.apiKey === undefined && patch.model === undefined) return;
-      if (key) key.value = "";
-      void saveBcrEvalConfig(app, patch);
-    });
-  });
 }
 
 function renderPreservingPopoverScroll(app: HTMLElement): void {
@@ -1907,25 +1893,6 @@ async function refreshBcrEvalConfig(): Promise<void> {
   }
 }
 
-async function saveBcrEvalConfig(app: HTMLElement, patch: { apiKey?: string; model?: string }): Promise<void> {
-  const copy = COPY[viewState.locale];
-  try {
-    const response = await sendExtensionMessage<
-      { type: "NOOS_CONTINUATION_EVAL_CONFIG"; config?: { apiKey?: string; model?: string } },
-      { ok: boolean; evaluatorConfigured?: boolean; model?: string; error?: string }
-    >({ type: "NOOS_CONTINUATION_EVAL_CONFIG", config: patch });
-    if (response?.ok) {
-      bcrAutoConfigured = response.evaluatorConfigured === true;
-      if (typeof response.model === "string" && response.model.trim() !== "") bcrEvalModel = response.model;
-      viewState.message = copy.bcrSettingsSaved;
-    } else {
-      viewState.message = `${copy.bcrStartFailed}${response?.error ? `: ${response.error}` : ""}`;
-    }
-  } catch {
-    viewState.message = copy.bcrStartFailed;
-  }
-  render(app);
-}
 
 async function syncBcrEvalConfigFromHub(app: HTMLElement): Promise<void> {
   const copy = COPY[viewState.locale];
@@ -1939,6 +1906,7 @@ async function syncBcrEvalConfigFromHub(app: HTMLElement): Promise<void> {
       if (typeof response.model === "string" && response.model.trim() !== "") bcrEvalModel = response.model;
       viewState.message = `${copy.bcrSynced} (${bcrEvalModel})`;
     } else if (response?.ok && response.reason === "hub_not_configured") {
+      bcrAutoConfigured = false;
       viewState.message = copy.bcrHubNotConfigured;
     } else {
       viewState.message = copy.bcrSyncFailed;

@@ -24,8 +24,7 @@ export interface ShuttleCopy {
   bcrAutoHint: string;
   bcrPhaseEvaluating: string;
   bcrSettingsTitle: string;
-  bcrSettingsKey: string;
-  bcrSettingsModel: string;
+  bcrHubSideNote: string;
   bcrSettingsSaved: string;
   bcrSyncFromHub: string;
   bcrSynced: string;
@@ -283,8 +282,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     bcrAutoHint: "AUTO: the evaluator continues rounds when the step is in progress, in scope, advancing and unblocked, at HIGH or MEDIUM confidence; any uncertain reading, or LOW confidence, stops the run. Rounds 4+ re-anchor to the assistant's own stated direction.",
     bcrPhaseEvaluating: "Evaluating",
     bcrSettingsTitle: "BCR auto evaluator (experimental)",
-    bcrSettingsKey: "DeepSeek API Key",
-    bcrSettingsModel: "Model",
+    bcrHubSideNote: "Evaluator runs through the Hub. Configure the key in NOOS Hub settings.",
     bcrSettingsSaved: "BCR evaluator config saved.",
     bcrSyncFromHub: "Sync from NOOS Hub",
     bcrSynced: "Evaluator config synced from NOOS Hub",
@@ -534,8 +532,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     bcrAutoHint: "AUTO：评估器在「进行中、范围内、持续推进、无依赖」且置信为 HIGH 或 MEDIUM 时继续；任何一项判不准，或置信为 LOW，即停。第 4 轮起按 assistant 自述方向重新锚定。",
     bcrPhaseEvaluating: "评估中",
     bcrSettingsTitle: "BCR 自动评估（实验）",
-    bcrSettingsKey: "DeepSeek API Key",
-    bcrSettingsModel: "模型",
+    bcrHubSideNote: "评估经 Hub 代理运行，请在 NOOS Hub 设置中配置密钥。",
     bcrSettingsSaved: "BCR 评估器配置已保存。",
     bcrSyncFromHub: "从 NOOS Hub 同步",
     bcrSynced: "已从 NOOS Hub 同步评估器配置",
