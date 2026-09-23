@@ -652,22 +652,31 @@ fn approve_pending_enrollment() -> Result<Value, String> {
     }
 }
 
-/// The Human rejects it: the pending slot clears AND the code burns, so a
-/// rejected suitor cannot keep hammering with the same code.
+/// The Human rejects it. Lock order is CODE then PENDING — the same order as
+/// the /pair handler — so a concurrent submission can never deadlock against
+/// this command (review F4). An entry whose TTL already elapsed is stale
+/// evidence: it clears WITHOUT burning the code, matching the decision
+/// helper's expiry semantics (review F5) — the Human did not judge it, so it
+/// must not cost the waiting extension its code.
 #[tauri::command]
 fn reject_pending_enrollment() -> Result<Value, String> {
+    let mut code = ACTIVE_PAIR_CODE
+        .lock()
+        .map_err(|error| error.to_string())?;
     let mut pending = PENDING_ENROLLMENT
         .lock()
         .map_err(|error| error.to_string())?;
-    if pending.take().is_none() {
+    let Some(entry) = pending.as_ref() else {
         return Err("no pending enrollment to reject".to_string());
-    }
-    if let Ok(mut code) = ACTIVE_PAIR_CODE.lock() {
+    };
+    let expired = now_epoch() >= entry.expires_at_epoch;
+    pending.take();
+    if !expired {
         if let Some(active) = code.as_mut() {
             active.consumed = true;
         }
     }
-    Ok(json!({ "ok": true }))
+    Ok(json!({ "ok": true, "expired": expired }))
 }
 
 #[tauri::command]
@@ -9386,6 +9395,44 @@ See [Spec](.assets/feishu_docx_abc123/spec.pdf).
         );
         assert!(!code_state.as_ref().unwrap().consumed);
         assert!(pending.is_some());
+    }
+
+    #[test]
+    fn reject_burns_a_live_pending_but_only_clears_an_expired_one() {
+        // The command reads the real clock, so the pending entries are built
+        // against now_epoch(), not a synthetic instant.
+        let now = now_epoch();
+        // Live pending: rejection must burn the code (a rejected suitor
+        // cannot keep hammering with it).
+        *ACTIVE_PAIR_CODE.lock().unwrap() = Some(generate_pair_code(now).unwrap());
+        *PENDING_ENROLLMENT.lock().unwrap() = Some(PendingEnrollment {
+            origin: "chrome-extension://shuttle".to_string(),
+            expires_at_epoch: now + PENDING_ENROLLMENT_TTL_SECS,
+            approved: false,
+        });
+        let rejected = reject_pending_enrollment().unwrap();
+        assert_eq!(rejected["expired"], json!(false));
+        assert!(ACTIVE_PAIR_CODE.lock().unwrap().as_ref().unwrap().consumed);
+        assert!(PENDING_ENROLLMENT.lock().unwrap().is_none());
+
+        // Stale pending (TTL elapsed): clears WITHOUT burning — the Human did
+        // not judge a request that had already lapsed, and the waiting
+        // extension's code stays usable.
+        *ACTIVE_PAIR_CODE.lock().unwrap() = Some(generate_pair_code(now).unwrap());
+        *PENDING_ENROLLMENT.lock().unwrap() = Some(PendingEnrollment {
+            origin: "chrome-extension://shuttle".to_string(),
+            expires_at_epoch: now.saturating_sub(1),
+            approved: false,
+        });
+        let stale = reject_pending_enrollment().unwrap();
+        assert_eq!(stale["expired"], json!(true));
+        assert!(!ACTIVE_PAIR_CODE.lock().unwrap().as_ref().unwrap().consumed);
+        assert!(PENDING_ENROLLMENT.lock().unwrap().is_none());
+
+        // Nothing pending: an honest error, code untouched.
+        let none = reject_pending_enrollment();
+        assert!(none.is_err());
+        assert!(!ACTIVE_PAIR_CODE.lock().unwrap().as_ref().unwrap().consumed);
     }
 
     #[test]

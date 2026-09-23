@@ -336,6 +336,20 @@ const viewState: ViewState = {
   modal: null
 };
 
+// Hub pairing state for the settings row (#100): null = unknown yet.
+let hubPaired: boolean | null = null;
+
+function refreshHubPairingState(): void {
+  void sendExtensionMessage<{ type: string }, { ok?: boolean; paired?: boolean }>({ type: "NOOS_HUB_PAIRING_STATE" })
+    .then(response => {
+      hubPaired = response?.ok === true && response.paired === true;
+      if (viewState.settingsOpen && shuttleApp) render(shuttleApp);
+    })
+    .catch(() => {
+      hubPaired = null;
+    });
+}
+
 bootstrap();
 
 function bootstrap(): void {
@@ -381,20 +395,6 @@ function bootstrap(): void {
     applyShuttlePosition(app, shuttlePosition);
     storePosition(shuttlePosition);
   });
-}
-
-// Hub pairing state for the settings row (#100): null = unknown yet.
-let hubPaired: boolean | null = null;
-
-function refreshHubPairingState(): void {
-  void sendExtensionMessage<{ type: string }, { ok?: boolean; paired?: boolean }>({ type: "NOOS_HUB_PAIRING_STATE" })
-    .then(response => {
-      hubPaired = response?.ok === true && response.paired === true;
-      if (viewState.settingsOpen && shuttleApp) render(shuttleApp);
-    })
-    .catch(() => {
-      hubPaired = null;
-    });
 }
 
 function render(app: HTMLElement): void {
