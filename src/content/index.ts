@@ -36,6 +36,8 @@ import { NoosVaultAdapter } from "../storage/NoosVaultAdapter";
 import { attachMarkdownFilesToChatInput, getPageText, insertIntoChatInput, isChatComposerEmpty, isChatbotGenerating } from "./chatgpt-dom";
 import { handleBackgroundDispatch } from "./background-dispatch";
 import { actuateGovernedPayload } from "./governed-dispatch";
+import { snapshotEditableControls, restoreEditableControls } from "./panel-input-preservation";
+import { createRenderThrottle } from "./observation-render-throttle";
 import { captureChatGptTranscriptWithScroll, captureRenderedChatGptTranscript } from "./chatgpt-transcript";
 import { RuntimeObservationLedger, type CarrierObservation } from "./runtime-observer";
 import { createOutboxClient, observationForGate, type OutboxClient } from "./outbox-client";
@@ -211,6 +213,8 @@ const CAPTURE_RETRY_MS = 1_200;
 const CAPTURE_POLL_MS = 1_500;
 const PAGE_CONTEXT_POLL_MS = 1_000;
 const PAGE_CONTEXT_DEBOUNCE_MS = 250;
+/** Issue #126: observation-driven panel repaints coalesce to at most one per this window. */
+const OBSERVATION_RENDER_MIN_INTERVAL_MS = 200;
 const PROJECT_IMPORT_REFRESH_MIN_INTERVAL_MS = 500;
 const FAB_SIZE = 44;
 const EDGE_GAP = 12;
@@ -402,6 +406,11 @@ function render(app: HTMLElement): void {
   const copy = COPY[viewState.locale];
   const hubPairingStateLabel = hubPaired === true ? copy.hubPairingPaired : copy.hubPairingNotPaired;
   const surface = getCurrentSurface();
+  // The rebuild below destroys every editable control, so take what the Human
+  // is typing with us (issue #126): value, caret, selection, focus — restored
+  // onto the rebuilt controls at the end of this function. Whatever fires the
+  // render, the typing survives it.
+  const inputSnapshot = snapshotEditableControls(app);
 
   app.innerHTML = `
     <button class="fab fab--${viewState.state}" type="button" aria-label="NOOS Shuttle">
@@ -520,6 +529,7 @@ function render(app: HTMLElement): void {
     render(app);
   });
 
+  restoreEditableControls(app, inputSnapshot);
 }
 
 function renderPreservingPopoverScroll(app: HTMLElement): void {
@@ -2323,6 +2333,20 @@ function renderApp(): void {
   if (shuttleApp) render(shuttleApp);
 }
 
+/**
+ * The observation loop's repaint lane (issue #126): leading edge immediate,
+ * trailing requests coalesced to one render per OBSERVATION_RENDER_MIN_INTERVAL_MS,
+ * so a generating session cannot push the panel to token-rate rebuilds however
+ * often the observation loop reacts. User actions never go through this.
+ */
+const scheduleObservationRender = (): void => observationRenderThrottle.request();
+const observationRenderThrottle = createRenderThrottle(renderApp, {
+  minIntervalMs: OBSERVATION_RENDER_MIN_INTERVAL_MS,
+  now: () => Date.now(),
+  setTimeout: (handler, timeout) => window.setTimeout(handler, timeout),
+  clearTimeout: handle => window.clearTimeout(handle as number)
+});
+
 function bcrPhaseLabel(run: ContinuationRun, copy: (typeof COPY)[ShuttleLocale]): string {
   switch (run.phase) {
     case "READY_TO_GO": return copy.bcrPhaseReady;
@@ -3621,7 +3645,11 @@ function observeRuntimePage(context: PageContext): CarrierObservation {
   // standing condition. Clear it here, on the observation that says the
   // carrier recovered, so the panel never keeps blaming a healthy carrier.
   if (recoverStartGateMessage(viewState, COPY[viewState.locale], observation)) {
-    renderApp();
+    // Observation-driven repaints go through the coalescer (issue #126): the
+    // observation loop reacts to provider-output mutations, and whatever it
+    // repaints must never reach the panel at token rate during streaming.
+    // User-action renders still call renderApp() directly and stay immediate.
+    scheduleObservationRender();
   }
   if (activeSubmission && observation.providerConversationRef) {
     void reconcileActiveSubmission(observation);

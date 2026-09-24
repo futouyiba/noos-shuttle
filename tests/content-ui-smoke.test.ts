@@ -1596,6 +1596,100 @@ describe("content script smoke flow", () => {
     expect(await folderPage.locator("[data-action='feishu-overwrite-current']").count()).toBe(0);
     await folderPage.close();
   });
+
+  it("keeps a half-typed pairing code, focus and caret across a forced re-render (#126)", async () => {
+    const page = await newMockChatPage({ startWithHandoffs: false, injectContentScript: false });
+    await page.addScriptTag({ content: contentScript });
+    await clickShuttle(page, ".fab");
+    await page.waitForSelector(".global-popover");
+    await clickShuttle(page, "[data-action='settings']");
+    await page.waitForSelector("[data-hub-pairing-input]");
+
+    // Real keystrokes into the shadow-DOM input: focus + value + caret all set
+    // by the keyboard path a Human uses.
+    const input = page.locator("[data-hub-pairing-input]");
+    await input.click();
+    await input.pressSequentially("123456");
+    expect(await input.inputValue()).toBe("123456");
+
+    // A forced re-render with the settings panel open — the locale toggle is
+    // the deterministic one — rebuilds the panel from scratch.
+    await clickShuttle(page, "[data-action='locale-en']");
+    await page.waitForSelector("[data-hub-pairing-input]");
+
+    const survived = await page.evaluate(() => {
+      const root = document.getElementById("noos-shuttle-root")!.shadowRoot!;
+      const rebuilt = root.querySelector<HTMLInputElement>("[data-hub-pairing-input]")!;
+      return {
+        value: rebuilt.value,
+        caret: rebuilt.selectionStart,
+        focused: root.activeElement === rebuilt
+      };
+    });
+    expect(survived.value).toBe("123456");
+    expect(survived.caret).toBe(6);
+    expect(survived.focused).toBe(true);
+
+    // And a second rebuild back the other way: preservation is not one-shot.
+    await clickShuttle(page, "[data-action='locale-zh']");
+    await page.waitForSelector("[data-hub-pairing-input]");
+    const again = await page.evaluate(() => {
+      const root = document.getElementById("noos-shuttle-root")!.shadowRoot!;
+      const rebuilt = root.querySelector<HTMLInputElement>("[data-hub-pairing-input]")!;
+      return { value: rebuilt.value, focused: root.activeElement === rebuilt };
+    });
+    expect(again.value).toBe("123456");
+    expect(again.focused).toBe(true);
+    await page.close();
+  }, 30_000);
+
+  it("bounds panel rebuilds while the provider streams (#126)", async () => {
+    const page = await newMockChatPage({ startWithHandoffs: false, injectContentScript: false });
+    await page.addScriptTag({ content: contentScript });
+    await clickShuttle(page, ".fab");
+    await page.waitForSelector(".global-popover");
+    await clickShuttle(page, "[data-action='settings']");
+    await page.waitForSelector("[data-hub-pairing-input]");
+
+    // Count full rebuilds of the panel root (childList mutations on the .shuttle
+    // div — exactly what render()'s innerHTML assignment produces).
+    await page.evaluate(() => {
+      const root = document.getElementById("noos-shuttle-root")!.shadowRoot!;
+      const app = root.querySelector(".shuttle")!;
+      (window as unknown as { rebuildCount: { value: number } }).rebuildCount = { value: 0 };
+      new MutationObserver(records => {
+        (window as unknown as { rebuildCount: { value: number } }).rebuildCount.value += records.length;
+      }).observe(app, { childList: true });
+    });
+
+    // Simulated stream: assistant output mutates every 60 ms with the stop
+    // control present — the observation loop's busy case.
+    await page.evaluate(() => {
+      const article = document.querySelector("[data-message-author-role='assistant'] div")!;
+      const stop = document.createElement("button");
+      stop.dataset.testid = "stop-button";
+      stop.textContent = "Stop";
+      document.querySelector("main")!.append(stop);
+      let ticks = 0;
+      const timer = window.setInterval(() => {
+        ticks += 1;
+        article.textContent = `streaming token ${ticks}`;
+      }, 60);
+      (window as unknown as { streamTeardown: () => void }).streamTeardown = () => {
+        window.clearInterval(timer);
+        stop.remove();
+      };
+    });
+    await page.waitForTimeout(3_000);
+    await page.evaluate(() => (window as unknown as { streamTeardown: () => void }).streamTeardown());
+
+    const rebuilds = await page.evaluate(() => (window as unknown as { rebuildCount: { value: number } }).rebuildCount.value);
+    // The bound the fix promises: observation-driven repaints coalesce to at
+    // most one per 200 ms (≤ 5/s), and this stream's steady state should not
+    // even reach it. 15 = 5/s with headroom for a transition render or two.
+    expect(rebuilds).toBeLessThanOrEqual(15);
+    await page.close();
+  }, 30_000);
 });
 
 // Runs inside the page: wires the real service-worker bundle to an in-page
