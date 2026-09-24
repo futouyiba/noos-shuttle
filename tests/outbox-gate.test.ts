@@ -200,11 +200,38 @@ describe("outbox reserved head (#63 delta 7)", () => {
     }
   });
 
-  it("lets the carrier re-claim a reservation whose claim never actuated", () => {
-    const state = claimed("op-1");
+  it("gives a claim that never actuated the same grace before re-claiming", () => {
+    const state = claimed("op-1", NOW - 100);
     const ledgers = { authority: authority(), executionInFlight: false, operations: [operation("OUTBOX_MESSAGE", "PREPARED", "op-1")] };
     expect(classifyOutboxHead(state.items[0], input({ queue: state, ledgers }), NOW, deps))
-      .toEqual({ kind: "RECONCILE", itemId: "item-1", operationId: "op-1" });
+      .toEqual({ kind: "DISPATCHING", itemId: "item-1", operationId: "op-1" });
+  });
+
+  it("re-claims a reservation whose claim never actuated, under the reserved id", () => {
+    const state = claimed("op-1", NOW - OUTBOX_RECONCILE_GRACE_MS - 1);
+    const ledgers = { authority: authority(), executionInFlight: false, operations: [operation("OUTBOX_MESSAGE", "PREPARED", "op-1")] };
+    // The reserved operation id, never a minted one: the re-claim delivers the
+    // same reservation, it must not look like a second attempt.
+    expect(classifyOutboxHead(state.items[0], input({ queue: state, ledgers }), NOW, deps))
+      .toEqual({ kind: "DISPATCH", itemId: "item-1", operationId: "op-1", head: expect.anything() });
+  });
+
+  it("holds an unclaimed reservation behind the same delivery gate as a fresh head", () => {
+    const state = claimed("op-1", NOW - OUTBOX_RECONCILE_GRACE_MS - 1);
+    const operations = [operation("OUTBOX_MESSAGE", "PREPARED", "op-1")];
+    // The Human's draft still wins over a queued message whose claim never left.
+    const busy = input({
+      queue: state,
+      ledgers: { authority: authority(), executionInFlight: false, operations },
+      observation: observation({ composerEmpty: false })
+    });
+    expect(classifyOutboxHead(state.items[0], busy, NOW, deps))
+      .toEqual({ kind: "WAIT", itemId: "item-1", reason: "composer_not_empty" });
+    // So does the Human's pause: a re-claim is a delivery, and pause stops delivery.
+    const pausedState = { ...state, paused: true };
+    const paused = input({ queue: pausedState, ledgers: { authority: authority(), executionInFlight: false, operations } });
+    expect(classifyOutboxHead(pausedState.items[0], paused, NOW, deps))
+      .toEqual({ kind: "WAIT", itemId: "item-1", reason: "paused" });
   });
 
   it("gives a fresh claim its grace period before asking for reconciliation", () => {

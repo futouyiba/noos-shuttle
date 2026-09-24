@@ -77,6 +77,13 @@ export interface HumanGoLedger {
   authorityFor?(logicalThreadId: string): Promise<SubmissionAuthority | undefined>;
   prepare(input: Parameters<SubmissionOperationLedger["prepare"]>[0]): Promise<SubmissionOperation>;
   claim(operationId: string, context: SubmissionClaimContext, now?: number): Promise<SubmissionOperation | undefined>;
+  /**
+   * The ledger's sanctioned re-fence for a reservation that was prepared but
+   * never claimed and whose fence now names a superseded carrier. Used by the
+   * outbox re-claim: the reservation is only ever re-fenced to a context the
+   * caller has already proven holds the thread's actuation authority.
+   */
+  retarget(operationId: string, context: SubmissionClaimContext, baseline: SubmissionBaseline, now?: number): Promise<SubmissionOperation | undefined>;
   get(operationId: string): Promise<SubmissionOperation | undefined>;
   record(operationId: string, state: "DISPATCHING" | "COMPLETED" | "UNCERTAIN" | "CANCELLED", details?: Parameters<SubmissionOperationLedger["record"]>[2]): Promise<SubmissionOperation | undefined>;
   /**

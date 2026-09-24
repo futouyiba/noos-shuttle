@@ -335,6 +335,17 @@ function probeOutboxHead(input: OutboxProbeInput, now = Date.now()): OutboxProbe
     mintOperationId: item => `outbox:${item.itemId}:r${item.revision}:a${item.attempts + 1}:${item.payloadFingerprint.slice(0, 8)}`
   });
   if (decision.kind !== "DISPATCH") return { queue: input.queue, status: decision };
+  // A re-claim: the head already carries this durable reservation (its claim
+  // never actuated), so no reducer runs — `claim_dispatch` is QUEUED-only and
+  // the reservation is already written. The carrier claims the same operation
+  // id, which delivers this reservation, never a resend.
+  if (head.state === "DISPATCHING" && head.submissionOperationId === decision.operationId) {
+    return {
+      queue: input.queue,
+      status: { kind: "DISPATCH", itemId: head.itemId, operationId: decision.operationId },
+      dispatch: { item: head, operationId: decision.operationId, reservationRunId: head.reservationRunId ?? input.runId }
+    };
+  }
   const claimed = reduceOutboxQueue(input.queue, {
     type: "claim_dispatch",
     itemId: head.itemId,
