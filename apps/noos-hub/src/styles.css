@@ -76,10 +76,16 @@ code {
   overflow-wrap: anywhere;
 }
 
+/* #130: the shell scrolls per-pane, not per-page. A fixed viewport height
+ * pins the grid rows to the screen; the workspace column then owns the
+ * vertical scrollbar (overflow-y below), so long main content scrolls under a
+ * stationary sidebar instead of dragging it out of view. min-height stays as
+ * the fallback for very short viewports where 100vh would clip. */
 #app {
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr);
-  min-height: 100vh;
+  height: 100vh;
+  min-height: 720px;
 }
 
 /* ===== Shell (Work-centered v0) ===== */
@@ -164,6 +170,11 @@ nav button:not(.active):hover {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* Grid children need min-height:0 or the row track grows to the content's
+   * natural height and the page scroll returns; with it, this column clips
+   * and scrolls on its own (#130). */
+  min-height: 0;
+  overflow-y: auto;
   background: #fbfcfd;
 }
 
@@ -351,6 +362,8 @@ nav button:not(.active):hover {
 .update-dialog {
   display: grid;
   width: min(560px, 100%);
+  /* #130 note: 100vh here caps against the visual viewport, which the
+     * scroll-container change does not alter — unchanged on purpose. */
   max-height: min(640px, calc(100vh - 48px));
   overflow: hidden;
   border: 1px solid rgba(23, 32, 26, 0.14);
