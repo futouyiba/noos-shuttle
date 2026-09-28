@@ -10,6 +10,7 @@ import { renderHarnessConsole, formatAge, projectionBuiltText } from "./pages/ha
 import { renderHelp } from "./pages/help";
 import { renderVault } from "./pages/vault";
 import { renderSystem } from "./pages/system";
+import { bindPairingPanelEvents } from "./ui/pairing-events";
 import { renderWorkDetail, renderWorkOverview } from "./pages/work";
 import { createVaultBrowserState, renderVaultBrowser, type VaultBrowserState } from "./pages/vault-browser";
 import { parseSectionId, navSectionFor, type SectionId } from "./routes";
@@ -757,6 +758,15 @@ function sysRowPairing(name: string, subText: string, rightHtml: string): string
     </div>`;
 }
 
+function bindPairingEvents(root: ParentNode): void {
+  bindPairingPanelEvents(root, {
+    invoke: (cmd: string, args?: Record<string, unknown>) => invoke(cmd, args),
+    loadPairingPanel: () => loadPairingPanel(),
+    confirm: (message: string) => window.confirm(message),
+    showToast: (message: string, kind: "success" | "error" | "info") => showToast(message, kind)
+  });
+}
+
 async function loadPairingPanel(): Promise<void> {
   const panel = document.getElementById("pairing-panel");
   if (!panel || !isTauriRuntime()) return;
@@ -772,51 +782,6 @@ async function loadPairingPanel(): Promise<void> {
   }
 }
 
-function bindPairingEvents(root: ParentNode): void {
-  const panel = root.querySelector("#pairing-panel");
-  if (!panel) return;
-  panel.querySelectorAll<HTMLButtonElement>("[data-pairing]").forEach((button) => {
-    button.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      const action = button.dataset.pairing;
-      const panelEl = document.getElementById("pairing-panel");
-      try {
-        if (action === "generate") {
-          await invoke("generate_pair_code_command");
-        } else if (action === "approve") {
-          await invoke("approve_pending_enrollment");
-        } else if (action === "reject") {
-          await invoke("reject_pending_enrollment");
-        } else if (action === "reset") {
-          if (!window.confirm("Reset all pairing? Every paired browser will be disconnected and must re-enter a new code.")) {
-            return;
-          }
-          await invoke("reset_pairing");
-        } else if (action === "add-dev") {
-          const input = panelEl?.querySelector<HTMLInputElement>("[data-pairing-dev-input]");
-          const origin = input?.value.trim() ?? "";
-          if (origin === "") return;
-          await invoke("enroll_dev_origin", { origin });
-          if (input) input.value = "";
-        }
-      } catch (error) {
-        showToast(`Pairing: ${String(error)}`, "error");
-      }
-      await loadPairingPanel();
-    });
-  });
-  panel.querySelectorAll<HTMLButtonElement>("[data-pairing-revoke]").forEach((button) => {
-    button.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      try {
-        await invoke("revoke_paired_client", { origin: button.dataset.pairingRevoke });
-      } catch (error) {
-        showToast(`Pairing: ${String(error)}`, "error");
-      }
-      await loadPairingPanel();
-    });
-  });
-}
 
 async function runAction(action: string, sourceButton?: HTMLButtonElement): Promise<void> {
   if (!action || actionInFlight) return;
