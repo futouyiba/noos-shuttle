@@ -170,9 +170,13 @@ nav button:not(.active):hover {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  /* Grid children need min-height:0 or the row track grows to the content's
-   * natural height and the page scroll returns; with it, this column clips
-   * and scrolls on its own (#130). */
+  /* #130: overflow-y makes this column the scroller — and because a scroll
+   * container's automatic minimum size is zero (CSS overflow/min-size rule),
+   * the grid row track no longer grows to content height. min-height:0 is
+   * kept as explicit belt-and-suspenders for the day someone moves the
+   * scrolling to a descendant, but it is NOT independently load-bearing:
+   * review F1 demonstrated the verifier passes without it (the harness's
+   * flex:none content never exercises the min-content path either). */
   min-height: 0;
   overflow-y: auto;
   background: #fbfcfd;

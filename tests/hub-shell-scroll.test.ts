@@ -27,9 +27,12 @@ describe("hub shell scrolls per pane (#130)", () => {
     expect(app).toMatch(/min-height:\s*720px\s*;/);
   });
 
-  it(".workspace is the scroller: min-height 0 and its own overflow-y", () => {
+  it(".workspace owns its overflow-y — the load-bearing scroller declaration", () => {
     const workspace = rules(css, ".workspace");
-    expect(workspace).toMatch(/min-height:\s*0\s*;/);
+    // min-height:0 is deliberately NOT pinned: review F1 of PR #131 proved it
+    // redundant while overflow-y:auto stands (a scroll container's automatic
+    // minimum size is already zero). The declaration remains in the CSS as
+    // defensive cover for a future descendant-scroller refactor.
     expect(workspace).toMatch(/overflow-y:\s*auto\s*;/);
   });
 
