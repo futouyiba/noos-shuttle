@@ -3,11 +3,13 @@ import { readFileSync } from "node:fs";
 
 /**
  * #130: the Hub shell must scroll per-pane, not per-page. The load-bearing
- * trio: #app pins the grid to the viewport (height, not just min-height —
- * min-height alone lets the tallest column grow the page and the body scrolls
- * everything away together); .workspace gets min-height:0 (without it the grid
- * row track grows to content height and the page scroll returns) and its own
- * overflow-y (this column is THE scroller). Behavioral verification runs via
+ * declarations: #app pins the grid to the viewport (height, not just
+ * min-height — min-height alone lets the tallest column grow the page and the
+ * body scrolls everything away together), and .workspace owns overflow-y:auto
+ * (this column is THE scroller — and as a scroll container its automatic
+ * minimum size is zero, which is why min-height:0 in the CSS is defensive
+ * cover, not a load-bearing requirement). The dialog cap anchors the visual
+ * viewport and is unchanged on purpose. Behavioral verification runs via
  * scripts/verify-hub-shell-scroll.mjs (Playwright); these static pins guard
  * against silent regression of exactly those declarations.
  */
