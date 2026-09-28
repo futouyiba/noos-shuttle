@@ -52,7 +52,8 @@ function panelMarkup(version: number): string {
 
 function click(win: Window, selector: string): void {
   const button = (win as unknown as { document: Document }).document.querySelector<HTMLButtonElement>(selector);
-  button?.dispatchEvent(new win.Event("click", { bubbles: true, cancelable: true }));
+  const EventCtor = (win as unknown as { Event: new (type: string, init?: EventInit) => Event }).Event;
+  button?.dispatchEvent(new EventCtor("click", { bubbles: true, cancelable: true }));
 }
 
 async function flush(): Promise<void> {
@@ -99,7 +100,7 @@ describe("pairing panel survives its own innerHTML rebuilds (#128)", () => {
       showToast: () => undefined
     });
     dom.window.document.querySelector<HTMLButtonElement>("[data-pairing='reset']")!
-      .dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+      .dispatchEvent(new (dom.window as unknown as { Event: new (type: string, init?: EventInit) => Event }).Event("click", { bubbles: true }));
     await flush();
     expect(invoke).not.toHaveBeenCalled();
   });
