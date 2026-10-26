@@ -4,6 +4,7 @@ import type { ShuttleCopy } from "../src/shared/i18n";
 import type { RuntimeState } from "../src/content/runtime-observer";
 import {
   bcrStartGateCopyKey,
+  bcrStartGateDisposition,
   bcrStartGateMessage,
   recoverStartGateMessage,
   type StartGateCopyKey,
@@ -108,6 +109,54 @@ describe("bcrStartGateCopyKey", () => {
       expect(copy.bcrCarrierGenerating).not.toBe(copy.bcrCarrierNotReady);
       expect(copy.bcrCarrierStabilizing).not.toBe(copy.bcrCarrierNotReady);
     }
+  });
+});
+
+describe("bcrStartGateDisposition — queue vs refuse (#132)", () => {
+  // The identity a queued START would be pinned to: conversation + baseline.
+  const IDENT = { ...MOUNTED, providerConversationRef: "conv-a", userMessageCount: 3 };
+
+  it("queues an identifiable GENERATING carrier — the START waits instead of being refused", () => {
+    expect(bcrStartGateDisposition({ ...IDENT, state: "GENERATING" })).toEqual({ outcome: "QUEUE" });
+  });
+
+  it("proceeds on a READY mounted carrier", () => {
+    expect(bcrStartGateDisposition({ ...IDENT, state: "READY" })).toEqual({ outcome: "PROCEED" });
+  });
+
+  it("does not queue without the identity the queued authorization pins to", () => {
+    // No conversation ref: the queued START would have nothing to stay faithful to.
+    expect(bcrStartGateDisposition({ ...MOUNTED, state: "GENERATING", userMessageCount: 3 }).outcome).toBe("FAIL");
+    expect(bcrStartGateDisposition({ ...MOUNTED, state: "GENERATING", providerConversationRef: " ", userMessageCount: 3 }).outcome).toBe("FAIL");
+    // No readable user-turn baseline: foreign-turn provenance cannot be built.
+    expect(bcrStartGateDisposition({ ...MOUNTED, state: "GENERATING", providerConversationRef: "conv-a" }).outcome).toBe("FAIL");
+  });
+
+  it("keeps the queue entry exclusive to GENERATING — settling and terminal states stay fail-closed", () => {
+    for (const state of ALL_RUNTIME_STATES.filter(state => state !== "READY" && state !== "GENERATING")) {
+      const disposition = bcrStartGateDisposition({ ...IDENT, state });
+      expect(disposition.outcome, state).toBe("FAIL");
+      if (disposition.outcome === "FAIL") expect(disposition.copyKey, state).toBe(MOUNTED_COPY[state]);
+    }
+  });
+
+  it("fails unmounted or absent observations through the carrier message, whatever the identity fields", () => {
+    expect(bcrStartGateDisposition(null)).toEqual({ outcome: "FAIL", copyKey: "bcrCarrierNotReady" });
+    for (const state of ALL_RUNTIME_STATES) {
+      expect(bcrStartGateDisposition({ ...UNMOUNTED, state, providerConversationRef: "conv-a", userMessageCount: 1 }).outcome, state).toBe("FAIL");
+    }
+  });
+
+  it("carries the queued-start copy in every locale, distinct from every failure copy", () => {
+    // The queued START is not a failure (#132): its note must never equal a
+    // failure report, and the Human-direction wording is part of the contract.
+    for (const copy of [COPY.en, COPY.zh]) {
+      for (const key of FAILURE_COPY_KEYS) {
+        expect(copy.bcrStartQueuedNote, key).not.toBe(copy[key]);
+      }
+      expect(copy.bcrPhaseStartQueued).not.toBe(copy.bcrStartQueuedNote);
+    }
+    expect(COPY.zh.bcrStartQueuedNote).toBe("已排队；当前回复结束并恢复可运行后将自动开始。");
   });
 });
 

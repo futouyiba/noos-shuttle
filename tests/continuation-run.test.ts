@@ -472,6 +472,138 @@ describe("AUTO_X5 mode", () => {
   });
 });
 
+describe("queued start — START_QUEUED (#132)", () => {
+  const QUEUED_INPUT = { runId: "bcr-q", workItemId: "w", logicalThreadId: "thread:conv-a", providerConversationRef: "conv-a", bindingEpoch: 1, maxContinuations: 5, now: 100 };
+  const queued = (overrides: Partial<ContinuationRun> = {}): ContinuationRun =>
+    run({ phase: "START_QUEUED", queuedStartBaselineUserCount: 2, ...overrides });
+
+  it("starts a queued run pinned to the conversation with the durable intervention baseline", () => {
+    const started = startContinuationRun({ ...QUEUED_INPUT, startQueued: true, queuedStartBaselineUserCount: 2 });
+    expect(started.status).toBe("ACTIVE");
+    expect(started.phase).toBe("START_QUEUED");
+    // Provider-facing inert at birth: no consumption, no pending operation.
+    expect(started.consumedContinuations).toBe(0);
+    expect(started.pendingSubmissionOperationId).toBeUndefined();
+    expect(started.queuedStartBaselineUserCount).toBe(2);
+    expect(started.providerConversationRef).toBe("conv-a");
+  });
+
+  it("requires a validated baseline exactly when queueing", () => {
+    expect(() => startContinuationRun({ ...QUEUED_INPUT, startQueued: true })).toThrow(/queuedStartBaselineUserCount: required/);
+    expect(() => startContinuationRun({ ...QUEUED_INPUT, startQueued: true, queuedStartBaselineUserCount: -1 })).toThrow(/queuedStartBaselineUserCount: non-negative/);
+    expect(() => startContinuationRun({ ...QUEUED_INPUT, startQueued: true, queuedStartBaselineUserCount: 1.5 })).toThrow(/queuedStartBaselineUserCount: non-negative/);
+    // A baseline without a queued start would imply provenance nothing reads.
+    expect(() => startContinuationRun({ ...QUEUED_INPUT, queuedStartBaselineUserCount: 2 })).toThrow(/queuedStartBaselineUserCount: only valid/);
+  });
+
+  it("cannot dispatch, issue a GO, or rebind while queued — zero provider-facing actuation", () => {
+    expect(canDispatch(queued(), { providerConversationRef: "conv-a", bindingEpoch: 1 }).ok).toBe(false);
+    const dispatched = applyRunEvent(queued(), { type: "DISPATCH_ISSUED", operationId: "op-1" }, 101);
+    expect(dispatched.changed).toBe(false);
+    expect(dispatched.error).toMatch(/expected READY_TO_GO/);
+    expect(dispatched.run.consumedContinuations).toBe(0);
+    const rebound = applyRunEvent(queued(), { type: "REBIND", bindingEpoch: 2 }, 101);
+    expect(rebound.changed).toBe(false);
+  });
+
+  // Discriminating test 1: GENERATING → READY releases exactly once into the
+  // ordinary start, with zero submission before the release.
+  it("releases exactly once on CARRIER_READY for the same conversation, then runs ordinary rounds", () => {
+    const released = applyRunEvent(queued(), { type: "CARRIER_READY", providerConversationRef: "conv-a" }, 101);
+    expect(released.changed).toBe(true);
+    expect(released.run.phase).toBe("READY_TO_GO");
+    expect(released.run.consumedContinuations).toBe(0);
+    // Exactly once: the release is not repeatable, so a second READY tick
+    // cannot start a second round.
+    const again = applyRunEvent(released.run, { type: "CARRIER_READY", providerConversationRef: "conv-a" }, 102);
+    expect(again.changed).toBe(false);
+    expect(again.error).toMatch(/expected START_QUEUED/);
+    // The released run enters the existing lifecycle unchanged (#132 semantics 9).
+    let current = applyRunEvent(released.run, { type: "DISPATCH_ISSUED", operationId: "op-1" }, 103).run;
+    current = applyRunEvent(current, { type: "OPERATION_ACCEPTED", operationId: "op-1", turnRef: "turn:t1" }, 104).run;
+    current = applyRunEvent(current, { type: "OPERATION_COMPLETED", operationId: "op-1", turnRef: "turn:t1" }, 105).run;
+    expect(current.consumedContinuations).toBe(1);
+    expect(current.phase).toBe("AWAITING_HUMAN_DECISION");
+  });
+
+  // Discriminating test 4: the pinned conversation may not be crossed.
+  it("refuses a CARRIER_READY observed on a different conversation", () => {
+    const foreign = applyRunEvent(queued(), { type: "CARRIER_READY", providerConversationRef: "conv-b" }, 101);
+    expect(foreign.changed).toBe(false);
+    expect(foreign.error).toMatch(/provider conversation changed/);
+    expect(foreign.run.phase).toBe("START_QUEUED");
+  });
+
+  // Discriminating test 2: HUMAN_STOP wins, and a later READY cannot revive.
+  it("HUMAN_STOP cancels the queued start and a later CARRIER_READY cannot revive it", () => {
+    const stopped = applyRunEvent(queued(), { type: "HUMAN_STOP" }, 101);
+    expect(stopped.run.status).toBe("CANCELLED");
+    expect(stopped.run.stopReason).toBe("USER_CANCELLED");
+    expect(stopped.run.consumedContinuations).toBe(0);
+    const revived = applyRunEvent(stopped.run, { type: "CARRIER_READY", providerConversationRef: "conv-a" }, 102);
+    expect(revived.changed).toBe(false);
+    expect(revived.error).toMatch(/already CANCELLED/);
+  });
+
+  // Discriminating test 3: a foreign Human turn cancels the stale authorization.
+  it("USER_INTERVENTION cancels the queued authorization", () => {
+    const intervened = applyRunEvent(queued(), { type: "USER_INTERVENTION" }, 101);
+    expect(intervened.run.status).toBe("CANCELLED");
+    expect(intervened.run.stopReason).toBe("USER_INTERVENTION");
+    expect(applyRunEvent(intervened.run, { type: "CARRIER_READY", providerConversationRef: "conv-a" }, 102).changed).toBe(false);
+  });
+
+  // Discriminating test 5: terminal outcomes fail visibly with no blind retry.
+  it("fails visibly on a terminal carrier and on conversation change, with no retry", () => {
+    const broken = applyRunEvent(queued(), { type: "CARRIER_FAILURE" }, 101);
+    expect(broken.run.status).toBe("FAILED_SAFE");
+    expect(broken.run.stopReason).toBe("CARRIER_FAILURE");
+    const rebased = applyRunEvent(queued(), { type: "CONVERSATION_REBASE_REQUIRED" }, 101);
+    expect(rebased.run.status).toBe("FAILED_SAFE");
+    expect(rebased.run.stopReason).toBe("CONVERSATION_REBASE_REQUIRED");
+    for (const ended of [broken.run, rebased.run]) {
+      expect(isTerminal(ended.status)).toBe(true);
+      expect(applyRunEvent(ended, { type: "CARRIER_READY", providerConversationRef: "conv-a" }, 102).changed).toBe(false);
+      expect(applyRunEvent(ended, { type: "DISPATCH_ISSUED", operationId: "op-1" }, 102).changed).toBe(false);
+    }
+  });
+
+  // Discriminating tests 6, 7, 8 at the store layer: durability, single slot,
+  // and zero consumption while queued.
+  it("holds the queued run in the active slot: no second start, reload-safe release, zero consumption", () => {
+    let store = emptyContinuationRunStore();
+    const started = reduceContinuationRunStore(store, { type: "start", input: { ...QUEUED_INPUT, startQueued: true, queuedStartBaselineUserCount: 2 } });
+    expect(started.ok).toBe(true);
+    store = started.ok ? started.store : store;
+    // Repeated START while queued: one active run per conversation, no double.
+    const second = reduceContinuationRunStore(store, { type: "start", input: { ...QUEUED_INPUT, runId: "bcr-q2", startQueued: true, queuedStartBaselineUserCount: 2, now: 101 } });
+    expect(second.ok).toBe(false);
+    expect(second.ok ? "" : second.error).toMatch(/already exists/);
+    // After a reload the durable store still holds the queued run and baseline.
+    const readBack = reduceContinuationRunStore(store, { type: "get_active", providerConversationRef: "conv-a" });
+    expect(readBack.ok && readBack.run?.phase).toBe("START_QUEUED");
+    expect(readBack.ok && readBack.run?.queuedStartBaselineUserCount).toBe(2);
+    // Still not dispatchable straight from the store.
+    const gated = reduceContinuationRunStore(store, { type: "check_dispatch", runId: "bcr-q", providerConversationRef: "conv-a", bindingEpoch: 1 });
+    expect(gated.ok).toBe(false);
+    // The durable release path works from the recovered state alone.
+    const released = reduceContinuationRunStore(store, { type: "apply", runId: "bcr-q", event: { type: "CARRIER_READY", providerConversationRef: "conv-a" }, now: 102 });
+    expect(released.ok && released.run?.phase).toBe("READY_TO_GO");
+    expect(released.ok && released.run?.consumedContinuations).toBe(0);
+    store = released.ok ? released.store : store;
+    const dispatchable = reduceContinuationRunStore(store, { type: "check_dispatch", runId: "bcr-q", providerConversationRef: "conv-a", bindingEpoch: 1 });
+    expect(dispatchable.ok).toBe(true);
+  });
+
+  it("keeps waiting states inert while queued: CARRIER_PHASE without a pending operation changes nothing", () => {
+    for (const carrierState of ["GENERATING", "STABILIZING"] as const) {
+      const tick = applyRunEvent(queued(), { type: "CARRIER_PHASE", carrierState }, 101);
+      expect(tick.changed).toBe(false);
+      expect(tick.run.phase).toBe("START_QUEUED");
+    }
+  });
+});
+
 describe("createFixtureCandidate", () => {
   it("builds a stable candidate id and keeps evidence fields", () => {
     const active = run({ consumedContinuations: 2, lastConsumedTurnRef: "turn:t2" });

@@ -1,5 +1,6 @@
 /**
- * Bounded Continuation Run start-gate copy (issue #80).
+ * Bounded Continuation Run start-gate copy (issue #80) and start disposition
+ * (issue #132).
  *
  * Starting a run waits for a READY carrier observation. When that wait times
  * out the panel used to say "Carrier not READY" no matter why: a provider that
@@ -8,9 +9,14 @@
  * pure, and exhaustive over `RuntimeState` at the type level so a new runtime
  * state cannot quietly inherit a cause it does not have.
  *
- * Copy selection only. It reads nothing, actuates nothing, and never changes
- * what `waitForReadyObservation` decides — only what the Human is told about a
- * decision the runtime already made.
+ * The disposition is the same idea one level up: on an identifiable
+ * GENERATING carrier a START queues instead of refusing (#132). That decision
+ * reads only this observation and actuates nothing.
+ *
+ * Copy selection and disposition only. It reads nothing, actuates nothing, and
+ * never changes what `waitForReadyObservation` observes — only what the start
+ * gate decides to do with it and what the Human is told about a decision the
+ * runtime already made.
  */
 
 import { COPY, type ShuttleCopy } from "../shared/i18n";
@@ -21,6 +27,10 @@ import type { RuntimeState } from "../content/runtime-observer";
 export interface StartGateObservation {
   state: RuntimeState;
   carrierIdentityState: string;
+  /** Conversation identity a queued START would be pinned to (#132). */
+  providerConversationRef?: string;
+  /** User-turn count at click time — the queue-time intervention baseline (#132). */
+  userMessageCount?: number;
 }
 
 /** Copy keys this gate may write — the plain-string entries, since some copy values are formatters. */
@@ -74,6 +84,29 @@ const START_GATE_FAILURE_COPY_KEYS: readonly StartGateCopyKey[] = [
 export function bcrStartGateCopyKey(observation: StartGateObservation | null | undefined): StartGateCopyKey {
   if (!observation || observation.carrierIdentityState !== "browser-tab") return "bcrCarrierNotReady";
   return STATE_COPY_KEYS[observation.state];
+}
+
+/**
+ * What the start gate does with a START (#132): proceed on a READY carrier,
+ * queue on an identifiable GENERATING one, or fail with attributed copy.
+ *
+ * QUEUE demands the full identity the queued authorization would be pinned to
+ * — a stable conversation ref and a readable user-turn baseline. Anything less
+ * is not a queueable carrier, and the gate stays fail-closed on the existing
+ * copy rather than letting the queue paper over an unknown carrier.
+ */
+export type StartGateDisposition =
+  | { outcome: "PROCEED" }
+  | { outcome: "QUEUE" }
+  | { outcome: "FAIL"; copyKey: StartGateCopyKey };
+
+export function bcrStartGateDisposition(observation: StartGateObservation | null | undefined): StartGateDisposition {
+  if (!observation || observation.carrierIdentityState !== "browser-tab") return { outcome: "FAIL", copyKey: "bcrCarrierNotReady" };
+  if (observation.state === "READY") return { outcome: "PROCEED" };
+  if (observation.state === "GENERATING" &&
+    typeof observation.providerConversationRef === "string" && observation.providerConversationRef.trim() !== "" &&
+    typeof observation.userMessageCount === "number") return { outcome: "QUEUE" };
+  return { outcome: "FAIL", copyKey: STATE_COPY_KEYS[observation.state] };
 }
 
 export function bcrStartGateMessage(observation: StartGateObservation | null | undefined, copy: ShuttleCopy): string {

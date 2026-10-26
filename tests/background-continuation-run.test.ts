@@ -132,6 +132,32 @@ describe("background continuation run coordinator", () => {
     expect(replayed.ok).toBe(true);
   });
 
+  it("keeps a queued START durable across a worker restart and releases it only through CARRIER_READY (#132)", async () => {
+    const backing: Record<string, unknown> = {};
+    const first = await loadHandler(backing);
+    const queued = await send(first.handler, { type: "start", input: { ...START_INPUT, startQueued: true, queuedStartBaselineUserCount: 2 } });
+    expect(queued.ok).toBe(true);
+    expect(queued.run?.phase).toBe("START_QUEUED");
+    expect(queued.run?.consumedContinuations).toBe(0);
+
+    // Service-worker restart: the queued authorization is storage, not memory.
+    const restarted = await loadHandler(backing);
+    const send_ = send.bind(null, restarted.handler);
+    const readBack = await send_({ type: "get_active", providerConversationRef: "conv-a" });
+    expect(readBack.run?.phase).toBe("START_QUEUED");
+    // Reload cannot have smuggled in a dispatch: the gate refuses while queued.
+    const gated = await send_({ type: "check_dispatch", runId: "bcr-bg-1", providerConversationRef: "conv-a", bindingEpoch: 3 });
+    expect(gated.ok).toBe(false);
+    // A READY observed on another conversation does not release the pin.
+    const foreign = await send_({ type: "apply", runId: "bcr-bg-1", event: { type: "CARRIER_READY", providerConversationRef: "conv-b" }, now: 101 });
+    expect(foreign.ok).toBe(false);
+    const released = await send_({ type: "apply", runId: "bcr-bg-1", event: { type: "CARRIER_READY", providerConversationRef: "conv-a" }, now: 102 });
+    expect(released.run?.phase).toBe("READY_TO_GO");
+    expect(released.run?.consumedContinuations).toBe(0);
+    const dispatchable = await send_({ type: "check_dispatch", runId: "bcr-bg-1", providerConversationRef: "conv-a", bindingEpoch: 3 });
+    expect(dispatchable.ok).toBe(true);
+  });
+
   it("rejects oversize budgets, duplicate runs, and non-provider senders", async () => {
     const { handler } = await loadHandler();
     const send_ = send.bind(null, handler);
