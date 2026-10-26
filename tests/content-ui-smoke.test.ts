@@ -193,6 +193,36 @@ describe("content script smoke flow", () => {
     await page.close();
   }, 15000);
 
+  it("reaches READY on a ProseMirror composer page without #prompt-textarea", async () => {
+    const page = await newMockChatPage({ startWithHandoffs: false, injectContentScript: false });
+    await page.evaluate(() => {
+      // ChatGPT is moving conversations to a ProseMirror composer (issue #134):
+      // no #prompt-textarea and no <textarea> anywhere — a contenteditable div
+      // inside the composer form. The old id-only probe never saw it, so the
+      // page could only sit in STABILIZING.
+      const form = document.createElement("form");
+      const composer = document.createElement("div");
+      composer.className = "ProseMirror";
+      composer.setAttribute("role", "textbox");
+      composer.setAttribute("contenteditable", "true");
+      form.append(composer);
+      document.querySelector("#prompt-textarea")!.replaceWith(form);
+      window.addEventListener("noos:runtime-observation", event => {
+        (window as unknown as { observed: unknown }).observed = (event as CustomEvent).detail;
+      });
+    });
+    await page.addScriptTag({ content: contentScript });
+    const observed = () => page.evaluate(() => (window as unknown as {
+      observed: { state: string; composerPresent: boolean; composerInteractive: boolean }
+    }).observed);
+    await expect.poll(async () => (await observed()), { timeout: 8000 }).toMatchObject({
+      composerPresent: true,
+      composerInteractive: true
+    });
+    await expect.poll(async () => (await observed()).state, { timeout: 10000 }).toBe("READY");
+    await page.close();
+  }, 20000);
+
   it("restarts the quiet window when the output root is repeatedly replaced with identical content", async () => {
     const page = await newMockChatPage({ startWithHandoffs: false, injectContentScript: false });
     await page.evaluate(() => {

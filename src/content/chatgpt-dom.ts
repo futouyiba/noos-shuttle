@@ -207,6 +207,43 @@ function findChatInput(): HTMLElement | null {
   return null;
 }
 
+/**
+ * The provider's *main* composer, as observed for readiness evidence
+ * (issue #134).
+ *
+ * Same resolver semantics as the execution side's `findChatInput` — primary
+ * `#prompt-textarea`, then the same selector chain filtered by
+ * `isUsableComposer` — plus the discipline an observation probe owes: a
+ * fallback candidate only counts when it sits in the composer region and
+ * outside every conversation turn, so a historical-message editor or a stray
+ * dialog textarea can never substitute for a missing main composer. The
+ * primary keeps `findChatInput`'s reading: when the known composer is present
+ * but unusable, do not hunt for substitutes.
+ */
+export function findMainChatComposer(): HTMLElement | null {
+  const primary = document.querySelector<HTMLElement>("#prompt-textarea");
+  if (primary) return isUsableComposer(primary) ? primary : null;
+  for (const selector of INPUT_SELECTORS) {
+    const candidates = Array.from(document.querySelectorAll<HTMLElement>(selector));
+    const main = candidates.find((candidate) => isUsableComposer(candidate) && isMainComposerPlacement(candidate));
+    if (main) {
+      return main;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * A fallback composer candidate's placement: the live composer lives in the
+ * composer region — the same scope `findSendButton` searches — and never
+ * inside a conversation turn, where historical-message editors render.
+ */
+function isMainComposerPlacement(candidate: HTMLElement): boolean {
+  return !candidate.closest(CONVERSATION_TURN_SELECTOR) &&
+    Boolean(candidate.closest("form, [data-testid*='composer'], [class*='composer']"));
+}
+
 function findFileInput(root: ParentNode): HTMLInputElement | null {
   for (const selector of FILE_INPUT_SELECTORS) {
     const candidates = Array.from(root.querySelectorAll<HTMLInputElement>(selector));

@@ -33,7 +33,7 @@ import {
 import { ClipboardAdapter } from "../storage/ClipboardAdapter";
 import { DownloadAdapter } from "../storage/DownloadAdapter";
 import { NoosVaultAdapter } from "../storage/NoosVaultAdapter";
-import { attachMarkdownFilesToChatInput, getPageText, insertIntoChatInput, isChatComposerEmpty, isChatbotGenerating } from "./chatgpt-dom";
+import { attachMarkdownFilesToChatInput, findMainChatComposer, getPageText, insertIntoChatInput, isChatComposerEmpty, isChatbotGenerating } from "./chatgpt-dom";
 import { handleBackgroundDispatch } from "./background-dispatch";
 import { actuateGovernedPayload } from "./governed-dispatch";
 import { snapshotEditableControls, restoreEditableControls } from "./panel-input-preservation";
@@ -3711,9 +3711,10 @@ function readRuntimeObservation(context: PageContext): CarrierObservation {
     observationOutputChangedAt = now;
   }
   // Only the provider's main composer is readiness evidence. Historical-message
-  // editors and search/dialog inputs must never substitute for it.
-  const mainComposer = document.getElementById("prompt-textarea");
-  const composer = mainComposer && isVisibleForObservation(mainComposer) ? mainComposer : null;
+  // editors and search/dialog inputs must never substitute for it, so the probe
+  // shares the execution side's resolver (issue #134) rather than a bare id
+  // lookup or a bare [role=textbox] sweep.
+  const composer = findMainChatComposer();
   const stopControl = Array.from(document.querySelectorAll<HTMLElement>("[data-testid*='stop'], button[aria-label*='Stop'], button[aria-label*='停止']"))
     .some((candidate) => isVisibleForObservation(candidate));
   const observation = runtimeObservationLedger.observe({

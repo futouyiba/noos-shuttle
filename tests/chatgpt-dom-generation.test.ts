@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { JSDOM } from "jsdom";
-import { isChatbotGenerating } from "../src/content/chatgpt-dom";
+import { findMainChatComposer, isChatbotGenerating } from "../src/content/chatgpt-dom";
 
 /**
  * `chatgpt-dom` reads the live `document`/`window`, so each case installs a
@@ -207,6 +207,56 @@ describe("isChatbotGenerating — the exact-attribute pass is deliberately ungua
       </body>`,
       () => {
         expect(isChatbotGenerating()).toBe(true);
+      }
+    );
+  });
+});
+
+/** The ProseMirror-shaped composer ChatGPT is rolling out (issue #134). */
+const PROSEMIRROR_COMPOSER = `<form><div class="ProseMirror" role="textbox" contenteditable="true"></div></form>`;
+
+/** An open historical-message edit box: a usable textarea inside a turn. */
+const EDITING_TURN = `<section data-message-author-role="assistant" data-testid="conversation-turn-6"><textarea>editing history</textarea></section>`;
+
+describe("findMainChatComposer", () => {
+  it("finds the ProseMirror composer when #prompt-textarea is absent (issue #134)", () => {
+    withDom(`<body><main><article>a turn</article></main>${PROSEMIRROR_COMPOSER}</body>`, () => {
+      expect(findMainChatComposer()).toBe(document.querySelector(".ProseMirror"));
+    });
+  });
+
+  it("does not let a historical-message editor substitute for the main composer", () => {
+    withDom(`<body>${EDITING_TURN}${PROSEMIRROR_COMPOSER}</body>`, () => {
+      const composer = findMainChatComposer();
+      expect(composer).toBe(document.querySelector(".ProseMirror"));
+      expect(composer?.tagName).not.toBe("TEXTAREA");
+    });
+  });
+
+  it("does not accept a stray textarea outside the composer region as the composer", () => {
+    // The decoy shape the smoke suite also plants: a usable textarea with no
+    // composer-region ancestor while the main composer is missing.
+    withDom(`<body><main><textarea>stray</textarea></main></body>`, () => {
+      expect(findMainChatComposer()).toBeNull();
+    });
+  });
+
+  it("keeps #prompt-textarea primary on legacy pages", () => {
+    // The legacy shape the smoke suite renders: role=textbox carries
+    // usability in jsdom, which does not implement isContentEditable.
+    withDom(
+      `<body><main></main><form><div id="prompt-textarea" role="textbox" contenteditable="true"></div></form></body>`,
+      () => {
+        expect(findMainChatComposer()).toBe(document.querySelector("#prompt-textarea"));
+      }
+    );
+  });
+
+  it("returns null, not a substitute, while the primary composer is unusable", () => {
+    withDom(
+      `<body><main></main><form><div id="prompt-textarea" contenteditable="true" aria-readonly="true"></div></form>${PROSEMIRROR_COMPOSER}</body>`,
+      () => {
+        expect(findMainChatComposer()).toBeNull();
       }
     );
   });
