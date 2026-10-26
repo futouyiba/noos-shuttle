@@ -17,7 +17,7 @@ import type {
   ContinuationRunMutation,
   ContinuationStopReason
 } from "../core/continuation-run";
-import { bcrStartGateMessage, recoverStartGateMessage } from "../core/bcr-start-copy";
+import { bcrStartGateDisposition, bcrStartGateMessage, recoverStartGateMessage } from "../core/bcr-start-copy";
 import { bcrStopReasonLabel } from "../core/bcr-stop-reason-copy";
 import { EXTENSION_CONTEXT_INVALID, sendExtensionMessage } from "../shared/extension-runtime";
 import { COPY, type ShuttleLocale, getStoredLocale, storeLocale } from "../shared/i18n";
@@ -615,6 +615,13 @@ function renderBcrSection(copy: (typeof COPY)[ShuttleLocale]): string {
     return `<div class="bcr-panel" data-bcr-state="active">
       <div class="bcr-title">${escapeHtml(copy.bcrSectionTitle)} <span class="bcr-note">${auto ? escapeHtml(copy.bcrAutoNote) : escapeHtml(copy.bcrAssistedNote)}</span></div>
       <div class="bcr-status"><strong>${escapeHtml(copy.bcrRunningLabel)} ${active.consumedContinuations} / ${active.maxContinuations}</strong><span class="bcr-phase"> · ${phase}</span></div>
+      ${
+        active.phase === "START_QUEUED"
+          // A queued START is not a failure (#132): say what is being waited
+          // for, and the Stop button below stays the way out.
+          ? `<div class="bcr-note">${escapeHtml(copy.bcrStartQueuedNote)}</div>`
+          : ""
+      }
       ${
         awaitingDecision
           ? `<div class="bcr-decision"><span>${escapeHtml(copy.bcrContinuePrompt)}</span>
@@ -1856,7 +1863,12 @@ function adoptRunState(run: ContinuationRun | null): void {
     if (isNewRun) {
       // Re-adopted after a reload: baseline from the live observation so the
       // run's own past submissions are never misread as Human intervention.
-      bcrExpectedUserCount = runtimeObservationLedger.value?.userMessageCount ?? -1;
+      // A queued START instead keeps its durable queue-time baseline (#132): a
+      // Human turn that landed during the reload gap is a foreign turn the
+      // queued authorization was never issued against.
+      bcrExpectedUserCount = run.phase === "START_QUEUED" && run.queuedStartBaselineUserCount !== undefined
+        ? run.queuedStartBaselineUserCount
+        : runtimeObservationLedger.value?.userMessageCount ?? -1;
       bcrStopRequested = false;
       bcrLastDispatchReanchor = false;
       bcrLastDispatchPayload = null;
@@ -1930,13 +1942,73 @@ async function syncBcrEvalConfigFromHub(app: HTMLElement): Promise<void> {
 async function startBoundedRun(app: HTMLElement, budget: number): Promise<void> {
   const copy = COPY[viewState.locale];
   if (bcrRun) return;
+  // #132: a START on an identifiable mid-generation carrier queues instead of
+  // refusing — the Human should not have to watch the turn end and re-click.
+  const immediate = runtimeObservationLedger.value;
+  if (bcrStartGateDisposition(immediate).outcome === "QUEUE") {
+    await queueBoundedStart(app, budget, immediate);
+    return;
+  }
   const observation = await waitForReadyObservation();
-  if (!observation?.providerConversationRef || observation.state !== "READY") {
+  if (observation?.providerConversationRef && observation.state === "READY") {
+    // AUTO_X5 needs no user-authored goal: the evaluator's baseline is the
+    // built-in "continue its own stated next step" contract.
+    const mode: "ASSISTED" | "AUTO_X5" = bcrAutoConfigured ? "AUTO_X5" : "ASSISTED";
+    const now = Date.now();
+    const result = await mutateContinuationRun({
+      type: "start",
+      input: {
+        runId: `bcr-${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        workItemId: "shuttle-bcr-run",
+        logicalThreadId: `thread:${observation.providerConversationRef}`,
+        providerConversationRef: observation.providerConversationRef,
+        bindingEpoch: observation.sourceEpoch,
+        maxContinuations: budget,
+        mode,
+        now
+      }
+    });
+    if (!result.ok || !result.run) {
+      viewState.message = `${copy.bcrStartFailed}${result.error ? `: ${result.error}` : ""}`;
+      render(app);
+      return;
+    }
+    bcrExpectedUserCount = observation.userMessageCount ?? 0;
+    render(app);
+    await issueRunGo(app);
+    return;
+  }
+  // The READY window elapsed: a carrier that is identifiable and generating
+  // queues; every other not-READY carrier keeps the fail-closed gate (#132).
+  const latest = runtimeObservationLedger.value;
+  if (bcrStartGateDisposition(latest).outcome === "QUEUE") {
+    await queueBoundedStart(app, budget, latest);
+    return;
+  }
+  registerStartGateFailure(app);
+}
+
+/**
+ * Queue a START against a GENERATING carrier (#132). The durable run is born
+ * in `START_QUEUED` holding the conversation identity and the queue-time
+ * intervention baseline, occupies the conversation's active-run slot, and
+ * touches nothing provider-facing — no GO, no budget, no composer — until the
+ * watcher's durable `CARRIER_READY` transition releases it into the ordinary
+ * start path. The queue-time baseline lives on the run, so adoption after a
+ * reload restores it instead of re-baselining from the live count.
+ */
+async function queueBoundedStart(app: HTMLElement, budget: number, observation: CarrierObservation | null): Promise<void> {
+  const copy = COPY[viewState.locale];
+  const conversationRef = observation?.providerConversationRef;
+  const baseline = observation?.userMessageCount;
+  // The disposition decides queueability; the local re-check only narrows the
+  // fields the durable record needs, and keeps the gate fail-closed if the
+  // observation shifted underneath the caller.
+  if (bcrStartGateDisposition(observation).outcome !== "QUEUE" || !conversationRef || typeof baseline !== "number") {
     registerStartGateFailure(app);
     return;
   }
-  // AUTO_X5 needs no user-authored goal: the evaluator's baseline is the
-  // built-in "continue its own stated next step" contract.
+  // AUTO_X5 needs no user-authored goal; same contract as an ordinary start.
   const mode: "ASSISTED" | "AUTO_X5" = bcrAutoConfigured ? "AUTO_X5" : "ASSISTED";
   const now = Date.now();
   const result = await mutateContinuationRun({
@@ -1944,11 +2016,13 @@ async function startBoundedRun(app: HTMLElement, budget: number): Promise<void> 
     input: {
       runId: `bcr-${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
       workItemId: "shuttle-bcr-run",
-      logicalThreadId: `thread:${observation.providerConversationRef}`,
-      providerConversationRef: observation.providerConversationRef,
+      logicalThreadId: `thread:${conversationRef}`,
+      providerConversationRef: conversationRef,
       bindingEpoch: observation.sourceEpoch,
       maxContinuations: budget,
       mode,
+      startQueued: true,
+      queuedStartBaselineUserCount: baseline,
       now
     }
   });
@@ -1957,9 +2031,7 @@ async function startBoundedRun(app: HTMLElement, budget: number): Promise<void> 
     render(app);
     return;
   }
-  bcrExpectedUserCount = observation.userMessageCount ?? 0;
   render(app);
-  await issueRunGo(app);
 }
 
 /**
@@ -2183,6 +2255,37 @@ async function bcrWatcherTick(): Promise<void> {
     await applyContinuationRunEvent({ type: "USER_INTERVENTION" });
     return;
   }
+  // A queued START settles only through run transitions (#132). Terminal
+  // carrier states fail visibly; waiting states keep waiting; READY releases
+  // through the durable CARRIER_READY transition — the READY observation is
+  // evidence, never a send permit — and the ordinary start path then runs its
+  // existing claim/fence/writer gates. The conversation pin is enforced above
+  // and again inside the transition.
+  if (bcrRun.phase === "START_QUEUED") {
+    if (observation.state === "BROKEN" || observation.state === "SUSPENDED") {
+      await applyContinuationRunEvent({ type: "CARRIER_FAILURE" });
+      return;
+    }
+    if (observation.state === "READY" && observation.carrierIdentityState === "browser-tab") {
+      const released = await mutateContinuationRun({
+        type: "apply",
+        runId: bcrRun.runId,
+        event: { type: "CARRIER_READY", providerConversationRef: observation.providerConversationRef },
+        now: Date.now()
+      });
+      if (!released.ok) {
+        // The durable run already moved elsewhere; converge against it.
+        await refreshActiveRun();
+        renderApp();
+        return;
+      }
+      if (shuttleApp) await issueRunGo(shuttleApp);
+      renderApp();
+      return;
+    }
+    // GENERATING / ATTACHING / STABILIZING / RECOVERING: keep waiting.
+    return;
+  }
   if (bcrRun.pendingSubmissionOperationId !== undefined) {
     if (observation.state === "BROKEN") {
       await applyContinuationRunEvent({ type: "CARRIER_FAILURE" });
@@ -2349,6 +2452,7 @@ const observationRenderThrottle = createRenderThrottle(renderApp, {
 
 function bcrPhaseLabel(run: ContinuationRun, copy: (typeof COPY)[ShuttleLocale]): string {
   switch (run.phase) {
+    case "START_QUEUED": return copy.bcrPhaseStartQueued;
     case "READY_TO_GO": return copy.bcrPhaseReady;
     case "DISPATCHING": return copy.bcrPhaseDispatching;
     case "ASSISTANT_GENERATING": return copy.bcrPhaseGenerating;

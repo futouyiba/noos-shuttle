@@ -1,10 +1,17 @@
-/** Minimal durable Bounded Continuation Run: one Human authorization for at most N governed GO rounds. Pure transitions; storage, actuation, and observation live with the caller (background coordinator + HumanGoRuntime). ASSISTED mode asks the Human every round; AUTO_X5 advances rounds through an isolated evaluator behind the same conservative gate. */
+/** Minimal durable Bounded Continuation Run: one Human authorization for at most N governed GO rounds. Pure transitions; storage, actuation, and observation live with the caller (background coordinator + HumanGoRuntime). ASSISTED mode asks the Human every round; AUTO_X5 advances rounds through an isolated evaluator behind the same conservative gate. A START that arrives while the carrier is GENERATING may instead be queued (#132): it stays a durable, slot-occupying authorization that touches nothing provider-facing until a `CARRIER_READY` transition releases it into the ordinary start path. */
 import type { ShuttleLocale } from "../shared/i18n";
 import type { ContinuationPayloadMode } from "./continuation-payload";
 
 export type ContinuationRunStatus = "CREATED" | "ACTIVE" | "ENDED" | "CANCELLED" | "FAILED_SAFE";
 export type ContinuationRunMode = "ASSISTED" | "AUTO_X5";
-export type ContinuationRunPhase = "READY_TO_GO" | "DISPATCHING" | "ASSISTANT_GENERATING" | "STABILIZING" | "AWAITING_HUMAN_DECISION" | "EVALUATING" | "ENDED";
+/**
+ * `START_QUEUED` (#132): the Human issued the START while the carrier was
+ * `GENERATING`. The authorization is durable and occupies the active-run slot,
+ * but is not yet a GO — no submission, no budget, no composer touch — until a
+ * `CARRIER_READY` transition for the same conversation releases it into the
+ * ordinary start path.
+ */
+export type ContinuationRunPhase = "START_QUEUED" | "READY_TO_GO" | "DISPATCHING" | "ASSISTANT_GENERATING" | "STABILIZING" | "AWAITING_HUMAN_DECISION" | "EVALUATING" | "ENDED";
 export type ContinuationStopReason =
   | "BUDGET_EXHAUSTED"
   | "WAIT_HUMAN"
@@ -57,6 +64,14 @@ export interface ContinuationRun {
   status: ContinuationRunStatus;
   phase: ContinuationRunPhase;
   stopReason?: ContinuationStopReason;
+  /**
+   * User-turn count frozen at the moment a START was queued on a `GENERATING`
+   * carrier (#132). It is the provenance baseline the queued authorization was
+   * issued against: any Human turn above it — including one that landed during
+   * a reload gap — is foreign and cancels the queued START instead of letting
+   * a stale Go×N authorization execute. Present exactly on `START_QUEUED` runs.
+   */
+  queuedStartBaselineUserCount?: number;
   pendingSubmissionOperationId?: string;
   acceptedOperationId?: string;
   lastConsumedTurnRef?: string;
@@ -66,6 +81,13 @@ export interface ContinuationRun {
 }
 
 export type ContinuationRunEvent =
+  /**
+   * The only release for a queued START (#132): the carrier was observed READY
+   * on the run's own conversation. The observation is evidence; this durable
+   * transition is the authorization — a caller that sees READY must go through
+   * here, never straight to a dispatch.
+   */
+  | { type: "CARRIER_READY"; providerConversationRef?: string }
   | { type: "DISPATCH_ISSUED"; operationId: string; providerConversationRef?: string; bindingEpoch?: number }
   | { type: "CARRIER_PHASE"; carrierState: "GENERATING" | "STABILIZING" | "BROKEN" }
   | { type: "REBIND"; bindingEpoch: number }
@@ -93,6 +115,15 @@ export interface StartContinuationRunInput {
   mode?: ContinuationRunMode;
   goal?: string;
   scope?: string;
+  /**
+   * Queue the START instead of arming it (#132): the run is born in
+   * `START_QUEUED` — durable, slot-occupying, and provider-facing-inert — until
+   * `CARRIER_READY` releases it. Requires the queue-time baseline, because a
+   * queued authorization without foreign-turn provenance could never tell a
+   * Human intervention from its own release.
+   */
+  startQueued?: boolean;
+  queuedStartBaselineUserCount?: number;
   now: number;
 }
 
@@ -109,6 +140,12 @@ export function startContinuationRun(input: StartContinuationRunInput): Continua
   // built-in "continue the assistant's own stated next step" contract.
   if (input.goal !== undefined && (typeof input.goal !== "string" || input.goal.trim() === "")) throw new Error("goal: non-empty string required when provided");
   if (input.scope !== undefined && (typeof input.scope !== "string" || input.scope.trim() === "")) throw new Error("scope: non-empty string required when provided");
+  if (input.startQueued !== undefined && typeof input.startQueued !== "boolean") throw new Error("startQueued: boolean required when provided");
+  if (input.queuedStartBaselineUserCount !== undefined && (!Number.isInteger(input.queuedStartBaselineUserCount) || input.queuedStartBaselineUserCount < 0)) throw new Error("queuedStartBaselineUserCount: non-negative integer required when provided");
+  // The pairing is exact so every queued run carries its provenance baseline
+  // and no ordinary run carries a misleading one.
+  if (input.startQueued === true && input.queuedStartBaselineUserCount === undefined) throw new Error("queuedStartBaselineUserCount: required when startQueued");
+  if (input.startQueued !== true && input.queuedStartBaselineUserCount !== undefined) throw new Error("queuedStartBaselineUserCount: only valid when startQueued");
   return {
     runId: input.runId,
     workItemId: input.workItemId,
@@ -121,13 +158,14 @@ export function startContinuationRun(input: StartContinuationRunInput): Continua
     maxContinuations: input.maxContinuations,
     consumedContinuations: 0,
     status: "ACTIVE",
-    phase: "READY_TO_GO",
+    phase: input.startQueued === true ? "START_QUEUED" : "READY_TO_GO",
+    ...(input.startQueued === true ? { queuedStartBaselineUserCount: input.queuedStartBaselineUserCount } : {}),
     createdAt: input.now,
     updatedAt: input.now
   };
 }
 
-/** True when the run may issue its next governed GO right now. MAX_IN_FLIGHT = 1 by construction: a dispatch requires no pending operation and a human-authorized decision slot. */
+/** True when the run may issue its next governed GO right now. MAX_IN_FLIGHT = 1 by construction: a dispatch requires no pending operation and a human-authorized decision slot. A queued START is deliberately not dispatchable (#132): release comes first, through `CARRIER_READY`. */
 export function canDispatch(run: ContinuationRun, current: { providerConversationRef: string; bindingEpoch: number }): { ok: true } | { ok: false; error: string } {
   if (run.status !== "ACTIVE") return { ok: false, error: `run ${run.status}` };
   if (run.phase !== "READY_TO_GO") return { ok: false, error: `phase ${run.phase}` };
@@ -142,6 +180,15 @@ export function applyRunEvent(run: ContinuationRun, event: ContinuationRunEvent,
   if (isTerminal(run.status)) return { run, changed: false, error: `run already ${run.status}` };
   const next = { ...run };
   switch (event.type) {
+    case "CARRIER_READY": {
+      // Queued-start release (#132): the only transition out of START_QUEUED.
+      // The pinned conversation may not be crossed — an old START is never
+      // honored on a conversation it was not issued against.
+      if (run.phase !== "START_QUEUED") return { run, changed: false, error: `phase ${run.phase}, expected START_QUEUED` };
+      if (event.providerConversationRef !== undefined && event.providerConversationRef !== run.providerConversationRef) return { run, changed: false, error: "provider conversation changed" };
+      next.phase = "READY_TO_GO";
+      break;
+    }
     case "DISPATCH_ISSUED": {
       if (run.phase !== "READY_TO_GO") return { run, changed: false, error: `phase ${run.phase}, expected READY_TO_GO` };
       if (run.pendingSubmissionOperationId !== undefined) return { run, changed: false, error: "pending submission in flight" };

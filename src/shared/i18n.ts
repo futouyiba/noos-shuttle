@@ -38,6 +38,8 @@ export interface ShuttleCopy {
   bcrPhaseStabilizing: string;
   bcrPhaseAwaiting: string;
   bcrPhaseEnded: string;
+  bcrPhaseStartQueued: string;
+  bcrStartQueuedNote: string;
   bcrContinuePrompt: string;
   bcrContinue: string;
   bcrStop: string;
@@ -296,6 +298,8 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     bcrPhaseStabilizing: "Stabilizing",
     bcrPhaseAwaiting: "Waiting for your decision",
     bcrPhaseEnded: "Stopped",
+    bcrPhaseStartQueued: "Queued start",
+    bcrStartQueuedNote: "Queued; the run will start automatically once this reply finishes and the carrier is runnable again.",
     bcrContinuePrompt: "Continue this run?",
     bcrContinue: "Continue",
     bcrStop: "Stop",
@@ -546,6 +550,8 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     bcrPhaseStabilizing: "稳定中",
     bcrPhaseAwaiting: "等待你的决定",
     bcrPhaseEnded: "已停止",
+    bcrPhaseStartQueued: "排队启动",
+    bcrStartQueuedNote: "已排队；当前回复结束并恢复可运行后将自动开始。",
     bcrContinuePrompt: "继续本轮 Run？",
     bcrContinue: "继续",
     bcrStop: "停止",
