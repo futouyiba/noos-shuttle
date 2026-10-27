@@ -175,6 +175,47 @@ describe("applyRunEvent — fail-closed paths", () => {
     expect(retry.error).toMatch(/already FAILED_SAFE/);
   });
 
+  it("ends FAILED_SAFE with SUBMISSION_NOT_ACCEPTED when the pending GO is durably FAILED_SAFE (#137)", () => {
+    // The field state: the GO was reconciled to FAILED_SAFE (dispatched, stable
+    // carrier, no new user/assistant turn) while the Run still counts it as
+    // pending and the watcher has moved it to STABILIZING. Neither live recovery
+    // nor the completion lane owns that operation, so this event is the only
+    // convergence — it must clear the pending id and stay fail-closed.
+    const dispatched = applyRunEvent(run({ mode: "AUTO_X5" }), { type: "DISPATCH_ISSUED", operationId: "op-1" }, 101).run;
+    const stabilizing = applyRunEvent(dispatched, { type: "CARRIER_PHASE", carrierState: "STABILIZING" }, 102).run;
+    expect(stabilizing.phase).toBe("STABILIZING");
+    const converged = applyRunEvent(stabilizing, { type: "OPERATION_NOT_ACCEPTED", operationId: "op-1" }, 103);
+    expect(converged.changed).toBe(true);
+    expect(converged.run.status).toBe("FAILED_SAFE");
+    expect(converged.run.phase).toBe("ENDED");
+    expect(converged.run.stopReason).toBe("SUBMISSION_NOT_ACCEPTED");
+    // The pending id the Run was stuck on is gone; the round consumed nothing
+    // and was never stamped as accepted.
+    expect(converged.run.pendingSubmissionOperationId).toBeUndefined();
+    expect(converged.run.consumedContinuations).toBe(0);
+    expect(converged.run.acceptedOperationId).toBeUndefined();
+    expect(converged.run.lastConsumedTurnRef).toBeUndefined();
+    expect(isTerminal(converged.run.status)).toBe(true);
+    expect(canDispatch(converged.run, { providerConversationRef: "conv-a", bindingEpoch: 3 }).ok).toBe(false);
+    // No evaluation is ever reached for a round that did not happen.
+    expect(converged.run.phase).not.toBe("EVALUATING");
+    const replay = applyRunEvent(converged.run, { type: "OPERATION_NOT_ACCEPTED", operationId: "op-1" }, 104);
+    expect(replay.changed).toBe(false);
+    expect(replay.error).toMatch(/already FAILED_SAFE/);
+  });
+
+  it("refuses OPERATION_NOT_ACCEPTED for a non-pending or unknown round", () => {
+    const dispatched = applyRunEvent(run(), { type: "DISPATCH_ISSUED", operationId: "op-1" }, 101).run;
+    const other = applyRunEvent(dispatched, { type: "OPERATION_NOT_ACCEPTED", operationId: "op-2" }, 102);
+    expect(other.changed).toBe(false);
+    expect(other.error).toMatch(/non-pending/);
+    expect(other.run.pendingSubmissionOperationId).toBe("op-1");
+    expect(other.run.status).toBe("ACTIVE");
+    const idle = applyRunEvent(run(), { type: "OPERATION_NOT_ACCEPTED", operationId: "op-1" }, 102);
+    expect(idle.changed).toBe(false);
+    expect(idle.run.status).toBe("ACTIVE");
+  });
+
   it("cancels on human stop and on a foreign user message (USER_INTERVENTION)", () => {
     const stopped = applyRunEvent(run(), { type: "HUMAN_STOP" }, 101);
     expect(stopped.run.status).toBe("CANCELLED");
@@ -271,6 +312,24 @@ describe("reduceContinuationRunStore", () => {
     expect(store.ended).toHaveLength(1);
     const noRun = reduceContinuationRunStore(store, { type: "get_active", providerConversationRef: "conv-a" });
     expect(noRun.ok && noRun.run).toBeUndefined();
+  });
+
+  it("ends a pending round's run in the ended tail with no pending id left behind (#137)", () => {
+    let store = emptyContinuationRunStore();
+    const started = reduceContinuationRunStore(store, { type: "start", input: { runId: "bcr-1", workItemId: "w", logicalThreadId: "t", providerConversationRef: "conv-a", bindingEpoch: 1, maxContinuations: 5, mode: "AUTO_X5", now: 1 } });
+    store = started.ok ? started.store : store;
+    const dispatched = reduceContinuationRunStore(store, { type: "apply", runId: "bcr-1", event: { type: "DISPATCH_ISSUED", operationId: "op-1" }, now: 2 });
+    store = dispatched.ok ? dispatched.store : store;
+    expect(store.activeByConversation["conv-a"].pendingSubmissionOperationId).toBe("op-1");
+    const converged = reduceContinuationRunStore(store, { type: "apply", runId: "bcr-1", event: { type: "OPERATION_NOT_ACCEPTED", operationId: "op-1" }, now: 3 });
+    store = converged.ok ? converged.store : store;
+    expect(store.activeByConversation["conv-a"]).toBeUndefined();
+    expect(store.ended[0].status).toBe("FAILED_SAFE");
+    expect(store.ended[0].stopReason).toBe("SUBMISSION_NOT_ACCEPTED");
+    // The durable ended record must not keep pointing at the terminal operation:
+    // an ACTIVE run is gone, but the record itself has to read clean.
+    expect(store.ended[0].pendingSubmissionOperationId).toBeUndefined();
+    expect(store.ended[0].consumedContinuations).toBe(0);
   });
 
   it("caps the ended tail at 20 entries", () => {

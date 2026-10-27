@@ -43,6 +43,7 @@ const STOP_REASON_COPY_KEYS: Record<ContinuationStopReason, StopReasonCopyKey> =
   AUTHORITY_CHANGED: "bcrStopReasonAuthorityChanged",
   CONVERSATION_REBASE_REQUIRED: "bcrStopReasonConversationRebaseRequired",
   SUBMISSION_UNCERTAIN: "bcrStopReasonSubmissionUncertain",
+  SUBMISSION_NOT_ACCEPTED: "bcrStopReasonSubmissionNotAccepted",
   CARRIER_FAILURE: "bcrStopReasonCarrierFailure",
   EVALUATOR_UNAVAILABLE: "bcrStopReasonEvaluatorUnavailable"
 };

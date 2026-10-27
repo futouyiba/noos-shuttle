@@ -866,6 +866,190 @@ describe("content script smoke flow", () => {
     await page.close();
   }, 90_000);
 
+  it("ends a Run fail-safe when its GO is durably FAILED_SAFE (#137)", async () => {
+    // The field failure: round 1's GO was dispatched, the provider produced no
+    // new user or assistant turn, and reconciliation proved the submission was
+    // not accepted (`FAILED_SAFE`). The Run kept that operation as pending, so
+    // MAX_IN_FLIGHT=1 froze it past EVALUATING and round 2 never started. Both
+    // halves are covered here: the live reconciler that learns the durable fact
+    // first, and a page that boots onto an ACTIVE Run still pending on an
+    // already-terminal operation.
+    const page = await newMockChatPage({ startWithHandoffs: false, injectContentScript: false });
+    await page.evaluate(() => {
+      const listeners: Array<(message: unknown, sender: unknown, sendResponse: (response: unknown) => void) => unknown> = [];
+      const backing: Record<string, unknown> = {};
+      const sendMessage = async (message: unknown) => new Promise<unknown>(resolve => {
+        if ((message as { type?: string }).type === "NOOS_OBSERVATION_CARRIER") {
+          resolve({ carrierRef: "browser-tab:11" });
+          return;
+        }
+        let settled = false;
+        const complete = (response: unknown) => {
+          if (!settled) {
+            settled = true;
+            resolve(response);
+          }
+        };
+        const listener = listeners[0];
+        if (!listener) {
+          complete(undefined);
+          return;
+        }
+        const returned = listener(message, {
+          id: "extension-id",
+          frameId: 0,
+          tab: { id: 11 },
+          url: window.location.href
+        }, complete);
+        if (returned !== true) complete(undefined);
+      });
+      (globalThis as unknown as { realLedgerBacking: Record<string, unknown> }).realLedgerBacking = backing;
+      (globalThis as unknown as { chrome: any }).chrome = {
+        runtime: {
+          id: "extension-id",
+          getURL: (path: string) => `chrome-extension://mock/${path}`,
+          sendMessage,
+          lastError: undefined,
+          onInstalled: { addListener: () => undefined },
+          onMessage: { addListener: (listener: typeof listeners[number]) => listeners.push(listener) }
+        },
+        storage: {
+          local: {
+            get: async (key: string) => ({ [key]: backing[key] }),
+            set: async (value: Record<string, unknown>) => Object.assign(backing, value),
+            remove: async () => undefined
+          }
+        },
+        downloads: { download: async () => 1 }
+      };
+    });
+    await page.addScriptTag({ content: `(function () {\n${serviceWorkerScript}\n})();` });
+    await page.addScriptTag({ content: contentScript });
+    await page.evaluate(() => {
+      (globalThis as any).providerDispatches = 0;
+      // The panel lives in a shadow root, so the page's only light-DOM button is
+      // the provider's send control.
+      const composer = document.querySelector("#prompt-textarea")!;
+      // The provider accepts the click and then does nothing: no user echo, no
+      // assistant turn, no generation. That is exactly the evidence the ledger
+      // reads as "dispatched but not accepted".
+      document.querySelector("button")!.addEventListener("click", () => {
+        (globalThis as any).providerDispatches++;
+        composer.textContent = "";
+      });
+    });
+    await clickShuttle(page, ".surface-fab");
+    await expect.poll(
+      () => page.evaluate(() => Boolean(document.querySelector("#noos-shuttle-root")?.shadowRoot?.querySelector("[data-action='bcr-start-5']"))),
+      { timeout: 20_000 }
+    ).toBe(true);
+    await clickShuttle(page, "[data-action='bcr-start-5']");
+    await expect.poll(() => page.evaluate(() => (globalThis as any).providerDispatches), { timeout: 20_000 }).toBe(1);
+    const backing = () => page.evaluate(() => JSON.parse(JSON.stringify((globalThis as any).realLedgerBacking)));
+    await expect.poll(
+      () => page.evaluate(() => (globalThis as any).realLedgerBacking.noosSubmissionOperations?.[0]?.state),
+      { timeout: 25_000 }
+    ).toBe("FAILED_SAFE");
+
+    // The live path converges the same page: the Run ends FAILED_SAFE with the
+    // pending id cleared, and nothing is consumed or recorded as accepted.
+    const live = await page.evaluate(() => {
+      const store = (globalThis as any).realLedgerBacking.noosContinuationRunStore;
+      const conversationRef = (globalThis as any).realLedgerBacking.noosSubmissionOperations[0].providerConversationRef;
+      return {
+        active: store?.activeByConversation?.[conversationRef] ? "present" : "absent",
+        ended: store?.ended ?? []
+      };
+    });
+    const conversationRef = await page.evaluate(() =>
+      (globalThis as any).realLedgerBacking.noosSubmissionOperations[0].providerConversationRef);
+    expect(live.active).toBe("absent");
+    expect(live.ended[0].status).toBe("FAILED_SAFE");
+    expect(live.ended[0].stopReason).toBe("SUBMISSION_NOT_ACCEPTED");
+    expect(live.ended[0].pendingSubmissionOperationId).toBeUndefined();
+    expect(live.ended[0].consumedContinuations).toBe(0);
+    expect(live.ended[0].acceptedOperationId).toBeUndefined();
+    expect(await shuttleText(page)).toContain("GO 已发出但未被接受");
+
+    // Now the crash-shaped half: an ACTIVE Run that still names the terminal
+    // operation as pending, exactly what a page that never saw the fix (or
+    // reloaded mid-convergence) wakes up to.
+    const induced = await page.evaluate(async () => {
+      const backing = (globalThis as any).realLedgerBacking;
+      const operation = backing.noosSubmissionOperations[0];
+      const send = (globalThis as any).chrome.runtime.sendMessage;
+      const now = Date.now();
+      const started = await send({ type: "NOOS_CONTINUATION_RUN_MUTATION", mutation: { type: "start", input: {
+        runId: "bcr-137-recovery",
+        workItemId: "shuttle-bcr-run",
+        logicalThreadId: operation.logicalThreadId,
+        providerConversationRef: operation.providerConversationRef,
+        bindingEpoch: operation.dispatchFence.bindingEpoch,
+        maxContinuations: 5,
+        mode: "AUTO_X5",
+        now
+      } } });
+      await send({ type: "NOOS_CONTINUATION_RUN_MUTATION", mutation: { type: "apply", runId: "bcr-137-recovery",
+        event: { type: "DISPATCH_ISSUED", operationId: operation.operationId }, now: now + 1 } });
+      const stabilizing = await send({ type: "NOOS_CONTINUATION_RUN_MUTATION", mutation: { type: "apply", runId: "bcr-137-recovery",
+        event: { type: "CARRIER_PHASE", carrierState: "STABILIZING" }, now: now + 2 } });
+      return {
+        started: started.ok,
+        phase: stabilizing.run?.phase,
+        pending: stabilizing.run?.pendingSubmissionOperationId,
+        operationId: operation.operationId,
+        conversationRef: operation.providerConversationRef
+      };
+    });
+    expect(induced).toMatchObject({ started: true, phase: "STABILIZING", pending: induced.operationId });
+
+    const durable = await backing();
+    await page.addInitScript(realLedgerBridge, durable);
+    await page.reload();
+    await page.evaluate(() => {
+      (globalThis as any).providerDispatches = 0;
+      document.querySelector("button")!.addEventListener("click", () => {
+        (globalThis as any).providerDispatches++;
+      });
+    });
+    await page.addScriptTag({ content: `(function () {\n${serviceWorkerScript}\n})();` });
+    await page.addScriptTag({ content: contentScript });
+    const convergedReason = () => page.evaluate((ref) => {
+      const store = (globalThis as any).realLedgerBacking.noosContinuationRunStore;
+      return store?.activeByConversation?.[ref]
+        ? `active:${store.activeByConversation[ref].phase}`
+        : (store?.ended?.[0]?.stopReason ?? "none");
+    }, induced.conversationRef);
+    await expect.poll(convergedReason, { timeout: 25_000 }).toBe("SUBMISSION_NOT_ACCEPTED");
+    const recovered = await page.evaluate((ref) => {
+      const backing = (globalThis as any).realLedgerBacking;
+      const store = backing.noosContinuationRunStore;
+      return {
+        active: store.activeByConversation[ref] ? "present" : "absent",
+        ended: store.ended,
+        operation: backing.noosSubmissionOperations[0],
+        operationCount: backing.noosSubmissionOperations.length,
+        revision: backing.noosSubmissionOperationsRevision,
+        providerDispatches: (globalThis as any).providerDispatches
+      };
+    }, induced.conversationRef);
+    expect(recovered.active).toBe("absent");
+    expect(recovered.ended[0].runId).toBe("bcr-137-recovery");
+    expect(recovered.ended[0].status).toBe("FAILED_SAFE");
+    expect(recovered.ended[0].stopReason).toBe("SUBMISSION_NOT_ACCEPTED");
+    expect(recovered.ended[0].pendingSubmissionOperationId).toBeUndefined();
+    expect(recovered.ended[0].consumedContinuations).toBe(0);
+    // Convergence is a read of durable facts: the terminal operation is left
+    // untouched and nothing is sent to the provider to reach the decision.
+    expect(recovered.operation.state).toBe("FAILED_SAFE");
+    expect(recovered.operationCount).toBe(1);
+    await page.waitForTimeout(2_500);
+    expect(await page.evaluate(() => (globalThis as any).providerDispatches)).toBe(0);
+    expect(await convergedReason()).toBe("SUBMISSION_NOT_ACCEPTED");
+    expect((await backing()).noosSubmissionOperationsRevision).toBe(recovered.revision);
+    await page.close();
+  }, 120_000);
+
   it("spawns and adopts a FRESH child tab through the real service-worker lanes", async () => {
     const page = await newMockChatPage({ startWithHandoffs: false, injectContentScript: false });
     await page.evaluate(() => {
