@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   isSubmissionFence,
   selectCompletedSubmissionToConverge,
+  selectNotAcceptedSubmissionToConverge,
   type SubmissionCompletionObservation,
   type SubmissionCompletionRecord,
   type SubmissionCompletionRun
@@ -68,7 +69,9 @@ describe("selectCompletedSubmissionToConverge", () => {
 
   it("does not converge a non-COMPLETED operation", () => {
     for (const state of ["PREPARED", "DISPATCHING", "OBSERVED_ACCEPTED", "UNCERTAIN", "FAILED_SAFE", "CANCELLED"]) {
-      // These still own execution, so live recovery stays responsible for them.
+      // COMPLETED is the only acceptance evidence this selector may act on. A
+      // FAILED_SAFE operation is terminal too, but it is the *opposite*
+      // evidence and is decided by the not-accepted selector below.
       expect(select({ operations: [operation({ state })] })).toBeNull();
     }
   });
@@ -90,6 +93,59 @@ describe("selectCompletedSubmissionToConverge", () => {
     expect(select({ operations: [operation({ dispatchFence: undefined })] })).toBeNull();
     expect(select({ operations: [operation({ dispatchFence: fence({ leaseOwnerRef: 1 }) })] })).toBeNull();
     expect(select({ operations: [operation({ dispatchFence: {} })] })).toBeNull();
+  });
+});
+
+describe("selectNotAcceptedSubmissionToConverge", () => {
+  const notAccepted = (over: Partial<SubmissionCompletionRecord> = {}) => operation({ state: "FAILED_SAFE", ...over });
+  const selectFailed = (over: Partial<Parameters<typeof selectNotAcceptedSubmissionToConverge>[0]> = {}) =>
+    selectNotAcceptedSubmissionToConverge({
+      operations: [notAccepted()],
+      observation: observation(),
+      run: run(),
+      ...over
+    });
+
+  it("converges the run's own pending operation once the ledger proved the GO was not accepted", () => {
+    expect(selectFailed()).toEqual({ operationId: "go-1" });
+  });
+
+  it("selects by the run's pending id, never by recency", () => {
+    const pending = notAccepted({ operationId: "go-1" });
+    const unrelated = notAccepted({ operationId: "go-2" });
+    expect(selectFailed({ operations: [unrelated, pending] })).toEqual({ operationId: "go-1" });
+    expect(selectFailed({ operations: [unrelated, pending], run: run({ pendingSubmissionOperationId: "go-3" }) })).toBeNull();
+  });
+
+  it("never converges an accepted or still-in-flight operation", () => {
+    for (const state of ["PREPARED", "DISPATCHING", "OBSERVED_ACCEPTED", "COMPLETED", "UNCERTAIN", "CANCELLED"]) {
+      expect(selectFailed({ operations: [notAccepted({ state })] })).toBeNull();
+    }
+  });
+
+  it("does not converge a missing, ended, or already-applied run", () => {
+    expect(selectFailed({ run: null })).toBeNull();
+    for (const status of ["ENDED", "CANCELLED", "FAILED_SAFE"]) {
+      expect(selectFailed({ run: run({ status }) })).toBeNull();
+    }
+    expect(selectFailed({ run: run({ pendingSubmissionOperationId: undefined }) })).toBeNull();
+  });
+
+  it("stays scoped to the watched carrier and conversation", () => {
+    expect(selectFailed({ run: run({ providerConversationRef: "conv-2" }) })).toBeNull();
+    expect(selectFailed({ observation: observation({ providerConversationRef: undefined }) })).toBeNull();
+    expect(selectFailed({ operations: [notAccepted({ providerConversationRef: "conv-2" })] })).toBeNull();
+    expect(selectFailed({ observation: observation({ carrierRef: "carrier-2" }) })).toBeNull();
+    expect(selectFailed({ operations: [notAccepted({ targetCarrierRef: "carrier-2" })] })).toBeNull();
+  });
+
+  it("requires a structurally valid fence", () => {
+    expect(selectFailed({ operations: [notAccepted({ dispatchFence: undefined })] })).toBeNull();
+    expect(selectFailed({ operations: [notAccepted({ dispatchFence: fence({ targetCarrierRef: 3 }) })] })).toBeNull();
+  });
+
+  it("does not converge a FAILED_SAFE operation that is not the pending one", () => {
+    expect(selectFailed({ operations: [], run: run({ pendingSubmissionOperationId: "go-9" }) })).toBeNull();
   });
 });
 

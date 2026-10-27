@@ -48,7 +48,7 @@ import { decideRunIntervention } from "../core/run-intervention";
 // the outbox client instead.
 import type { OutboxItem, OutboxQueueState } from "../core/outbox-queue";
 import { evaluateAuthorityLoss } from "./submission-authority-loss";
-import { isSubmissionFence, selectCompletedSubmissionToConverge } from "./submission-completion-convergence";
+import { isSubmissionFence, selectCompletedSubmissionToConverge, selectNotAcceptedSubmissionToConverge } from "./submission-completion-convergence";
 import styles from "./styles.css?inline";
 
 const SUBMISSION_STABLE_WINDOW_MS = 2_000;
@@ -3867,11 +3867,14 @@ async function restoreActiveSubmission(observation: CarrierObservation): Promise
       mutation: { type: "list" }
     });
     if (!response?.ok || !Array.isArray(response.result)) return;
-    // A Run whose operation finished durably but never received its
-    // OPERATION_COMPLETED is invisible to the recovery path below, which lists
+    // A Run whose operation reached a terminal state but never received its
+    // matching Run event is invisible to the recovery path below, which lists
     // execution-owning states only; nothing else would ever clear its pending id
     // and the Run would wait on MAX_IN_FLIGHT forever. Converge it from the
     // durable fact first, and leave the operation the recovery path owns alone.
+    // Terminal here means both COMPLETED (the round happened) and FAILED_SAFE
+    // (reconciliation proved it did not — issue #137): the second must end the
+    // Run fail-safe, never be read as acceptance.
     if (bcrRun?.pendingSubmissionOperationId !== undefined) {
       const completed = selectCompletedSubmissionToConverge({
         operations: response.result,
@@ -3884,6 +3887,15 @@ async function restoreActiveSubmission(observation: CarrierObservation): Promise
           operationId: completed.operationId,
           turnRef: turnRefFromEvidence()
         });
+        return;
+      }
+      const notAccepted = selectNotAcceptedSubmissionToConverge({
+        operations: response.result,
+        observation,
+        run: bcrRun
+      });
+      if (notAccepted) {
+        await applyContinuationRunEvent({ type: "OPERATION_NOT_ACCEPTED", operationId: notAccepted.operationId });
         return;
       }
     }
@@ -4001,10 +4013,19 @@ async function reconcileActiveSubmission(observation: CarrierObservation): Promi
       }
       return;
     }
-    if (result.outcome === "PROVEN_NOT_ACCEPTED") {
+    // The operation is durably FAILED_SAFE: reconciliation proved the GO was
+    // not accepted (issue #137). It is terminal, so live recovery will never
+    // list it again, and dropping `activeSubmission` alone used to leave the
+    // Run holding this id as pending forever (MAX_IN_FLIGHT=1, phase frozen
+    // past EVALUATING). Converge the Run from the same durable fact, exactly
+    // once, fail-closed — never as acceptance.
+    if (result.outcome === "PROVEN_NOT_ACCEPTED" || result.operation?.state === "FAILED_SAFE") {
       if (activeSubmission?.operationId === active.operationId) {
         activeSubmission = null;
         submissionAuthorityLossSince = null;
+      }
+      if (bcrRun?.pendingSubmissionOperationId === active.operationId) {
+        await applyContinuationRunEvent({ type: "OPERATION_NOT_ACCEPTED", operationId: active.operationId });
       }
       return;
     }

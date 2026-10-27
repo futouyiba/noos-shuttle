@@ -41,6 +41,15 @@ export type ContinuationStopReason =
   | "AUTHORITY_CHANGED"
   | "CONVERSATION_REBASE_REQUIRED"
   | "SUBMISSION_UNCERTAIN"
+  /**
+   * The GO was dispatched but reconciliation proved the provider never took it:
+   * the conversation is unchanged (no user or assistant turn) and the carrier
+   * stopped generating. Distinct from SUBMISSION_UNCERTAIN, where acceptance is
+   * unknown; here there is positive evidence the round did not happen, so the
+   * Run fails closed instead of waiting on a pending operation nobody will
+   * resolve (issue #137).
+   */
+  | "SUBMISSION_NOT_ACCEPTED"
   | "CARRIER_FAILURE"
   | "EVALUATOR_UNAVAILABLE";
 
@@ -94,6 +103,14 @@ export type ContinuationRunEvent =
   | { type: "OPERATION_ACCEPTED"; operationId: string; turnRef?: string }
   | { type: "OPERATION_COMPLETED"; operationId: string; turnRef?: string }
   | { type: "OPERATION_UNCERTAIN"; operationId: string }
+  /**
+   * The pending operation is durably `FAILED_SAFE`: reconciliation proved the
+   * GO was not accepted (issue #137). The round did not happen, so nothing can
+   * be evaluated and the Run ends instead of holding MAX_IN_FLIGHT=1 forever on
+   * a terminal operation no recovery lane owns. Carries the operation id so it
+   * can only settle the exact round it is about.
+   */
+  | { type: "OPERATION_NOT_ACCEPTED"; operationId: string }
   | { type: "HUMAN_CONTINUE" }
   | { type: "EVALUATION_PASSED" }
   | { type: "EVALUATION_STOPPED"; reason: ContinuationStopReason }
@@ -250,6 +267,20 @@ export function applyRunEvent(run: ContinuationRun, event: ContinuationRunEvent,
       next.status = "FAILED_SAFE";
       next.phase = "ENDED";
       next.stopReason = "SUBMISSION_UNCERTAIN";
+      break;
+    }
+    case "OPERATION_NOT_ACCEPTED": {
+      // Issue #137: a terminal FAILED_SAFE operation is invisible to both lanes
+      // that could ever settle a pending id — live recovery lists
+      // execution-owning states only, and the completion lane selects COMPLETED
+      // only — so the Run must be ended here or it stays ACTIVE with a pending
+      // id forever. The round was never accepted: no budget is consumed, no
+      // turn is stamped, and nothing is recorded as accepted.
+      if (run.pendingSubmissionOperationId !== event.operationId) return { run, changed: false, error: "not-accepted for a non-pending operation" };
+      next.status = "FAILED_SAFE";
+      next.phase = "ENDED";
+      next.stopReason = "SUBMISSION_NOT_ACCEPTED";
+      next.pendingSubmissionOperationId = undefined;
       break;
     }
     case "HUMAN_CONTINUE": {

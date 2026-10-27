@@ -64,6 +64,7 @@ export interface ShuttleCopy {
   bcrStopReasonAuthorityChanged: string;
   bcrStopReasonConversationRebaseRequired: string;
   bcrStopReasonSubmissionUncertain: string;
+  bcrStopReasonSubmissionNotAccepted: string;
   bcrStopReasonCarrierFailure: string;
   bcrStopReasonEvaluatorUnavailable: string;
   bcrGoalMayContinue: string;
@@ -324,6 +325,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     bcrStopReasonAuthorityChanged: "The execution authority changed",
     bcrStopReasonConversationRebaseRequired: "The conversation changed; re-anchoring required",
     bcrStopReasonSubmissionUncertain: "The submission outcome is uncertain",
+    bcrStopReasonSubmissionNotAccepted: "The GO was sent but never accepted; no new turn appeared",
     bcrStopReasonCarrierFailure: "The carrier failed",
     bcrStopReasonEvaluatorUnavailable: "The evaluator was unavailable",
     bcrGoalMayContinue: "Goal may still be in progress.",
@@ -576,6 +578,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     bcrStopReasonAuthorityChanged: "执行授权已变更",
     bcrStopReasonConversationRebaseRequired: "会话已变更，需重新锚定",
     bcrStopReasonSubmissionUncertain: "提交结果不确定",
+    bcrStopReasonSubmissionNotAccepted: "GO 已发出但未被接受，没有产生新的回合",
     bcrStopReasonCarrierFailure: "carrier 故障",
     bcrStopReasonEvaluatorUnavailable: "评估器不可用",
     bcrGoalMayContinue: "Goal 可能仍在进行中。",
