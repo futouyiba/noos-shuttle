@@ -37,7 +37,8 @@ afterAll(() => {
   fs.rmSync(workDir, { recursive: true, force: true });
 });
 
-/** Several real CLI processes per test: the default 5s is not enough under parallel load. */
+/** Several real CLI processes per test: the default 5s is not enough under parallel
+ * load. Every multi-spawn test in this describe must pass this explicitly. */
 const CLI_TEST_TIMEOUT_MS = 30_000;
 
 function runCli(args: string[]): { status: number | null; stdout: string; stderr: string } {
@@ -288,7 +289,7 @@ describe("cli mailbox flow with a fake gh", () => {
     // so nothing is offered as a resume basis — the fail-closed waiting variant prints.
     expect(afterDiscover.stdout).toContain("NOT yet observed");
     expect(afterDiscover.stdout).not.toContain("SAME source operation");
-  });
+  }, CLI_TEST_TIMEOUT_MS);
 
   it("holds resume when a clean result sits beside a tampered live packet copy (reviewer counterexample)", () => {
     const ledger2 = path.join(workDir, "ledger-hg.json");
