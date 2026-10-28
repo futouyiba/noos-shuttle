@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isSameProviderConversation, type ProviderPageIdentity } from "../src/core/page-conversation-identity";
+import { isResolvedProviderConversation, isSameProviderConversation, type ProviderPageIdentity } from "../src/core/page-conversation-identity";
 
 const page = (over: Partial<ProviderPageIdentity> = {}): ProviderPageIdentity => ({
   origin: "https://chatgpt.com",
@@ -31,5 +31,17 @@ describe("isSameProviderConversation", () => {
   it("does not treat a non-conversation page as the conversation", () => {
     expect(isSameProviderConversation(page(), page({ pageKind: "login" }))).toBe(false);
     expect(isSameProviderConversation(page({ pageKind: "unsupported" }), page())).toBe(false);
+  });
+});
+
+describe("isResolvedProviderConversation", () => {
+  it("recognizes a conversation page with a provider id", () => {
+    expect(isResolvedProviderConversation(page())).toBe(true);
+  });
+
+  it("does not treat a placeholder, empty, or non-conversation page as resolved", () => {
+    expect(isResolvedProviderConversation(page({ conversationId: "" }))).toBe(false);
+    expect(isResolvedProviderConversation(page({ pageKind: "unknown" }))).toBe(false);
+    expect(isResolvedProviderConversation(page({ pageKind: "composer", conversationId: "" }))).toBe(false);
   });
 });

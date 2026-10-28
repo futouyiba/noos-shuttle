@@ -42,7 +42,7 @@ import { captureChatGptTranscriptWithScroll, captureRenderedChatGptTranscript } 
 import { RuntimeObservationLedger, type CarrierObservation } from "./runtime-observer";
 import { createOutboxClient, observationForGate, type OutboxClient } from "./outbox-client";
 import { decideRunIntervention } from "../core/run-intervention";
-import { isSameProviderConversation } from "../core/page-conversation-identity";
+import { isResolvedProviderConversation, isSameProviderConversation } from "../core/page-conversation-identity";
 // Types only: the queue's runtime is reachable from the service-worker entry
 // too, so importing it as a value here would make the renderer promote it to a
 // chunk an MV3 classic content script cannot import. Every read goes through
@@ -3679,23 +3679,80 @@ function checkPageContext(app: HTMLElement): void {
     return;
   }
 
+  const nextIsResolved = isResolvedProviderConversation(nextContext);
   // A route reshape inside the same provider conversation is a carrier-level
   // change (#133): `/c/<id>` ↔ `/g/<project>/c/<id>` and similar migrations
   // keep the run's pinned identity, so they must not reset it or tell the Human
-  // the conversation changed. The observation's epoch move is rebound by the
-  // ordinary start path; only a real (or unreadable) conversation change
-  // fails closed below.
-  if (isSameProviderConversation(currentPageContext, nextContext)) {
-    currentPageContext = nextContext;
+  // the conversation changed. Returning to the conversation the local run is
+  // pinned to counts as the same rebind even when the identity was unresolved
+  // for a while — the run never stopped pinning it. The observation's epoch
+  // move is rebound by the ordinary start path; only a resolved, different
+  // conversation fails closed below.
+  const sameConversation = isSameProviderConversation(currentPageContext, nextContext) ||
+    (nextIsResolved && currentPageContext.origin === nextContext.origin &&
+      ((bcrRun?.status === "ACTIVE" && bcrRun.providerConversationRef === nextContext.conversationId) ||
+        // A run that settled while the identity was unknown keeps its visible
+        // stop reason when the page returns to its conversation.
+        bcrLastEndedRun?.providerConversationRef === nextContext.conversationId));
+  currentPageContext = nextContext;
+  if (!nextIsResolved) {
+    // Unknown identity is not a conversation change: pause recovery, end
+    // nothing. The observation loop and the start path both require a
+    // conversation ref, so no claim or dispatch is possible while it stays
+    // unresolved; a pending GO settles visibly in the pause itself.
+    pauseForUnresolvedConversation(app);
+    return;
+  }
+  if (sameConversation) {
     refreshSurfacesForContext(app);
     return;
   }
-
-  currentPageContext = nextContext;
   resetForConversationChange(app);
 }
 
+/**
+ * The page no longer names a provider conversation (#133). That is not proof
+ * the conversation changed, so the run is kept — pinned to an identity this
+ * page cannot currently confirm — and recovery pauses: with no conversation
+ * ref, neither the observation loop nor the start path can claim or dispatch.
+ * A pending GO cannot be proven accepted or not accepted here either, so it
+ * settles as visible `SUBMISSION_UNCERTAIN` rather than waiting on a carrier
+ * that may never come back. A later resolution to a different id still ends
+ * the run through the ordinary conversation-change reset.
+ */
+function pauseForUnresolvedConversation(app: HTMLElement): void {
+  cancelActiveWait();
+  activeSubmission = null;
+  submissionAuthorityLossSince = null;
+  submissionRecoveryRequestedAt = -Infinity;
+  closePanels();
+  const pendingSubmissionOperationId = bcrRun?.pendingSubmissionOperationId;
+  if (pendingSubmissionOperationId !== undefined) {
+    void applyContinuationRunEvent({ type: "OPERATION_UNCERTAIN", operationId: pendingSubmissionOperationId });
+  }
+  viewState.settingsOpen = false;
+  viewState.state = "idle";
+  viewState.message = COPY[viewState.locale].conversationIdentityUnresolved;
+  viewState.threads = [];
+  viewState.crystals = [];
+  viewState.contextPack = null;
+  viewState.selectedIndex = 0;
+  viewState.selectedCrystalIndex = 0;
+  viewState.modal = null;
+  render(app);
+  window.setTimeout(() => upsertProjectImportButton(app), 0);
+}
+
 function refreshSurfacesForContext(app: HTMLElement): void {
+  // The paused-identity message describes a moment that has passed once the
+  // page names a conversation again; leaving it up would read as a standing
+  // fault. Match every locale: the Human may switch language while paused.
+  const pausedIdentityMessage = Object.values(COPY).some(candidate =>
+    viewState.message === candidate.conversationIdentityUnresolved);
+  if (pausedIdentityMessage && isResolvedProviderConversation(currentPageContext)) {
+    viewState.message = COPY[viewState.locale].ready;
+    render(app);
+  }
   const surface = getCurrentSurface();
   if (surface !== "none" && !app.querySelector(`.surface-fab--${surface}`)) {
     render(app);

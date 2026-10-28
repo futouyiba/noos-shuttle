@@ -2005,6 +2005,23 @@ describe("same-conversation carrier recovery (#133)", () => {
       Boolean(document.querySelector("#noos-shuttle-root")?.shadowRoot?.querySelector("[data-action='bcr-go']"))
     )).toBe(true);
 
+    // A route with no resolvable conversation id is an unknown identity, not a
+    // conversation change: recovery pauses and the run survives.
+    await page.evaluate(() => history.replaceState({}, "", "/"));
+    await page.waitForTimeout(1_500);
+    expect(await runProjection(page, "noos-content-smoke")).toBe("active:READY_TO_GO:0:none");
+    // The pause is visible when the panel is opened: the run is still there,
+    // with the paused-identity message instead of a conversation-changed one.
+    await clickShuttle(page, ".surface-fab");
+    await expect.poll(async () => (await shuttleText(page)).includes("对话身份未解析，恢复已暂停。"), { timeout: 5_000 }).toBe(true);
+    // Returning to the pinned conversation resumes the same run.
+    await page.evaluate(() => history.replaceState({}, "", "/c/noos-content-smoke"));
+    await page.waitForTimeout(1_500);
+    expect(await runProjection(page, "noos-content-smoke")).toBe("active:READY_TO_GO:0:none");
+    expect(await page.evaluate(() =>
+      Boolean(document.querySelector("#noos-shuttle-root")?.shadowRoot?.querySelector("[data-action='bcr-go']"))
+    )).toBe(true);
+
     // A different conversation id is the boundary that still fail-closes.
     await page.evaluate(() => history.replaceState({}, "", "/c/other-conversation"));
     await expect.poll(() => runProjection(page, "noos-content-smoke"), { timeout: 10_000 })
@@ -2047,6 +2064,31 @@ describe("same-conversation carrier recovery (#133)", () => {
       await page.close();
     }, 60_000);
   }
+
+  it("settles a pending GO as visible uncertainty when the identity becomes unknown", async () => {
+    const page = await openCarrierPage(11);
+    await seedActiveRun(page, { conversationRef: "noos-content-smoke", mode: "ASSISTED" });
+    await reloadCarrier(page, 11);
+    await page.evaluate(() => {
+      (globalThis as any).providerDispatches = 0;
+      document.querySelector("button")!.addEventListener("click", () => { (globalThis as any).providerDispatches++; });
+    });
+    await clickShuttle(page, ".surface-fab");
+    await expect.poll(() => page.evaluate(() =>
+      Boolean(document.querySelector("#noos-shuttle-root")?.shadowRoot?.querySelector("[data-action='bcr-go']"))
+    ), { timeout: 20_000 }).toBe(true);
+    await clickShuttle(page, "[data-action='bcr-go']");
+    await expect.poll(() => page.evaluate(() => (globalThis as any).providerDispatches), { timeout: 20_000 }).toBe(1);
+    expect((await runProjection(page, "noos-content-smoke")).startsWith("active:ASSISTANT_GENERATING:0:")).toBe(true);
+    // The page leaves the conversation while the GO is unresolved: the unknown
+    // identity must settle it visibly, never wait forever and never resend.
+    await page.evaluate(() => history.replaceState({}, "", "/"));
+    await expect.poll(() => runProjection(page, "noos-content-smoke"), { timeout: 10_000 })
+      .toBe("ended:FAILED_SAFE:SUBMISSION_UNCERTAIN:0");
+    await page.waitForTimeout(1_500);
+    expect(await page.evaluate(() => (globalThis as any).providerDispatches)).toBe(1);
+    await page.close();
+  }, 60_000);
 
   it("releases a queued START exactly once after a carrier replacement", async () => {
     const page = await openCarrierPage(11);

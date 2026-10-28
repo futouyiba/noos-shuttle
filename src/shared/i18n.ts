@@ -230,6 +230,7 @@ export interface ShuttleCopy {
   waitingTimedOut: string;
   waitCancelled: string;
   conversationChanged: string;
+  conversationIdentityUnresolved: string;
   inputNotFound: string;
   noThreadDetected: string;
   noCrystalDetected: string;
@@ -494,6 +495,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     waitingTimedOut: "Timed out. You can collect the handoff manually.",
     waitCancelled: "Automatic collection cancelled.",
     conversationChanged: "Conversation changed. Shuttle state refreshed.",
+    conversationIdentityUnresolved: "Conversation identity is not resolved; recovery is paused.",
     inputNotFound: "Chat input box not found. The page layout may have changed.",
     noThreadDetected: "No NOOS Thread detected. Try Draft Handoff first.",
     noCrystalDetected: "No NOOS Crystal detected.",
@@ -746,6 +748,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     waitingTimedOut: "等待超时，可以手动收取交接稿。",
     waitCancelled: "已取消自动收取。",
     conversationChanged: "已切换会话，插件状态已刷新。",
+    conversationIdentityUnresolved: "对话身份未解析，恢复已暂停。",
     inputNotFound: "没有找到 ChatGPT 输入框。页面结构可能已经变化。",
     noThreadDetected: "没有检测到 NOOS 交接稿。可以先生成交接稿。",
     noCrystalDetected: "没有检测到 NOOS 结晶。",

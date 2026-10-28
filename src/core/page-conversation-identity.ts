@@ -37,3 +37,13 @@ export function isSameProviderConversation(previous: ProviderPageIdentity, next:
     previous.conversationId !== "" &&
     previous.conversationId === next.conversationId;
 }
+
+/**
+ * True when the page currently names a provider conversation. False is not a
+ * conversation change: it means the identity is unknown for now (a transient
+ * route, a placeholder id, a non-chat page), and recovery pauses until it
+ * resolves rather than ending the run on an unproven change.
+ */
+export function isResolvedProviderConversation(identity: ProviderPageIdentity): boolean {
+  return identity.pageKind === "conversation" && identity.conversationId !== "";
+}
