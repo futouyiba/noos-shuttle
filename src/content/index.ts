@@ -42,13 +42,14 @@ import { captureChatGptTranscriptWithScroll, captureRenderedChatGptTranscript } 
 import { RuntimeObservationLedger, type CarrierObservation } from "./runtime-observer";
 import { createOutboxClient, observationForGate, type OutboxClient } from "./outbox-client";
 import { decideRunIntervention } from "../core/run-intervention";
+import { isResolvedProviderConversation, isSameProviderConversation } from "../core/page-conversation-identity";
 // Types only: the queue's runtime is reachable from the service-worker entry
 // too, so importing it as a value here would make the renderer promote it to a
 // chunk an MV3 classic content script cannot import. Every read goes through
 // the outbox client instead.
 import type { OutboxItem, OutboxQueueState } from "../core/outbox-queue";
 import { evaluateAuthorityLoss } from "./submission-authority-loss";
-import { isSubmissionFence, selectCompletedSubmissionToConverge, selectNotAcceptedSubmissionToConverge } from "./submission-completion-convergence";
+import { isSubmissionFence, selectCompletedSubmissionToConverge, selectNotAcceptedSubmissionToConverge, selectPendingSubmissionOnCarrierReplacement } from "./submission-completion-convergence";
 import styles from "./styles.css?inline";
 
 const SUBMISSION_STABLE_WINDOW_MS = 2_000;
@@ -269,6 +270,14 @@ let bcrLastDispatchPayload: DispatchedPayloadRecord | null = null;
 // A Stop pressed while the auto-advance lock is held (evaluator round-trip or
 // dispatch) must not be lost: it is consumed at the next auto-advance boundary.
 let bcrStopRequested = false;
+/**
+ * The run this document adopted and has not yet reconciled (#133). Only a
+ * freshly adopted run can carry a pending operation whose dispatch fence belongs
+ * to another execution; settling it is a one-shot decision per run, so the id
+ * keeps the carrier-replacement lane from re-deciding a round the ordinary
+ * lanes already own.
+ */
+let bcrPendingRebindRunId: string | null = null;
 // Shuttle message queue (issue #63). The queue is a producer of its own: it
 // converges with the Run only at the SubmissionOperation actuation boundary, so
 // the Run architecture above is untouched by it.
@@ -1854,6 +1863,7 @@ async function mutateContinuationRun(mutation: ContinuationRunMutation): Promise
 function adoptRunState(run: ContinuationRun | null): void {
   if (!run) {
     bcrRun = null;
+    bcrPendingRebindRunId = null;
     stopBcrWatcher();
     return;
   }
@@ -1872,10 +1882,16 @@ function adoptRunState(run: ContinuationRun | null): void {
       bcrStopRequested = false;
       bcrLastDispatchReanchor = false;
       bcrLastDispatchPayload = null;
+      // A pending operation this document did not dispatch (#133) can only be
+      // settled from its durable state; the carrier-replacement lane decides it
+      // once, before any ordinary work.
+      bcrPendingRebindRunId = run.pendingSubmissionOperationId !== undefined ? run.runId : null;
       // An AUTO run left mid-evaluation by a reload resumes its evaluation
-      // here; a READY_TO_GO resume is surfaced as [Send go] instead.
+      // here. It may not drive the next GO itself (#133): a newly adopted
+      // carrier that auto-dispatched could race the original carrier's own
+      // epoch, so the next round waits for this page's explicit [Send go].
       if (run.mode === "AUTO_X5" && run.phase === "EVALUATING") {
-        void runExclusiveBcrAction(() => autoAdvanceRound());
+        void runExclusiveBcrAction(() => autoAdvanceRound({ allowNextDispatch: false }));
       }
     }
     ensureBcrWatcher();
@@ -1883,6 +1899,7 @@ function adoptRunState(run: ContinuationRun | null): void {
   }
   bcrLastEndedRun = run;
   bcrRun = null;
+  bcrPendingRebindRunId = null;
   stopBcrWatcher();
 }
 
@@ -2142,8 +2159,8 @@ async function runExclusiveBcrAction(work: () => Promise<void>): Promise<void> {
   }
 }
 
-/** AUTO_X5 advance: evaluate the completed round through the isolated evaluator, then auto-dispatch the next governed GO or end the run. ASSISTED runs never enter here. */
-async function autoAdvanceRound(): Promise<void> {
+/** AUTO_X5 advance: evaluate the completed round through the isolated evaluator, then auto-dispatch the next governed GO or end the run. ASSISTED runs never enter here. `allowNextDispatch: false` is the newly adopted carrier (#133): it may evaluate, but the next GO waits for this page's explicit [Send go] so two carriers cannot both auto-dispatch. */
+async function autoAdvanceRound(options: { allowNextDispatch?: boolean } = {}): Promise<void> {
   if (!bcrRun || bcrRun.mode !== "AUTO_X5") return;
   const consumeStop = (): boolean => {
     if (!bcrStopRequested) return false;
@@ -2183,7 +2200,8 @@ async function autoAdvanceRound(): Promise<void> {
     renderApp();
     return;
   }
-  if (bcrRun && bcrRun.mode === "AUTO_X5" && bcrRun.phase === "READY_TO_GO" && shuttleApp) {
+  if (bcrRun && bcrRun.mode === "AUTO_X5" && bcrRun.phase === "READY_TO_GO" && shuttleApp &&
+    options.allowNextDispatch !== false) {
     await issueRunGo(shuttleApp);
   }
   renderApp();
@@ -3126,6 +3144,12 @@ function installConversationWatcher(app: HTMLElement): void {
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
       scheduleContextCheck();
+      // Read-only adoption (#133): a tab that was already open when another
+      // carrier started the run learns about it here. The read authorizes
+      // nothing — a pending round still settles through the carrier-replacement
+      // mapping, and a ready round still waits for this page's explicit
+      // [Send go].
+      void refreshActiveRun();
     }
   });
   window.addEventListener("pagehide", () => {
@@ -3651,16 +3675,89 @@ function checkPageContext(app: HTMLElement): void {
   }
   if (nextContext.signature === currentPageContext.signature) {
     currentPageContext = nextContext;
-    const surface = getCurrentSurface();
-    if (surface !== "none" && !app.querySelector(`.surface-fab--${surface}`)) {
-      render(app);
-    }
-    upsertProjectImportButton(app);
+    refreshSurfacesForContext(app);
     return;
   }
 
+  const nextIsResolved = isResolvedProviderConversation(nextContext);
+  // A route reshape inside the same provider conversation is a carrier-level
+  // change (#133): `/c/<id>` ↔ `/g/<project>/c/<id>` and similar migrations
+  // keep the run's pinned identity, so they must not reset it or tell the Human
+  // the conversation changed. Returning to the conversation the local run is
+  // pinned to counts as the same rebind even when the identity was unresolved
+  // for a while — the run never stopped pinning it. The observation's epoch
+  // move is rebound by the ordinary start path; only a resolved, different
+  // conversation fails closed below.
+  const sameConversation = isSameProviderConversation(currentPageContext, nextContext) ||
+    (nextIsResolved && currentPageContext.origin === nextContext.origin &&
+      ((bcrRun?.status === "ACTIVE" && bcrRun.providerConversationRef === nextContext.conversationId) ||
+        // A run that settled while the identity was unknown keeps its visible
+        // stop reason when the page returns to its conversation.
+        bcrLastEndedRun?.providerConversationRef === nextContext.conversationId));
   currentPageContext = nextContext;
+  if (!nextIsResolved) {
+    // Unknown identity is not a conversation change: pause recovery, end
+    // nothing. The observation loop and the start path both require a
+    // conversation ref, so no claim or dispatch is possible while it stays
+    // unresolved; a pending GO settles visibly in the pause itself.
+    pauseForUnresolvedConversation(app);
+    return;
+  }
+  if (sameConversation) {
+    refreshSurfacesForContext(app);
+    return;
+  }
   resetForConversationChange(app);
+}
+
+/**
+ * The page no longer names a provider conversation (#133). That is not proof
+ * the conversation changed, so the run is kept — pinned to an identity this
+ * page cannot currently confirm — and recovery pauses: with no conversation
+ * ref, neither the observation loop nor the start path can claim or dispatch.
+ * A pending GO cannot be proven accepted or not accepted here either, so it
+ * settles as visible `SUBMISSION_UNCERTAIN` rather than waiting on a carrier
+ * that may never come back. A later resolution to a different id still ends
+ * the run through the ordinary conversation-change reset.
+ */
+function pauseForUnresolvedConversation(app: HTMLElement): void {
+  cancelActiveWait();
+  activeSubmission = null;
+  submissionAuthorityLossSince = null;
+  submissionRecoveryRequestedAt = -Infinity;
+  closePanels();
+  const pendingSubmissionOperationId = bcrRun?.pendingSubmissionOperationId;
+  if (pendingSubmissionOperationId !== undefined) {
+    void applyContinuationRunEvent({ type: "OPERATION_UNCERTAIN", operationId: pendingSubmissionOperationId });
+  }
+  viewState.settingsOpen = false;
+  viewState.state = "idle";
+  viewState.message = COPY[viewState.locale].conversationIdentityUnresolved;
+  viewState.threads = [];
+  viewState.crystals = [];
+  viewState.contextPack = null;
+  viewState.selectedIndex = 0;
+  viewState.selectedCrystalIndex = 0;
+  viewState.modal = null;
+  render(app);
+  window.setTimeout(() => upsertProjectImportButton(app), 0);
+}
+
+function refreshSurfacesForContext(app: HTMLElement): void {
+  // The paused-identity message describes a moment that has passed once the
+  // page names a conversation again; leaving it up would read as a standing
+  // fault. Match every locale: the Human may switch language while paused.
+  const pausedIdentityMessage = Object.values(COPY).some(candidate =>
+    viewState.message === candidate.conversationIdentityUnresolved);
+  if (pausedIdentityMessage && isResolvedProviderConversation(currentPageContext)) {
+    viewState.message = COPY[viewState.locale].ready;
+    render(app);
+  }
+  const surface = getCurrentSurface();
+  if (surface !== "none" && !app.querySelector(`.surface-fab--${surface}`)) {
+    render(app);
+  }
+  upsertProjectImportButton(app);
 }
 
 /**
@@ -3896,6 +3993,41 @@ async function restoreActiveSubmission(observation: CarrierObservation): Promise
       });
       if (notAccepted) {
         await applyContinuationRunEvent({ type: "OPERATION_NOT_ACCEPTED", operationId: notAccepted.operationId });
+        return;
+      }
+    }
+    // A run adopted by this document (#133) may carry a pending operation that
+    // another execution dispatched. The completion lane above is fenced to the
+    // dispatching execution, so it can never settle that round from here; map
+    // the run's own pending id from its durable state once instead of leaving
+    // the Run waiting on MAX_IN_FLIGHT forever. A missing record or unreadable
+    // fence is UNCERTAIN — never non-acceptance — and nothing here dispatches.
+    if (bcrRun && bcrPendingRebindRunId === bcrRun.runId) {
+      const rebind = selectPendingSubmissionOnCarrierReplacement({
+        operations: response.result,
+        observation: {
+          carrierRef: observation.carrierRef,
+          executionInstanceRef: observation.executionInstanceRef,
+          providerConversationRef: observation.providerConversationRef
+        },
+        run: bcrRun
+      });
+      bcrPendingRebindRunId = null;
+      if (rebind?.state === "COMPLETED") {
+        // Acceptance is the durable fact; the page's last assistant message is
+        // not proof it is the accepted turn, so no turnRef is stamped here.
+        await applyContinuationRunEvent({ type: "OPERATION_COMPLETED", operationId: rebind.operationId });
+        if (bcrRun?.mode === "AUTO_X5" && bcrRun.phase === "EVALUATING") {
+          void runExclusiveBcrAction(() => autoAdvanceRound({ allowNextDispatch: false }));
+        }
+        return;
+      }
+      if (rebind?.state === "NOT_ACCEPTED") {
+        await applyContinuationRunEvent({ type: "OPERATION_NOT_ACCEPTED", operationId: rebind.operationId });
+        return;
+      }
+      if (rebind?.state === "UNCERTAIN") {
+        await applyContinuationRunEvent({ type: "OPERATION_UNCERTAIN", operationId: rebind.operationId });
         return;
       }
     }

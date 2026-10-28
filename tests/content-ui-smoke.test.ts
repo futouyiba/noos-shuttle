@@ -1906,15 +1906,249 @@ describe("content script smoke flow", () => {
   }, 30_000);
 });
 
+// #133: the durable run is pinned to the provider conversation, not to the
+// carrier that happens to be rendering it. These tests drive the real
+// service-worker store across route reshapes, conversation changes and carrier
+// replacements, and assert that a pending GO is never blindly resent.
+describe("same-conversation carrier recovery (#133)", () => {
+  async function openCarrierPage(tabId: number, snapshot: Record<string, unknown> = {}): Promise<Page> {
+    const page = await newMockChatPage({ startWithHandoffs: false, injectContentScript: false });
+    await page.addInitScript(realLedgerBridge, { snapshot, tabId });
+    await page.reload();
+    await page.addScriptTag({ content: `(function () {\n${serviceWorkerScript}\n})();` });
+    await page.addScriptTag({ content: contentScript });
+    return page;
+  }
+
+  async function reloadCarrier(page: Page, tabId: number): Promise<void> {
+    const durable = await page.evaluate(() =>
+      JSON.parse(JSON.stringify((globalThis as any).realLedgerBacking)) as Record<string, unknown>);
+    await page.addInitScript(realLedgerBridge, { snapshot: durable, tabId });
+    await page.reload();
+    await page.addScriptTag({ content: `(function () {\n${serviceWorkerScript}\n})();` });
+    await page.addScriptTag({ content: contentScript });
+  }
+
+  async function seedActiveRun(page: Page, input: {
+    conversationRef: string;
+    mode: "ASSISTED" | "AUTO_X5";
+    queued?: boolean;
+    pending?: { operationId: string; state: string };
+  }): Promise<void> {
+    await page.evaluate(async ({ conversationRef, mode, queued, pending }) => {
+      const backing = (globalThis as any).realLedgerBacking;
+      const send = (message: unknown) => (globalThis as any).chrome.runtime.sendMessage(message);
+      const now = Date.now();
+      const runId = "bcr-133-run";
+      const started = await send({ type: "NOOS_CONTINUATION_RUN_MUTATION", mutation: { type: "start", input: {
+        runId, workItemId: "shuttle-bcr-run", logicalThreadId: `thread:${conversationRef}`,
+        providerConversationRef: conversationRef, bindingEpoch: 0, maxContinuations: 5, mode, now,
+        ...(queued ? { startQueued: true, queuedStartBaselineUserCount: 0 } : {}) } } });
+      if (!started?.ok) throw new Error(`seed start failed: ${started?.error}`);
+      if (!pending) return;
+      const dispatched = await send({ type: "NOOS_CONTINUATION_RUN_MUTATION", mutation: { type: "apply", runId,
+        event: { type: "DISPATCH_ISSUED", operationId: pending.operationId }, now: now + 1 } });
+      if (!dispatched?.ok) throw new Error(`seed dispatch failed: ${dispatched?.error}`);
+      await send({ type: "NOOS_CONTINUATION_RUN_MUTATION", mutation: { type: "apply", runId,
+        event: { type: "CARRIER_PHASE", carrierState: "STABILIZING" }, now: now + 2 } });
+      backing.noosSubmissionOperations = [{
+        operationId: pending.operationId,
+        operationKind: "GO",
+        workItemId: "shuttle-bcr-run",
+        logicalThreadId: `thread:${conversationRef}`,
+        targetCarrierRef: "browser-tab:11",
+        providerConversationRef: conversationRef,
+        dispatchFence: {
+          providerConversationRef: conversationRef,
+          bindingEpoch: 0,
+          leaseGeneration: 0,
+          leaseOwnerRef: "observer-previous-document",
+          targetCarrierRef: "browser-tab:11"
+        },
+        payloadFingerprint: "fixture-payload",
+        payload: "继续",
+        runId,
+        preSubmitBaseline: { conversationRef, routeRef: `/c/${conversationRef}`, assistantMessageCount: 0, userMessageCount: 0, observedAt: now },
+        state: pending.state,
+        createdAt: now,
+        lastObservedAt: now,
+        dispatchClaimedAt: now
+      }];
+      backing.noosSubmissionOperationsRevision = 1;
+    }, input);
+  }
+
+  function runProjection(page: Page, conversationRef: string): Promise<string> {
+    return page.evaluate((ref) => {
+      const store = (globalThis as any).realLedgerBacking.noosContinuationRunStore;
+      const active = store?.activeByConversation?.[ref];
+      if (active) return `active:${active.phase}:${active.consumedContinuations}:${active.pendingSubmissionOperationId ?? "none"}`;
+      const ended = store?.ended?.[0];
+      return ended ? `ended:${ended.status}:${ended.stopReason}:${ended.consumedContinuations}` : "none";
+    }, conversationRef);
+  }
+
+  it("keeps an ACTIVE run across a same-conversation route reshape and ends it on a conversation change", async () => {
+    const page = await openCarrierPage(11);
+    await seedActiveRun(page, { conversationRef: "noos-content-smoke", mode: "ASSISTED" });
+    await reloadCarrier(page, 11);
+    await clickShuttle(page, ".surface-fab");
+    await expect.poll(() => page.evaluate(() =>
+      Boolean(document.querySelector("#noos-shuttle-root")?.shadowRoot?.querySelector("[data-action='bcr-go']"))
+    ), { timeout: 20_000 }).toBe(true);
+
+    // `/c/<id>` → `/g/<project>/c/<id>`: same provider conversation, new route.
+    await page.evaluate(() => history.replaceState({}, "", "/g/project-x/c/noos-content-smoke"));
+    await page.waitForTimeout(1_500);
+    expect(await runProjection(page, "noos-content-smoke")).toBe("active:READY_TO_GO:0:none");
+    expect(await page.evaluate(() =>
+      Boolean(document.querySelector("#noos-shuttle-root")?.shadowRoot?.querySelector("[data-action='bcr-go']"))
+    )).toBe(true);
+
+    // A route with no resolvable conversation id is an unknown identity, not a
+    // conversation change: recovery pauses and the run survives.
+    await page.evaluate(() => history.replaceState({}, "", "/"));
+    await page.waitForTimeout(1_500);
+    expect(await runProjection(page, "noos-content-smoke")).toBe("active:READY_TO_GO:0:none");
+    // The pause is visible when the panel is opened: the run is still there,
+    // with the paused-identity message instead of a conversation-changed one.
+    await clickShuttle(page, ".surface-fab");
+    await expect.poll(async () => (await shuttleText(page)).includes("对话身份未解析，恢复已暂停。"), { timeout: 5_000 }).toBe(true);
+    // Returning to the pinned conversation resumes the same run.
+    await page.evaluate(() => history.replaceState({}, "", "/c/noos-content-smoke"));
+    await page.waitForTimeout(1_500);
+    expect(await runProjection(page, "noos-content-smoke")).toBe("active:READY_TO_GO:0:none");
+    expect(await page.evaluate(() =>
+      Boolean(document.querySelector("#noos-shuttle-root")?.shadowRoot?.querySelector("[data-action='bcr-go']"))
+    )).toBe(true);
+
+    // A different conversation id is the boundary that still fail-closes.
+    await page.evaluate(() => history.replaceState({}, "", "/c/other-conversation"));
+    await expect.poll(() => runProjection(page, "noos-content-smoke"), { timeout: 10_000 })
+      .toBe("ended:FAILED_SAFE:CONVERSATION_REBASE_REQUIRED:0");
+    await page.close();
+  }, 60_000);
+
+  for (const scenario of [
+    { state: "COMPLETED", expected: "active:AWAITING_HUMAN_DECISION:1:none" },
+    { state: "FAILED_SAFE", expected: "ended:FAILED_SAFE:SUBMISSION_NOT_ACCEPTED:0" },
+    { state: "DISPATCHING", expected: "ended:FAILED_SAFE:SUBMISSION_UNCERTAIN:0" }
+  ] as const) {
+    it(`maps a pending GO whose dispatching carrier is gone: ${scenario.state}`, async () => {
+      const operationId = `bcr-133-run:go:1-${scenario.state.toLowerCase()}`;
+      const page = await openCarrierPage(11);
+      await seedActiveRun(page, {
+        conversationRef: "noos-content-smoke",
+        mode: "ASSISTED",
+        pending: { operationId, state: scenario.state }
+      });
+      // A different browser tab over the same extension storage.
+      await reloadCarrier(page, 12);
+      await page.evaluate(() => {
+        (globalThis as any).providerDispatches = 0;
+        document.querySelector("button")!.addEventListener("click", () => { (globalThis as any).providerDispatches++; });
+      });
+      await expect.poll(() => runProjection(page, "noos-content-smoke"), { timeout: 25_000 }).toBe(scenario.expected);
+      await page.waitForTimeout(1_500);
+      const settled = await page.evaluate(() => ({
+        operations: (globalThis as any).realLedgerBacking.noosSubmissionOperations,
+        revision: (globalThis as any).realLedgerBacking.noosSubmissionOperationsRevision,
+        providerDispatches: (globalThis as any).providerDispatches
+      }));
+      // The mapping reads the durable record: it neither rewrites it nor sends
+      // anything to the provider.
+      expect(settled.operations).toHaveLength(1);
+      expect(settled.operations[0].state).toBe(scenario.state);
+      expect(settled.revision).toBe(1);
+      expect(settled.providerDispatches).toBe(0);
+      await page.close();
+    }, 60_000);
+  }
+
+  it("settles a pending GO as visible uncertainty when the identity becomes unknown", async () => {
+    const page = await openCarrierPage(11);
+    await seedActiveRun(page, { conversationRef: "noos-content-smoke", mode: "ASSISTED" });
+    await reloadCarrier(page, 11);
+    await page.evaluate(() => {
+      (globalThis as any).providerDispatches = 0;
+      document.querySelector("button")!.addEventListener("click", () => { (globalThis as any).providerDispatches++; });
+    });
+    await clickShuttle(page, ".surface-fab");
+    await expect.poll(() => page.evaluate(() =>
+      Boolean(document.querySelector("#noos-shuttle-root")?.shadowRoot?.querySelector("[data-action='bcr-go']"))
+    ), { timeout: 20_000 }).toBe(true);
+    await clickShuttle(page, "[data-action='bcr-go']");
+    await expect.poll(() => page.evaluate(() => (globalThis as any).providerDispatches), { timeout: 20_000 }).toBe(1);
+    expect((await runProjection(page, "noos-content-smoke")).startsWith("active:ASSISTANT_GENERATING:0:")).toBe(true);
+    // The page leaves the conversation while the GO is unresolved: the unknown
+    // identity must settle it visibly, never wait forever and never resend.
+    await page.evaluate(() => history.replaceState({}, "", "/"));
+    await expect.poll(() => runProjection(page, "noos-content-smoke"), { timeout: 10_000 })
+      .toBe("ended:FAILED_SAFE:SUBMISSION_UNCERTAIN:0");
+    await page.waitForTimeout(1_500);
+    expect(await page.evaluate(() => (globalThis as any).providerDispatches)).toBe(1);
+    await page.close();
+  }, 60_000);
+
+  it("releases a queued START exactly once after a carrier replacement", async () => {
+    const page = await openCarrierPage(11);
+    await seedActiveRun(page, { conversationRef: "noos-content-smoke", mode: "AUTO_X5", queued: true });
+    // The queued authorization is durable (#132); a different browser tab
+    // adopts it and the same-conversation READY observation releases it.
+    await reloadCarrier(page, 12);
+    await page.evaluate(() => {
+      (globalThis as any).providerDispatches = 0;
+      document.querySelector("button")!.addEventListener("click", () => { (globalThis as any).providerDispatches++; });
+    });
+    await expect.poll(() => page.evaluate(() => (globalThis as any).providerDispatches), { timeout: 25_000 }).toBe(1);
+    expect((await runProjection(page, "noos-content-smoke")).startsWith("active:ASSISTANT_GENERATING:0:")).toBe(true);
+    // The durable CARRIER_READY transition is the only release, so no second
+    // automatic round is armed by the adoption.
+    await page.waitForTimeout(3_000);
+    expect(await page.evaluate(() => (globalThis as any).providerDispatches)).toBe(1);
+    await page.close();
+  }, 60_000);
+
+  it("does not auto-dispatch a READY_TO_GO run adopted by a new carrier", async () => {
+    const page = await openCarrierPage(11);
+    await seedActiveRun(page, { conversationRef: "noos-content-smoke", mode: "AUTO_X5" });
+    await reloadCarrier(page, 12);
+    await page.evaluate(() => {
+      (globalThis as any).providerDispatches = 0;
+      document.querySelector("button")!.addEventListener("click", () => { (globalThis as any).providerDispatches++; });
+    });
+    await page.waitForTimeout(6_000);
+    expect(await page.evaluate(() => (globalThis as any).providerDispatches)).toBe(0);
+    expect(await runProjection(page, "noos-content-smoke")).toBe("active:READY_TO_GO:0:none");
+
+    await clickShuttle(page, ".surface-fab");
+    await expect.poll(() => page.evaluate(() =>
+      Boolean(document.querySelector("#noos-shuttle-root")?.shadowRoot?.querySelector("[data-action='bcr-go']"))
+    ), { timeout: 20_000 }).toBe(true);
+    await clickShuttle(page, "[data-action='bcr-go']");
+    await expect.poll(() => page.evaluate(() => (globalThis as any).providerDispatches), { timeout: 20_000 }).toBe(1);
+    expect((await runProjection(page, "noos-content-smoke")).startsWith("active:ASSISTANT_GENERATING:0:")).toBe(true);
+    // One explicit Send go issues exactly one GO; adoption did not leave a
+    // second automatic round armed.
+    await page.waitForTimeout(3_000);
+    expect(await page.evaluate(() => (globalThis as any).providerDispatches)).toBe(1);
+    await page.close();
+  }, 90_000);
+});
+
 // Runs inside the page: wires the real service-worker bundle to an in-page
 // `chrome` mock whose durable storage is a plain object. Installed through
 // addInitScript so a reload can come up on a *surviving* extension storage.
-function realLedgerBridge(snapshot: Record<string, unknown>): void {
+// `{ snapshot, tabId }` comes up as another browser tab over the same storage;
+// a bare snapshot keeps the historical `browser-tab:11`.
+function realLedgerBridge(input: Record<string, unknown> | { snapshot: Record<string, unknown>; tabId: number }): void {
+  const snapshot = (input as { snapshot?: Record<string, unknown> }).snapshot ?? input as Record<string, unknown>;
+  const tabId = (input as { tabId?: number }).tabId ?? 11;
   const listeners: Array<(message: unknown, sender: unknown, sendResponse: (response: unknown) => void) => unknown> = [];
   const backing = snapshot;
   const sendMessage = async (message: unknown) => new Promise<unknown>(resolve => {
     if ((message as { type?: string }).type === "NOOS_OBSERVATION_CARRIER") {
-      resolve({ carrierRef: "browser-tab:11" });
+      resolve({ carrierRef: `browser-tab:${tabId}` });
       return;
     }
     let settled = false;
@@ -1932,7 +2166,7 @@ function realLedgerBridge(snapshot: Record<string, unknown>): void {
     const returned = listener(message, {
       id: "extension-id",
       frameId: 0,
-      tab: { id: 11 },
+      tab: { id: tabId },
       url: window.location.href
     }, complete);
     if (returned !== true) complete(undefined);
