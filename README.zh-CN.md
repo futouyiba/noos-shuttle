@@ -351,14 +351,27 @@ git push origin v0.1.2
 
 ## 文档
 
-- `docs/noos-install-architecture.md`：整体安装架构
-- `docs/noos-hub-shuttle-user-guide.zh-CN.md`：NOOS Hub 和 Shuttle 插件的安装、使用与核心概念
-- `docs/noos-downstream-integration.md`：下游 agent 集成设计
-- `docs/noos-handoff-vault-strategy.md`：handoff 入库策略
-- `docs/noos-llm-wiki-bridge.md`：NOOS 到 LLM Wiki source 层桥接设计
-- `docs/noos-vault-object-model.md`：Vault 对象模型、key/index、入库协议、上下文投喂和 runtime projection
-- `docs/noos-hub-local-write-channel.md`：Hub 本机写入通道设计和风险
-- `docs/noos-hub-updater-signing.md`：Hub updater 签名 key 保管、release secrets 和验证步骤
-- `docs/noos-shuttle-page-context-events.zh-CN.md`：浏览器页面上下文事件与状态处理
-- `docs/noos-thread-format.md`：NOOS Thread v0.1 格式
-- `docs/noos-shuttle-v0-design-breakdown.md`：v0 设计拆解
+以下按文档用途分组。`AGENTS.md` 中的仓库入口规则，以及其中指定的
+`noos_docs` canonical 快照，优先于任何提案或历史报告。
+
+### 当前或运行参考
+
+- [`docs/noos-install-architecture.md`](docs/noos-install-architecture.md)：整体安装架构
+- [`docs/noos-hub-shuttle-user-guide.zh-CN.md`](docs/noos-hub-shuttle-user-guide.zh-CN.md)：NOOS Hub 和 Shuttle 插件的安装、使用与核心概念
+- [`docs/noos-downstream-integration.md`](docs/noos-downstream-integration.md)：下游 agent 集成设计
+- [`docs/noos-handoff-vault-strategy.md`](docs/noos-handoff-vault-strategy.md)：handoff 入库策略
+- [`docs/noos-llm-wiki-bridge.md`](docs/noos-llm-wiki-bridge.md)：NOOS 到 LLM Wiki source 层桥接设计
+- [`docs/noos-vault-object-model.md`](docs/noos-vault-object-model.md)：Vault 对象模型、key/index、入库协议、上下文投喂和 runtime projection
+- [`docs/noos-hub-local-write-channel.md`](docs/noos-hub-local-write-channel.md)：Hub 本机写入通道设计和风险
+- [`docs/noos-hub-updater-signing.md`](docs/noos-hub-updater-signing.md)：Hub updater 签名 key 保管、release secrets 和验证步骤
+- [`docs/noos-shuttle-page-context-events.zh-CN.md`](docs/noos-shuttle-page-context-events.zh-CN.md)：浏览器页面上下文事件与状态处理
+- [`docs/noos-thread-format.md`](docs/noos-thread-format.md)：NOOS Thread v0.1 格式
+- [`docs/deliberation-harness/`](docs/deliberation-harness/)：当前契约、提案和历史证据，详见目录索引
+
+### 设计提案与历史记录
+
+- [`docs/noos-context-pack-background-layer.md`](docs/noos-context-pack-background-layer.md)：设计评审；清理前的完整原文归档于 [`docs/archive/2026-10-28-doc-cleanup/noos-context-pack-background-layer.md`](docs/archive/2026-10-28-doc-cleanup/noos-context-pack-background-layer.md)
+- [`docs/noos-shuttle-v0-design-breakdown.md`](docs/noos-shuttle-v0-design-breakdown.md)：v0 设计拆解
+- [`docs/noos-doc-forger.md`](docs/noos-doc-forger.md)：早期概念与工作流初稿；清理前的完整原文归档于 [`docs/archive/2026-10-28-doc-cleanup/noos-doc-forger.md`](docs/archive/2026-10-28-doc-cleanup/noos-doc-forger.md)
+
+其余设计说明和报告仍可从目录名与 Git 历史查找；除非文档自身的状态横幅另有说明，默认按历史材料阅读。

@@ -3,6 +3,8 @@
 > Authority-Level: Candidate
 > Owns: DocGovernance
 >
+> 状态：历史提案，仍保留为治理设计的 provenance；不属于当前生效规范。本文记录的 `Candidate`、`Current` 和 `Historical` 规则没有自动作用于其他文档。当前入口和权威关系以 [`docs/deliberation-harness/README.md`](README.md)、`AGENTS.md` 及其中指定的 canonical 文档为准。
+>
 > 提案，不是契约。**Epic Designer 已裁定 `PARTIAL_ACCEPT`，命名补充裁定为 `ACCEPT`**（见**附录 D**）；
 > 本版回应两条裁定的 resume condition，**修订尚待新 exact head 上的独立复审**。
 > **本提案仍为 Candidate；裁定与文档收录均不自动授权晋升、实施或合并。**
