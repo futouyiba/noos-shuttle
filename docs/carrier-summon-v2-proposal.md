@@ -24,7 +24,7 @@
 - Hub `GET /v1/focus/requests` + `POST /v1/focus/ack`：队列 TTL 600 秒、容量 32、内存态；扩展端纯函数匹配，多命中取最近活跃，未命中开观察 tab。传输为 5 秒轻轮询 + 30 秒 alarms 兜底。无跨设备、无多 profile。
 - V1 的待办数据来自活跃 Vault handoff 投影；并未建立 canonical 待办存储。
 
-**范围澄清（研究记录，designer 已确认为实现事实、非新设计决定）**：派发任务书把 V1 概括为「仅 chatgpt.com、仅 conversation ref」。对照已合并实现，该概括是**旧子集**：`src/shared/provider-identity.ts:1-15,33-40` 与 `apps/noos-hub/src-tauri/src/main.rs:376-390,494-520` 显示两端都已按 13 host 白名单和 6 种路由形态接受请求。本提案以代码事实为准，并在研究 Issue 上记录该措辞差异；这不构成对 V1 行为的改动。
+**范围澄清（研究记录，designer 已确认为实现事实、非新设计决定）**：派发任务书把 V1 概括为「仅 chatgpt.com、仅 conversation ref」。对照已合并实现，该概括是**旧子集**：`src/shared/provider-identity.ts:1-15,33-40` 与 `apps/noos-hub/src-tauri/src/main.rs:384-400,498-520` 显示两端都已按 13 host 白名单和 6 种路由形态接受请求。本提案以代码事实为准，并在研究 Issue 上记录该措辞差异；这不构成对 V1 行为的改动。
 
 证据：Issue #44 全文与验收评论；PR #47 merge 记录；[PR #47 review](https://github.com/futouyiba/noos-shuttle/pull/47#issuecomment-5705673584)。
 

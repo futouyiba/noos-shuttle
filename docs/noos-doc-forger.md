@@ -1,8 +1,10 @@
 # NOOS：LLM 时代的 Markdown Context Hub 与 Chatbot 推敲工作流设计
 
-> 状态：概念沉淀 / 工作流初稿
+> 状态：历史设计草案，仅作背景参考；不定义当前实现或契约
 > 日期：2026-05-05
 > 主题：NOOS 定义、Chatbot 可插拔、文档推敲管理、Prompt 与状态机设计
+>
+> 当前阅读提示：本文保留早期概念、工作流和待决问题。请先阅读入口文档与当前实现；本文的状态机、对象模型和 MVP 建议都需要按当前代码重新核对。清理前的完整原文见 [`docs/archive/2026-10-28-doc-cleanup/noos-doc-forger.md`](archive/2026-10-28-doc-cleanup/noos-doc-forger.md)。
 
 ---
 

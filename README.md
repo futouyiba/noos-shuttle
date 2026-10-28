@@ -360,14 +360,29 @@ git push origin v0.1.2
 
 ## Documentation
 
-- `docs/noos-install-architecture.md`: install architecture
-- `docs/noos-downstream-integration.md`: downstream agent integration design
-- `docs/noos-context-pack-background-layer.md`: Context Pack / transcript background layer design review
-- `docs/noos-handoff-vault-strategy.md`: handoff vault storage strategy
-- `docs/noos-llm-wiki-bridge.md`: NOOS to LLM Wiki source bridge design
-- `docs/noos-vault-object-model.md`: Vault object model, key/index, ingest protocol, prompt feeding, and runtime projection
-- `docs/noos-hub-local-write-channel.md`: Hub-owned local write channel design and risks
-- `docs/noos-hub-updater-signing.md`: Hub updater signing key custody, release secrets, and verification
-- `docs/noos-shuttle-page-context-events.md`: browser page context event and state handling
-- `docs/noos-thread-format.md`: NOOS Thread v0.1 format
-- `docs/noos-shuttle-v0-design-breakdown.md`: v0 design breakdown
+The documents below are grouped by role. The repository entry rules and the
+canonical `noos_docs` snapshot named in `AGENTS.md` take precedence over any
+proposal or historical report.
+
+### Current or operational reference
+
+- [`docs/noos-install-architecture.md`](docs/noos-install-architecture.md): install architecture
+- [`docs/noos-downstream-integration.md`](docs/noos-downstream-integration.md): downstream agent integration design
+- [`docs/noos-handoff-vault-strategy.md`](docs/noos-handoff-vault-strategy.md): handoff vault storage strategy
+- [`docs/noos-llm-wiki-bridge.md`](docs/noos-llm-wiki-bridge.md): NOOS to LLM Wiki source bridge
+- [`docs/noos-vault-object-model.md`](docs/noos-vault-object-model.md): Vault object model, key/index, ingest protocol, prompt feeding, and runtime projection
+- [`docs/noos-hub-local-write-channel.md`](docs/noos-hub-local-write-channel.md): Hub-owned local write channel and risks
+- [`docs/noos-hub-updater-signing.md`](docs/noos-hub-updater-signing.md): Hub updater signing key custody, release secrets, and verification
+- [`docs/noos-shuttle-page-context-events.md`](docs/noos-shuttle-page-context-events.md): browser page context events and state handling
+- [`docs/noos-thread-format.md`](docs/noos-thread-format.md): NOOS Thread v0.1 format
+- [`docs/deliberation-harness/`](docs/deliberation-harness/): current contract, proposals, and historical evidence, grouped in its index
+
+### Design proposals and historical records
+
+- [`docs/noos-context-pack-background-layer.md`](docs/noos-context-pack-background-layer.md): design review; the full pre-cleanup text is archived at [`docs/archive/2026-10-28-doc-cleanup/noos-context-pack-background-layer.md`](docs/archive/2026-10-28-doc-cleanup/noos-context-pack-background-layer.md)
+- [`docs/noos-shuttle-v0-design-breakdown.md`](docs/noos-shuttle-v0-design-breakdown.md): v0 design breakdown
+- [`docs/noos-doc-forger.md`](docs/noos-doc-forger.md): early concept and workflow draft; the full pre-cleanup text is archived at [`docs/archive/2026-10-28-doc-cleanup/noos-doc-forger.md`](docs/archive/2026-10-28-doc-cleanup/noos-doc-forger.md)
+
+The remaining design notes and reports are discoverable from their directory
+names and Git history; treat them as historical unless their own status banner
+says otherwise.

@@ -1,8 +1,10 @@
 # NOOS Context Pack / Transcript Background Layer
 
-> Status: design review and implementation breakdown
-> Date: 2026-05-25
-> Scope: local-first Context Pack for preserving full ChatGPT discussion context behind short handoffs and capsules
+> 状态：历史设计评审与实现拆解，仅作背景参考；不定义当前实现或契约
+> 日期：2026-05-25
+> 范围：在短 handoff 和 capsule 后保存完整 ChatGPT 讨论上下文的 local-first Context Pack
+>
+> 当前阅读提示：本文保留对象模型、实现阶段和测试计划，供追溯设计来源。请先阅读入口文档与当前实现；文中的“当前”只表示本文写作时的设计判断。清理前的完整原文见 [`docs/archive/2026-10-28-doc-cleanup/noos-context-pack-background-layer.md`](archive/2026-10-28-doc-cleanup/noos-context-pack-background-layer.md)。
 
 ## 1. Summary Judgment
 
