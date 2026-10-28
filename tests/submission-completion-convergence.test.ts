@@ -3,9 +3,11 @@ import {
   isSubmissionFence,
   selectCompletedSubmissionToConverge,
   selectNotAcceptedSubmissionToConverge,
+  selectPendingSubmissionOnCarrierReplacement,
   type SubmissionCompletionObservation,
   type SubmissionCompletionRecord,
-  type SubmissionCompletionRun
+  type SubmissionCompletionRun,
+  type SubmissionRebindObservation
 } from "../src/content/submission-completion-convergence";
 
 const fence = (over: Record<string, unknown> = {}) => ({
@@ -156,5 +158,84 @@ describe("isSubmissionFence", () => {
     expect(isSubmissionFence({ ...fence(), providerConversationRef: 2 })).toBe(false);
     expect(isSubmissionFence(null)).toBe(false);
     expect(isSubmissionFence("carrier-1")).toBe(false);
+  });
+});
+
+describe("selectPendingSubmissionOnCarrierReplacement", () => {
+  // The operation was dispatched by another execution: a different carrier, or
+  // the same tab reloaded into a new document.
+  const replaced = (over: Partial<SubmissionRebindObservation> = {}): SubmissionRebindObservation => ({
+    carrierRef: "carrier-2",
+    executionInstanceRef: "observer-2",
+    providerConversationRef: "conv-1",
+    ...over
+  });
+  const selectRebind = (over: {
+    operations?: SubmissionCompletionRecord[];
+    observation?: SubmissionRebindObservation;
+    run?: SubmissionCompletionRun | null;
+  } = {}) => selectPendingSubmissionOnCarrierReplacement({
+    operations: over.operations ?? [operation()],
+    observation: over.observation ?? replaced(),
+    run: over.run === undefined ? run() : over.run
+  });
+
+  it("continues the run on a durably COMPLETED round", () => {
+    expect(selectRebind()).toEqual({ operationId: "go-1", state: "COMPLETED" });
+  });
+
+  it("ends the run on a durably FAILED_SAFE round, never as acceptance", () => {
+    expect(selectRebind({ operations: [operation({ state: "FAILED_SAFE" })] }))
+      .toEqual({ operationId: "go-1", state: "NOT_ACCEPTED" });
+  });
+
+  it("settles every unprovable acceptance state as UNCERTAIN", () => {
+    for (const state of ["DISPATCHING", "UNCERTAIN", "OBSERVED_ACCEPTED", "PREPARED", "CANCELLED"]) {
+      expect(selectRebind({ operations: [operation({ state })] }))
+        .toEqual({ operationId: "go-1", state: "UNCERTAIN" });
+    }
+  });
+
+  it("treats a missing record or unreadable fence as UNCERTAIN rather than non-acceptance", () => {
+    expect(selectRebind({ operations: [] })).toEqual({ operationId: "go-1", state: "UNCERTAIN" });
+    expect(selectRebind({ operations: [operation({ dispatchFence: undefined })] }))
+      .toEqual({ operationId: "go-1", state: "UNCERTAIN" });
+    expect(selectRebind({ operations: [operation({ providerConversationRef: "conv-2" })] }))
+      .toEqual({ operationId: "go-1", state: "UNCERTAIN" });
+    expect(selectRebind({ operations: [operation({ dispatchFence: fence({ providerConversationRef: "conv-2" }) })] }))
+      .toEqual({ operationId: "go-1", state: "UNCERTAIN" });
+  });
+
+  it("leaves a round its own execution dispatched to the ordinary lanes", () => {
+    // Same carrier and same execution instance: recovery may still own it, so
+    // this selector must not decide it.
+    expect(selectRebind({
+      observation: replaced({ carrierRef: "carrier-1", executionInstanceRef: "observer-1" })
+    })).toBeNull();
+  });
+
+  it("applies after a reload of the same tab (new document, same carrier)", () => {
+    expect(selectRebind({
+      observation: replaced({ carrierRef: "carrier-1", executionInstanceRef: "observer-2" })
+    })).toEqual({ operationId: "go-1", state: "COMPLETED" });
+  });
+
+  it("stays scoped to the run's own pending operation and conversation", () => {
+    expect(selectRebind({ run: null })).toBeNull();
+    for (const status of ["ENDED", "CANCELLED", "FAILED_SAFE"]) {
+      expect(selectRebind({ run: run({ status }) })).toBeNull();
+    }
+    expect(selectRebind({ run: run({ pendingSubmissionOperationId: undefined }) })).toBeNull();
+    expect(selectRebind({ run: run({ providerConversationRef: "conv-2" }) })).toBeNull();
+    expect(selectRebind({ observation: replaced({ providerConversationRef: undefined }) })).toBeNull();
+    // Only the pending id may be decided; a completed sibling is not this round.
+    expect(selectRebind({
+      operations: [operation({ operationId: "go-2" })],
+      run: run({ pendingSubmissionOperationId: "go-2" })
+    })).toEqual({ operationId: "go-2", state: "COMPLETED" });
+    expect(selectRebind({
+      operations: [operation({ operationId: "go-2", state: "FAILED_SAFE" })],
+      run: run({ pendingSubmissionOperationId: "go-3" })
+    })).toEqual({ operationId: "go-3", state: "UNCERTAIN" });
   });
 });

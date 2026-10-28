@@ -115,3 +115,67 @@ export function isSubmissionFence(value: unknown): value is SubmissionDispatchFe
     typeof fence.leaseOwnerRef === "string" &&
     typeof fence.targetCarrierRef === "string";
 }
+
+/**
+ * Mapping a pending GO when its dispatching execution is gone (issue #133).
+ *
+ * A carrier replacement — a new tab, or a reload into a new document — adopts the
+ * run and finds a pending operation whose dispatch fence belongs to the previous
+ * execution (`leaseOwnerRef` or `targetCarrierRef` differs from the current
+ * observation). The existing completion and recovery lanes are deliberately
+ * scoped to the dispatching execution, so they can never settle it from here;
+ * leaving the run pending is the wedge #133 is about. The durable operation state
+ * is the only evidence this carrier has, and it maps exhaustively:
+ *
+ *   - `COMPLETED`     proven acceptance: continue the run, no resend.
+ *   - `FAILED_SAFE`   proven not accepted (#137): end the run visibly.
+ *   - everything else — `DISPATCHING`, `UNCERTAIN`, `OBSERVED_ACCEPTED`,
+ *     `PREPARED`, a missing record, an unreadable fence — is acceptance the
+ *     current execution cannot prove. It settles as visible UNCERTAIN; it is
+ *     never read as non-acceptance and never resent. `PREPARED` in particular
+ *     carries no proven-refusal receipt, so it is not proof the round did not
+ *     happen.
+ *
+ * Only the run's own pending id may be decided, and only for the run's own
+ * conversation. The caller applies exactly one Run event and stops.
+ */
+export type PendingSubmissionRebindState = "COMPLETED" | "NOT_ACCEPTED" | "UNCERTAIN";
+
+export interface SubmissionRebindObservation {
+  carrierRef: string;
+  executionInstanceRef: string;
+  providerConversationRef?: string;
+}
+
+export function selectPendingSubmissionOnCarrierReplacement(input: {
+  operations: readonly SubmissionCompletionRecord[];
+  observation: SubmissionRebindObservation;
+  run: SubmissionCompletionRun | null;
+}): { operationId: string; state: PendingSubmissionRebindState } | null {
+  const run = input.run;
+  const conversationRef = input.observation.providerConversationRef;
+  if (!run || !conversationRef) return null;
+  if (run.status !== "ACTIVE") return null;
+  if (run.providerConversationRef !== conversationRef) return null;
+  const operationId = run.pendingSubmissionOperationId;
+  if (operationId === undefined) return null;
+  const operation = input.operations.find(candidate => candidate.operationId === operationId);
+  // The record is unreadable or gone: acceptance is unprovable, and the run's
+  // own pending id still names the round. That is the UNCERTAIN row, not a
+  // reason to drop the pending state.
+  if (!operation) return { operationId, state: "UNCERTAIN" };
+  if (operation.providerConversationRef !== undefined && operation.providerConversationRef !== conversationRef) {
+    return { operationId, state: "UNCERTAIN" };
+  }
+  if (!isSubmissionFence(operation.dispatchFence)) return { operationId, state: "UNCERTAIN" };
+  if (operation.dispatchFence.providerConversationRef !== conversationRef) return { operationId, state: "UNCERTAIN" };
+  // Same execution: the ordinary lanes own it (they may reconcile or recover
+  // in place). This selector only decides rounds the current execution did not
+  // dispatch.
+  const sameExecution = operation.targetCarrierRef === input.observation.carrierRef &&
+    operation.dispatchFence.leaseOwnerRef === input.observation.executionInstanceRef;
+  if (sameExecution) return null;
+  if (operation.state === "COMPLETED") return { operationId, state: "COMPLETED" };
+  if (operation.state === "FAILED_SAFE") return { operationId, state: "NOT_ACCEPTED" };
+  return { operationId, state: "UNCERTAIN" };
+}
