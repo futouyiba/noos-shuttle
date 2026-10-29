@@ -92,6 +92,12 @@ describe("runtime observation", () => {
     expect(deriveRuntimeState({ ...base, stopGenerationControlPresent: true }, "READY")).toBe("GENERATING");
   });
 
+  it("keeps assistant output mutation as independent GENERATING evidence", () => {
+    // Issue #84 narrowed the stop-control classifier; mutation must still be
+    // able to hold GENERATING on its own, with the phase priority unchanged.
+    expect(deriveRuntimeState({ ...base, assistantOutputMutating: true }, "READY")).toBe("GENERATING");
+  });
+
   it("normalizes missing identity and detects route/conversation changes", () => {
     const first = normalizeObservation(base, undefined, 10);
     const unresolved = normalizeObservation({ ...base, providerConversationRef: "" }, first, 20);
