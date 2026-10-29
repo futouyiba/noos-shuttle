@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { JSDOM } from "jsdom";
-import { findMainChatComposer, isChatbotGenerating } from "../src/content/chatgpt-dom";
+import { findMainChatComposer, getChatComposer, isChatbotGenerating } from "../src/content/chatgpt-dom";
 
 /**
  * `chatgpt-dom` reads the live `document`/`window`, so each case installs a
@@ -231,6 +231,22 @@ describe("findMainChatComposer", () => {
       expect(composer).toBe(document.querySelector(".ProseMirror"));
       expect(composer?.tagName).not.toBe("TEXTAREA");
     });
+  });
+
+  it("uses the same placement filter for execution-side lookup", () => {
+    withDom(`<body>${EDITING_TURN}${PROSEMIRROR_COMPOSER}</body>`, () => {
+      expect(getChatComposer()).toBe(document.querySelector(".ProseMirror"));
+    });
+  });
+
+  it("rejects search and dialog textboxes as composer fallbacks", () => {
+    withDom(
+      `<body><form role="search"><input role="textbox" value="search"></form><div role="dialog"><textarea>dialog</textarea></div></body>`,
+      () => {
+        expect(findMainChatComposer()).toBeNull();
+        expect(getChatComposer()).toBeNull();
+      }
+    );
   });
 
   it("does not accept a stray textarea outside the composer region as the composer", () => {

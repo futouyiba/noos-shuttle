@@ -194,17 +194,7 @@ export function isChatbotGenerating(): boolean {
 }
 
 function findChatInput(): HTMLElement | null {
-  const primary = document.querySelector<HTMLElement>("#prompt-textarea");
-  if (primary) return isUsableComposer(primary) ? primary : null;
-  for (const selector of INPUT_SELECTORS) {
-    const candidates = Array.from(document.querySelectorAll<HTMLElement>(selector));
-    const visible = candidates.find((candidate) => isUsableComposer(candidate));
-    if (visible) {
-      return visible;
-    }
-  }
-
-  return null;
+  return findMainChatComposer();
 }
 
 /**
@@ -241,6 +231,7 @@ export function findMainChatComposer(): HTMLElement | null {
  */
 function isMainComposerPlacement(candidate: HTMLElement): boolean {
   return !candidate.closest(CONVERSATION_TURN_SELECTOR) &&
+    !candidate.closest("[role='search'], [role='dialog'], dialog") &&
     Boolean(candidate.closest("form, [data-testid*='composer'], [class*='composer']"));
 }
 
