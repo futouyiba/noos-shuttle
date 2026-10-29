@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { JSDOM } from "jsdom";
 import { findMainChatComposer, getChatComposer, isChatbotGenerating } from "../src/content/chatgpt-dom";
@@ -130,85 +132,85 @@ describe("isChatbotGenerating", () => {
 });
 
 /**
- * Narrowing the fallback is only safe while the exact-attribute pass stays
- * unguarded, so these pin the ways a later change could quietly reintroduce a
- * false negative.
- *
- * Placement matters more than the assertion: a fixture the fallback would
- * catch anyway pins nothing. So the fixtures that pin a *selector* are
- * turn-scoped, where only the exact pass can reach them — a composer-scoped
- * `停止生成` fixture would pass even with that selector deleted. The
- * `aria-expanded` fixture is composer-scoped on purpose; it pins a different
- * property, that neither new guard is extended to the exact pass.
+ * Active-generation evidence is structural, not lexical (issue #84 ruling).
+ * A control is not active merely because its exact attribute happens to be one
+ * of the words a live stop control uses; a turn-scoped control or a disclosure
+ * toggle is history.
  */
-describe("isChatbotGenerating — the exact-attribute pass is deliberately unguarded", () => {
-  it("detects an exact stop control that sits inside an assistant turn", () => {
+describe("isChatbotGenerating — lexical exactness is not authority", () => {
+  it.each([
+    ["data-testid stop-button", `<button type="button" data-testid="stop-button"></button>`],
+    ["aria-label 停止回答", `<button type="button" aria-label="停止回答"></button>`],
+    ["aria-label 停止生成", `<button type="button" aria-label="停止生成"></button>`],
+    ["aria-label 停止", `<button type="button" aria-label="停止"></button>`],
+    ["aria-label Stop", `<button type="button" aria-label="Stop"></button>`]
+  ])("does not read a turn-scoped %s control as active", (_name, control) => {
     withDom(
-      `<body>
-        <section data-turn="assistant" data-testid="conversation-turn-6">
-          <button type="button" data-testid="stop-button"></button>
-        </section>
-        ${COMPOSER}${COMPOSER_END}
-      </body>`,
+      `<body><section data-turn="assistant" data-testid="conversation-turn-6">${control}</section>${COMPOSER}${COMPOSER_END}</body>`,
       () => {
-        expect(isChatbotGenerating()).toBe(true);
+        expect(isChatbotGenerating()).toBe(false);
       }
     );
   });
 
-  it("detects an exact aria-label stop control that sits inside an assistant turn", () => {
+  it("does not read a converged disclosure by its aria-label inside a turn as active", () => {
     withDom(
       `<body>
         <section data-turn="assistant" data-testid="conversation-turn-6">
-          <button type="button" aria-label="停止回答"></button>
+          <button type="button" aria-label="已停止思考"></button>
         </section>
         ${COMPOSER}${COMPOSER_END}
       </body>`,
       () => {
-        expect(isChatbotGenerating()).toBe(true);
+        expect(isChatbotGenerating()).toBe(false);
       }
     );
   });
 
-  it("detects an exact stop control that carries aria-expanded", () => {
-    withDom(
-      `<body>${COMPOSER}<button type="button" data-testid="stop-button" aria-expanded="false"></button>${COMPOSER_END}</body>`,
-      () => {
-        expect(isChatbotGenerating()).toBe(true);
-      }
-    );
+  it("does not read an English converged aria-label outside a turn as active", () => {
+    withDom(`<body><button type="button" aria-label="Stopped thinking"></button>${COMPOSER}${COMPOSER_END}</body>`, () => {
+      expect(isChatbotGenerating()).toBe(false);
+    });
   });
 
-  it("detects a stop control whose only signal is the aria-label='停止生成' selector", () => {
-    // Turn-scoped so the fallback excludes it: without the selector this
-    // control is invisible to the module.
-    withDom(
-      `<body>
-        <section data-turn="assistant" data-testid="conversation-turn-6">
-          <button type="button" aria-label="停止生成"></button>
-        </section>
-        ${COMPOSER}${COMPOSER_END}
-      </body>`,
-      () => {
-        expect(isChatbotGenerating()).toBe(true);
-      }
-    );
+  it("does not restore the deleted substring scanner for a stop-bearing testid", () => {
+    // The removed index.ts scan matched this shape on `[data-testid*='stop']`
+    // alone; the guarded classifier must not.
+    withDom(`<body><button type="button" data-testid="thinking-stop-toggle">已停止思考</button>${COMPOSER}${COMPOSER_END}</body>`, () => {
+      expect(isChatbotGenerating()).toBe(false);
+    });
   });
 
-  it("detects a stop control identified in turn by the aria-label='停止' selector", () => {
-    // Same shape as above — the fallback excludes turn-scoped controls, so this
-    // can only be reached through the exact pass.
-    withDom(
-      `<body>
-        <section data-turn="assistant" data-testid="conversation-turn-6">
-          <button type="button" aria-label="停止"></button>
-        </section>
-        ${COMPOSER}${COMPOSER_END}
-      </body>`,
-      () => {
-        expect(isChatbotGenerating()).toBe(true);
-      }
-    );
+  it("does not read an exact stop control carrying aria-expanded as active", () => {
+    withDom(`<body>${COMPOSER}<button type="button" data-testid="stop-button" aria-expanded="false"></button>${COMPOSER_END}</body>`, () => {
+      expect(isChatbotGenerating()).toBe(false);
+    });
+  });
+
+  it("counts a generic exact stop label when it sits in the composer region", () => {
+    withDom(`<body>${COMPOSER}<button type="button" aria-label="停止"></button>${COMPOSER_END}</body>`, () => {
+      expect(isChatbotGenerating()).toBe(true);
+    });
+  });
+});
+
+/**
+ * The two former independent paths must not be able to bypass the same guard
+ * (issue #84): index.ts delegates to this classifier instead of scanning the
+ * page with its own lexical selectors.
+ */
+describe("index.ts delegates stop-control detection to this classifier", () => {
+  // fileURLToPath, not .pathname: this repo path contains spaces.
+  const index = readFileSync(fileURLToPath(new URL("../src/content/index.ts", import.meta.url)), "utf8");
+
+  it("has no independent lexical stop-control scanner", () => {
+    expect(index).not.toMatch(/querySelectorAll[^\n]*data-testid\*='stop'/);
+    expect(index).not.toMatch(/aria-label\*='Stop'/);
+    expect(index).not.toMatch(/aria-label\*='停止'/);
+  });
+
+  it("derives stopGenerationControlPresent only from the classifier", () => {
+    expect(index).toContain("stopGenerationControlPresent: isChatbotGenerating(),");
   });
 });
 

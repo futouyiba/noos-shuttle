@@ -3812,8 +3812,9 @@ function readRuntimeObservation(context: PageContext): CarrierObservation {
   // shares the execution side's resolver (issue #134) rather than a bare id
   // lookup or a bare [role=textbox] sweep.
   const composer = findMainChatComposer();
-  const stopControl = Array.from(document.querySelectorAll<HTMLElement>("[data-testid*='stop'], button[aria-label*='Stop'], button[aria-label*='停止']"))
-    .some((candidate) => isVisibleForObservation(candidate));
+  // One classifier for "a live generation stop control is present" (issue #84).
+  // A second lexical scanner here could read a converged disclosure control as
+  // active without passing the guarded classifier in chatgpt-dom, reviving #69.
   const observation = runtimeObservationLedger.observe({
     provider: context.origin,
     routeRef: context.pathname,
@@ -3825,7 +3826,7 @@ function readRuntimeObservation(context: PageContext): CarrierObservation {
       !(composer as HTMLInputElement).readOnly && composer.getAttribute("aria-readonly") !== "true" &&
       !composer.closest("[inert], [aria-disabled='true']") &&
       (composer instanceof HTMLTextAreaElement || composer.isContentEditable)),
-    stopGenerationControlPresent: stopControl || isChatbotGenerating(),
+    stopGenerationControlPresent: isChatbotGenerating(),
     assistantOutputMutating: observationOutputChangedAt !== null && now - observationOutputChangedAt < 1_000,
     assistantMessageCount: assistantMessages.length,
     userMessageCount: document.querySelectorAll("[data-message-author-role='user']").length,

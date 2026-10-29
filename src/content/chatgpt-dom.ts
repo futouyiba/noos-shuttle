@@ -15,18 +15,24 @@ const SEND_BUTTON_SELECTORS = [
   "form button[type='submit']"
 ];
 
-// Exact-attribute matches only. Anything looser risks reading a *converged*
-// generation's disclosure control as an active one (see the fallback below).
+// Provider-specific identities: they say *this is the live stop control*, not
+// merely that the wording mentions stopping. Generic exact labels such as
+// `aria-label='Stop'` / `'停止'` are deliberately absent — an exact match on a
+// bare word is still only lexical evidence, so they must pass the same
+// structural guard as any other candidate (issue #84).
 const GENERATION_ACTIVE_SELECTORS = [
   "[data-testid='stop-button']",
   "[data-testid='composer-stop-button']",
-  "button[aria-label='Stop']",
   "button[aria-label='Stop generating']",
   "button[aria-label='Stop streaming']",
-  "button[aria-label='停止']",
   "button[aria-label='停止生成']",
   "button[aria-label='停止回答']"
 ];
+
+// Wording that *may* identify a live stop control; placement decides.
+const GENERIC_STOP_LABEL = /stop|停止/i;
+
+const COMPOSER_REGION_SELECTOR = "form, [data-testid*='composer'], [class*='composer']";
 
 // A turn whose stream was interrupted keeps a re-rendered disclosure toggle
 // describing the *finished* generation ("已停止思考" / "Stopped thinking"). It
@@ -232,7 +238,7 @@ export function findMainChatComposer(): HTMLElement | null {
 function isMainComposerPlacement(candidate: HTMLElement): boolean {
   return !candidate.closest(CONVERSATION_TURN_SELECTOR) &&
     !candidate.closest("[role='search'], [role='dialog'], dialog") &&
-    Boolean(candidate.closest("form, [data-testid*='composer'], [class*='composer']"));
+    Boolean(candidate.closest(COMPOSER_REGION_SELECTOR));
 }
 
 function findFileInput(root: ParentNode): HTMLInputElement | null {
@@ -248,7 +254,7 @@ function findFileInput(root: ParentNode): HTMLInputElement | null {
 }
 
 function findSendButton(composer?: HTMLElement): HTMLButtonElement | null {
-  const scope = composer ? composer.closest("form,[data-testid*='composer'],[class*='composer']") ?? composer.parentElement : document;
+  const scope = composer ? composer.closest(COMPOSER_REGION_SELECTOR) ?? composer.parentElement : document;
   for (const selector of SEND_BUTTON_SELECTORS) {
     const candidates = Array.from(scope?.querySelectorAll<HTMLButtonElement>(selector) ?? []);
     const visible = candidates.find((candidate) => isVisible(candidate) && !candidate.disabled && !candidate.closest("[aria-hidden='true']"));
@@ -274,35 +280,46 @@ function isUsableComposer(candidate: HTMLElement): boolean {
     (candidate instanceof HTMLTextAreaElement || candidate.isContentEditable || candidate.getAttribute("role") === "textbox");
 }
 
+/**
+ * The single classifier for "a live generation stop control is present"
+ * (issue #84). Every candidate — provider-specific identity or plain wording —
+ * passes the same structural guard, so no second lexical scanner can revive a
+ * converged turn's disclosure control.
+ */
 function findGenerationActiveButton(): HTMLButtonElement | null {
   for (const selector of GENERATION_ACTIVE_SELECTORS) {
     const candidates = Array.from(document.querySelectorAll<HTMLButtonElement>(selector));
-    const visible = candidates.find((candidate) => isVisible(candidate) && !candidate.closest("[aria-hidden='true']"));
-    if (visible) {
-      return visible;
+    const active = candidates.find(isGuardedStopControl);
+    if (active) {
+      return active;
     }
   }
 
-  const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>("button"));
-  return (
-    buttons.find((button) => {
-      return isVisible(button) && isActiveGenerationStopControl(button);
-    }) ?? null
-  );
+  // Wording alone is not authority. A generic 停止/Stop control only counts
+  // when it sits in the composer region, where the provider's live stop
+  // control lives; anywhere else the same words are history or a disclosure.
+  return Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
+    .find((button) => isGuardedStopControl(button) && Boolean(button.closest(COMPOSER_REGION_SELECTOR)) &&
+      GENERIC_STOP_LABEL.test(stopControlText(button))) ?? null;
 }
 
 /**
- * Last-resort classification for a button whose label merely mentions stopping.
- * A converged turn's disclosure toggle says 停止/Stop while describing a
- * *finished* generation, so it is excluded rather than read as active.
+ * Structural guard shared by both passes. A converged turn's disclosure toggle
+ * says 停止/Stop while describing a *finished* generation, and assistant turns
+ * host historical controls; the provider's live stop control never lives in
+ * one. A disclosure toggle is not an action either — it only expands text
+ * already rendered.
  */
-function isActiveGenerationStopControl(button: HTMLButtonElement): boolean {
+function isGuardedStopControl(button: HTMLButtonElement): boolean {
+  if (!isVisible(button)) return false;
+  if (button.closest("[aria-hidden='true']")) return false;
   if (button.closest(CONVERSATION_TURN_SELECTOR)) return false;
-  // A disclosure toggle is not an action; it only expands text already rendered.
   if (button.hasAttribute("aria-expanded")) return false;
+  return !CONVERGED_GENERATION_LABEL.test(stopControlText(button));
+}
 
-  const label = `${button.getAttribute("aria-label") ?? ""} ${button.textContent ?? ""}`.trim();
-  return /stop|停止/i.test(label) && !CONVERGED_GENERATION_LABEL.test(label);
+function stopControlText(button: HTMLButtonElement): string {
+  return `${button.getAttribute("aria-label") ?? ""} ${button.textContent ?? ""}`.trim();
 }
 
 function waitForComposerUpdate(): Promise<void> {
