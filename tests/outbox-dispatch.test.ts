@@ -113,6 +113,40 @@ async function claimedOperation(): Promise<SubmissionOperationLedger> {
   return ledger;
 }
 
+/**
+ * A reservation whose prepare landed but whose claim never did: the operation
+ * sits at PREPARED under the given fence. The baseline is deliberately the one
+ * the dead attempt saw (a turn older, a timestamp older) — the re-claim must
+ * normalize through retarget rather than assume the old identity still holds.
+ */
+async function preparedReservation(fence: SubmissionClaimContext = context(), now?: number): Promise<SubmissionOperationLedger> {
+  const ledger = new SubmissionOperationLedger(memoryStore());
+  await ledger.prepare({
+    operationId: "outbox-1",
+    operationKind: "OUTBOX_MESSAGE",
+    workItemId: "shuttle-outbox",
+    logicalThreadId: `thread:${CONVERSATION}`,
+    targetCarrierRef: CARRIER_REF,
+    providerConversationRef: CONVERSATION,
+    dispatchFence: fence,
+    payloadFingerprint: FINGERPRINT,
+    payload: PAYLOAD,
+    runId: "bcr-run-1",
+    preSubmitBaseline: {
+      conversationRef: CONVERSATION,
+      routeRef: "/c/conv-1",
+      assistantMessageCount: 1,
+      userMessageCount: 4,
+      lastUserMessageFingerprint: "prior-user",
+      lastAssistantMessageFingerprint: "a1",
+      headFingerprint: "h1",
+      observedAt: 500
+    },
+    now
+  });
+  return ledger;
+}
+
 describe("reconcileOutboxReservation closes the delivery loop", () => {
   it("settles a reserved operation all the way to COMPLETED", async () => {
     const ledger = await claimedOperation();
@@ -222,6 +256,90 @@ describe("reconcile is the only thing that touches a reserved operation", () => 
     expect(after?.createdAt).toBe(before?.createdAt);
     expect(after?.state).toBe("COMPLETED");
     expect(await ledger.list()).toHaveLength(1);
+  });
+
+  it("refuses a reservation whose claim never actuated instead of no-oping it", async () => {
+    const ledger = await preparedReservation();
+    const result = await reconcileOutboxReservation(
+      { itemId: "item-1", operationId: "outbox-1", observation: observation(), evidence },
+      { ledger }
+    );
+    // The gate no longer routes PREPARED here; if anything reaches this state
+    // anyway, "reconciled" would be a no-op reported as progress — the exact
+    // wedge the re-claim path exists to prevent — so it must refuse instead.
+    expect(result.status).toBe("BLOCKED");
+    expect(result.status === "BLOCKED" && result.reason).toBe("reservation_unclaimed");
+    const stored = await ledger.get("outbox-1");
+    expect(stored?.state).toBe("PREPARED");
+    expect(stored?.dispatchClaimedAt).toBeUndefined();
+  });
+});
+
+/**
+ * The re-claim half of finding F3 (PR #92 review): `prepare` succeeds, the
+ * claim never actuates (content-script teardown between the awaits, or a
+ * concurrent execution-owning operation), and the reservation is left PREPARED.
+ * These drive the same `dispatchOutboxMessage` entry the gate's DISPATCH
+ * decision reaches it by, against the real ledger, so the assertion is about
+ * the durable reservation, not a predicate.
+ */
+describe("a reservation whose claim never actuated is re-claimed, never re-minted", () => {
+  it("delivers the same reservation when the carrier still matches", async () => {
+    await withConversationDom("conv-1", async () => {
+      const ledger = await preparedReservation(context(), CLAIMED_AT);
+      const before = await ledger.get("outbox-1");
+      const result = await dispatchOutboxMessage(
+        { itemId: "item-1", operationId: "outbox-1", payload: PAYLOAD, payloadFingerprint: FINGERPRINT, revision: 1, observation: observation(), evidence },
+        { ledger, readLiveCarrier: () => ({ observation: observation(), carrier: carrierSnapshot(observation()) }) }
+      );
+      expect(result.status).toBe("DISPATCHED");
+      expect(composerText()).toBe(PAYLOAD);
+      const stored = await ledger.get("outbox-1");
+      // One reservation, claimed once — not a second operation, not a resend.
+      expect(await ledger.list()).toHaveLength(1);
+      expect(stored?.createdAt).toBe(before?.createdAt);
+      expect(stored?.state).toBe("DISPATCHING");
+      expect(stored?.dispatchClaimedAt).toBeDefined();
+    });
+  });
+
+  it("re-fences through retarget when the fence names a carrier that is gone", async () => {
+    await withConversationDom("conv-1", async () => {
+      // The reservation was prepared by an execution instance that has since
+      // torn down; the durable authority now names the live one.
+      const ledger = await preparedReservation(context({ leaseOwnerRef: "observer-dead" }), CLAIMED_AT);
+      const result = await dispatchOutboxMessage(
+        { itemId: "item-1", operationId: "outbox-1", payload: PAYLOAD, payloadFingerprint: FINGERPRINT, revision: 1, observation: observation(), evidence },
+        { ledger, readLiveCarrier: () => ({ observation: observation(), carrier: carrierSnapshot(observation()) }) }
+      );
+      expect(result.status).toBe("DISPATCHED");
+      expect(composerText()).toBe(PAYLOAD);
+      const stored = await ledger.get("outbox-1");
+      // Same reservation, delivered under the now-authoritative fence.
+      expect(await ledger.list()).toHaveLength(1);
+      expect(stored?.dispatchFence?.leaseOwnerRef).toBe(OBSERVER);
+    });
+  });
+
+  it("refuses without sending when the ledger will not re-fence the reservation", async () => {
+    await withConversationDom("conv-1", async () => {
+      // Prepared "now" (a wall-clock stamp) sits after the probe's observation
+      // time, so the ledger's monotonic-now guard refuses the retarget.
+      const ledger = await preparedReservation(context(), undefined);
+      const result = await dispatchOutboxMessage(
+        { itemId: "item-1", operationId: "outbox-1", payload: PAYLOAD, payloadFingerprint: FINGERPRINT, revision: 1, observation: observation(), evidence },
+        { ledger, readLiveCarrier: () => ({ observation: observation(), carrier: carrierSnapshot(observation()) }) }
+      );
+      expect(result.status).toBe("BLOCKED");
+      expect(result.status === "BLOCKED" && result.reason).toBe("reservation_retarget_refused");
+      // Nothing was sent and nothing was re-minted: the reservation stands
+      // exactly where it was for the next probe to retry.
+      expect(composerText()).toBe("");
+      const stored = await ledger.get("outbox-1");
+      expect(await ledger.list()).toHaveLength(1);
+      expect(stored?.state).toBe("PREPARED");
+      expect(stored?.dispatchClaimedAt).toBeUndefined();
+    });
   });
 });
 
