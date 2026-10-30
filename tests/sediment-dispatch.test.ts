@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   SubmissionOperationLedger,
+  SUBMISSION_STABLE_WINDOW_MS,
   fingerprintSubmissionPayload,
-  type SubmissionClaimContext
+  type SubmissionClaimContext,
+  type SubmissionObservation
 } from "../src/core/submission-operation";
 import { provenNotActuatedRefusal } from "../src/core/proven-refusal";
 import { shortcutPayloadDefinition } from "../src/core/continuation-payload";
@@ -94,6 +96,45 @@ function request(overrides: Partial<SedimentDispatchRequest> = {}): SedimentDisp
   };
 }
 
+/**
+ * One post-dispatch observation of the same carrier. Counts and fingerprints
+ * describe a *new turn* by default (the dispatched payload as the last user
+ * turn); callers override them to model a foreign turn.
+ */
+function observation(overrides: Partial<SubmissionObservation> = {}): SubmissionObservation {
+  return {
+    conversationRef: CONVERSATION,
+    routeRef: "/c/conversation-a",
+    assistantMessageCount: 1,
+    userMessageCount: 2,
+    lastUserMessageFingerprint: FINGERPRINT,
+    generationActive: true,
+    observedAt: 3_000,
+    sourceEpoch: 3,
+    dispatchFence: {
+      providerConversationRef: CONVERSATION,
+      bindingEpoch: 3,
+      leaseGeneration: 3,
+      leaseOwnerRef: OBSERVER,
+      targetCarrierRef: CARRIER_REF
+    },
+    ...overrides
+  };
+}
+
+/** Dispatch through the real composer, then return the ledger's own timestamp. */
+async function dispatchThenReadLastObservedAt(ledger: SubmissionOperationLedger): Promise<number> {
+  const result = await dispatchSediment(request(), {
+    ledger,
+    readCurrentCarrier: async () => carrier(),
+    dispatch: async () => undefined
+  });
+  expect(result.status).toBe("DISPATCHED");
+  const operation = await ledger.get("sediment-1");
+  expect(operation?.state).toBe("DISPATCHING");
+  return operation?.lastObservedAt ?? 0;
+}
+
 describe("dispatchSediment", () => {
   it("records the SEDIMENT kind, never GO, and dispatches exactly once", async () => {
     const ledger = new SubmissionOperationLedger(memoryStore());
@@ -159,5 +200,74 @@ describe("dispatchSediment", () => {
       dispatch: async () => undefined
     });
     expect((await ledger.get("sediment-1"))?.payloadFingerprint).toBe(fingerprintSubmissionPayload(payload));
+  });
+
+  /**
+   * The review finding on slice 2: `SEDIMENT` is a real provider-facing
+   * dispatch, so its acceptance must be *its own dispatched bytes* — never "some
+   * new turn appeared on this carrier". The wrong-payload and unrelated-new-turn
+   * cases below are the counter-examples; only the exact payload may become
+   * `OBSERVED_ACCEPTED`.
+   */
+  it("reconciles to OBSERVED_ACCEPTED when the dispatched payload is the last user turn", async () => {
+    const ledger = new SubmissionOperationLedger(memoryStore());
+    const lastObservedAt = await dispatchThenReadLastObservedAt(ledger);
+
+    const acceptedAt = lastObservedAt + 1_000;
+    const result = await ledger.reconcile("sediment-1", observation({ observedAt: acceptedAt, stableSince: acceptedAt }));
+    expect(result.outcome).toBe("PROVEN_ACCEPTED");
+    expect(result.operation?.state).toBe("OBSERVED_ACCEPTED");
+    expect(result.operation?.acceptedPayloadFingerprint).toBe(FINGERPRINT);
+
+    // The completion gate (isCompletionEvidence) applies the same fingerprint
+    // requirement: a stable, finished turn that is still ours may complete.
+    await ledger.reconcile("sediment-1", observation({
+      observedAt: acceptedAt + SUBMISSION_STABLE_WINDOW_MS + 1,
+      stableSince: acceptedAt,
+      generationActive: false
+    }));
+    const completed = await ledger.record("sediment-1", "COMPLETED", { now: acceptedAt + SUBMISSION_STABLE_WINDOW_MS + 2 });
+    expect(completed?.state).toBe("COMPLETED");
+  });
+
+  it("does not treat some other new user turn as SEDIMENT acceptance", async () => {
+    const ledger = new SubmissionOperationLedger(memoryStore());
+    const lastObservedAt = await dispatchThenReadLastObservedAt(ledger);
+
+    const result = await ledger.reconcile("sediment-1", observation({
+      observedAt: lastObservedAt + 1_000,
+      lastUserMessageFingerprint: fingerprintSubmissionPayload("a human typed this by hand")
+    }));
+    expect(result.outcome).toBe("STILL_AMBIGUOUS");
+    expect(result.operation?.state).not.toBe("OBSERVED_ACCEPTED");
+    // Fail-closed: parked as UNCERTAIN, with no acceptance proof stamped.
+    expect(result.operation?.state).toBe("UNCERTAIN");
+    expect((await ledger.get("sediment-1"))?.acceptedPayloadFingerprint).toBeUndefined();
+
+    // Even a stable, finished turn built on that foreign message cannot close it.
+    await ledger.reconcile("sediment-1", observation({
+      observedAt: lastObservedAt + SUBMISSION_STABLE_WINDOW_MS + 2_000,
+      stableSince: lastObservedAt + 1_000,
+      generationActive: false,
+      lastUserMessageFingerprint: fingerprintSubmissionPayload("a human typed this by hand")
+    }));
+    const completed = await ledger.record("sediment-1", "COMPLETED", { now: lastObservedAt + SUBMISSION_STABLE_WINDOW_MS + 2_001 });
+    expect(completed?.state).not.toBe("COMPLETED");
+    expect((await ledger.get("sediment-1"))?.acceptedPayloadFingerprint).toBeUndefined();
+  });
+
+  it("does not accept an unrelated assistant-only turn", async () => {
+    const ledger = new SubmissionOperationLedger(memoryStore());
+    const lastObservedAt = await dispatchThenReadLastObservedAt(ledger);
+
+    const result = await ledger.reconcile("sediment-1", observation({
+      observedAt: lastObservedAt + 1_000,
+      userMessageCount: 1,
+      lastUserMessageFingerprint: undefined,
+      assistantMessageCount: 2
+    }));
+    expect(result.outcome).toBe("STILL_AMBIGUOUS");
+    expect((await ledger.get("sediment-1"))?.state).toBe("UNCERTAIN");
+    expect((await ledger.get("sediment-1"))?.acceptedPayloadFingerprint).toBeUndefined();
   });
 });

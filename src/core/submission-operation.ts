@@ -729,12 +729,14 @@ function isSubmissionOperationKind(value: unknown): value is SubmissionOperation
  * the conversation's next user turn", so acceptance must match the payload
  * fingerprint rather than any new turn. `GO`/`REANCHOR_GOAL` are governed
  * continuations; `OUTBOX_MESSAGE` is a Human-authored message whose only proof
- * is its own text appearing. A kind that is not listed here is delivered by
- * content (e.g. `DELIVER_CHILD_RESULT`), which tightens the same check in its
- * own runtime.
+ * is its own text appearing; `SEDIMENT` (issue #61) is a shortcut action whose
+ * completion evidence is likewise the dispatched bytes — the same
+ * "exact dispatched payload bytes" acceptance the proposal's §3 and §5.6(d)
+ * require. A kind that is not listed here is delivered by content (e.g.
+ * `DELIVER_CHILD_RESULT`), which tightens the same check in its own runtime.
  */
 function requiresPayloadAcceptance(kind: unknown): boolean {
-  return kind === "GO" || kind === "REANCHOR_GOAL" || kind === "OUTBOX_MESSAGE";
+  return kind === "GO" || kind === "REANCHOR_GOAL" || kind === "OUTBOX_MESSAGE" || kind === "SEDIMENT";
 }
 function isSubmissionOperationState(value: unknown): value is SubmissionOperationState { return value === "PREPARED" || value === "DISPATCHING" || value === "OBSERVED_ACCEPTED" || value === "COMPLETED" || value === "UNCERTAIN" || value === "FAILED_SAFE" || value === "CANCELLED"; }
 function isBaselineValue(value: unknown): value is SubmissionBaseline {
