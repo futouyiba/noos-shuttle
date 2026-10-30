@@ -25,6 +25,7 @@ import { COPY, type ShuttleLocale, getStoredLocale, storeLocale } from "../share
 // Rollup inlines it instead of emitting a chunk MV3 content scripts cannot load.
 import {
   buildContinuationPayload,
+  buildShortcutPayload,
   claimedPayload,
   recordDispatchedPayload,
   type ContinuationPayloadMode,
@@ -36,6 +37,7 @@ import { NoosVaultAdapter } from "../storage/NoosVaultAdapter";
 import { attachMarkdownFilesToChatInput, findMainChatComposer, getPageText, insertIntoChatInput, isChatComposerEmpty, isChatbotGenerating } from "./chatgpt-dom";
 import { handleBackgroundDispatch } from "./background-dispatch";
 import { actuateGovernedPayload } from "./governed-dispatch";
+import { dispatchSediment } from "./sediment-dispatch";
 import { snapshotEditableControls, restoreEditableControls } from "./panel-input-preservation";
 import { createRenderThrottle } from "./observation-render-throttle";
 import { captureChatGptTranscriptWithScroll, captureRenderedChatGptTranscript } from "./chatgpt-transcript";
@@ -606,6 +608,9 @@ function renderChatGptSurface(selectedThread: NoosThread | undefined, copy: (typ
   ${renderBcrSection(copy)}
   ${renderOutboxSection(copy)}
   <div class="actions supporting-actions">
+    <button type="button" data-action="generate-sediment" ${
+      viewState.state === "waiting" ? "disabled" : ""
+    }>${copy.sedimentAction}</button>
     <button type="button" data-action="generate">${copy.draftHandoff}</button>
     <button type="button" data-action="capture">${copy.collectHandoff}</button>
     <button type="button" data-action="capture-crystal">${copy.scanCrystal}</button>
@@ -1561,6 +1566,10 @@ async function handleAction(action: string, app: HTMLElement, source?: HTMLEleme
     await generateAndCollectCrystal(app);
     return;
   }
+  if (action === "generate-sediment") {
+    await generateAndCollectSediment(app);
+    return;
+  }
 
   if (action === "generate") {
     cancelActiveWait();
@@ -1715,6 +1724,177 @@ async function generateAndCollectCrystal(app: HTMLElement): Promise<void> {
   waitForGeneratedCrystal(app, baselineBegin);
 }
 
+/**
+ * `SEDIMENT` shortcut action (issue #61 slice 2). Unlike the two actions above
+ * it does not ride `dispatchHumanGo`: its ledger identity is `SEDIMENT`, never
+ * `GO`, so it goes through the dedicated kind-specialised composer
+ * `dispatchSediment`. Everything downstream is reused unchanged — the crystal
+ * marker family, the capture predicate, the wait state machine and the
+ * auto-delivery landing (proposal §6 Q1).
+ */
+async function generateAndCollectSediment(app: HTMLElement): Promise<void> {
+  const copy = COPY[viewState.locale];
+  // Issue #61 delta 13: a non-run shortcut is refused while a bounded run is
+  // ACTIVE, with the same generic copy as every other manual action. It never
+  // consumes the run's expected-turn reservation (#63 delta 3/9).
+  if (bcrRun?.status === "ACTIVE") {
+    viewState.message = copy.bcrRunActive;
+    render(app);
+    return;
+  }
+  const observation = await awaitReadyObservation();
+  if (!observation) {
+    viewState.state = "error";
+    viewState.message = copy.inputNotFound;
+    render(app);
+    return;
+  }
+  // Same pre-claim draft priority as every governed actuation (issue #98/#106):
+  // the Human's unsent text is never overwritten, and nothing is claimed.
+  if (!isChatComposerEmpty()) {
+    viewState.message = copy.outboxWaitComposerNotEmpty;
+    render(app);
+    return;
+  }
+  const runtime = globalThis.chrome?.runtime;
+  if (!runtime?.sendMessage) {
+    viewState.state = "error";
+    viewState.message = copy.inputNotFound;
+    render(app);
+    return;
+  }
+
+  const now = Date.now();
+  // Baseline before dispatch so the wait only accepts a *new* marker, and reuse
+  // the crystal family the sediment payload asks for.
+  const baselineBegin = newestCrystalMarkerBegin(captureNoosCrystals(getPageText()).crystals);
+  const payload = buildShortcutPayload("SEDIMENT", {
+    sourceUrl: window.location.href,
+    conversationRef: observation.providerConversationRef,
+    now: new Date(now)
+  });
+  const baseline: SubmissionBaseline = {
+    conversationRef: observation.providerConversationRef,
+    routeRef: getPageContext().pathname,
+    assistantMessageCount: observation.assistantMessageCount ?? 0,
+    userMessageCount: observation.userMessageCount ?? 0,
+    ...readSubmissionMessageEvidence(),
+    observedAt: now
+  };
+  const operationId = `sediment-${now.toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  let result: Awaited<ReturnType<typeof dispatchSediment>>;
+  try {
+    result = await dispatchSediment(
+      {
+        operationId,
+        payload,
+        payloadFingerprint: fingerprintText(payload),
+        preSubmitBaseline: baseline,
+        carrier: {
+          providerConversationRef: observation.providerConversationRef,
+          targetCarrierRef: observation.carrierRef,
+          bindingEpoch: observation.sourceEpoch,
+          leaseGeneration: observation.sourceEpoch,
+          leaseOwnerRef: observation.executionInstanceRef,
+          sourceEpoch: observation.sourceEpoch,
+          sourceObservedAt: observation.observedAt
+        },
+        now
+      },
+      createGovernedDispatchDeps(observation)
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    viewState.state = "error";
+    viewState.message = `${copy.bcrStartFailed}: ${message}`;
+    render(app);
+    return;
+  }
+  if (result.status === "BLOCKED") {
+    viewState.state = "error";
+    viewState.message = `${copy.bcrStartFailed}: ${result.reason}`;
+    render(app);
+    return;
+  }
+  if (result.status === "REFUSED") {
+    viewState.message = copy.outboxWaitComposerNotEmpty;
+    render(app);
+    return;
+  }
+  // DISPATCHED or UNCERTAIN: the payload was, or may have been, sent. Adopt the
+  // operation for the generic reconciliation lane and wait read-only — this
+  // never re-sends on UNCERTAIN (#54 Evidence Gate).
+  activeSubmission = {
+    operationId: result.operation.operationId,
+    logicalThreadId: result.operation.logicalThreadId,
+    fence: result.operation.dispatchFence ?? {
+      providerConversationRef: observation.providerConversationRef,
+      bindingEpoch: observation.sourceEpoch,
+      leaseGeneration: observation.sourceEpoch,
+      leaseOwnerRef: observation.executionInstanceRef,
+      targetCarrierRef: observation.carrierRef
+    },
+    claimedAt: result.operation.dispatchClaimedAt ?? now
+  };
+  cancelActiveWait();
+  viewState.state = "waiting";
+  closePanels();
+  viewState.message = result.status === "DISPATCHED" ? copy.sedimentSubmitted : `${copy.bcrStartFailed}: uncertain`;
+  render(app);
+  waitForGeneratedCrystal(app, baselineBegin);
+}
+
+/**
+ * Wait briefly for a READY, browser-tab carrier that names a conversation.
+ * Shared by every panel-triggered actuation (GO and the shortcut actions); the
+ * 6 s budget and the readiness conditions are unchanged.
+ */
+async function awaitReadyObservation(): Promise<(CarrierObservation & { providerConversationRef: string }) | undefined> {
+  let observation = runtimeObservationLedger.value;
+  const deadline = Date.now() + 6_000;
+  while ((!observation || observation.state !== "READY" || observation.carrierIdentityState !== "browser-tab") && Date.now() < deadline) {
+    await new Promise(resolve => window.setTimeout(resolve, 100));
+    observation = runtimeObservationLedger.value;
+  }
+  if (!observation || observation.state !== "READY" || !observation.providerConversationRef ||
+    observation.carrierIdentityState !== "browser-tab") return undefined;
+  // The guard above proves the conversation ref is present; the cast carries
+  // that narrowing past the loop's reassignment.
+  return observation as CarrierObservation & { providerConversationRef: string };
+}
+
+/**
+ * The carrier-side dependencies every governed actuation shares: the live
+ * ledger, a fresh carrier re-read, and the composer write guarded by a fresh
+ * page reading. The `dispatch` closure deliberately takes the instant reading
+ * instead of re-entering the observer tick (issues #104, #106).
+ */
+function createGovernedDispatchDeps(observation: CarrierObservation): {
+  ledger: HumanGoLedger;
+  readCurrentCarrier: () => Promise<HumanGoCarrierSnapshot>;
+  dispatch: (dispatchPayload: string, fence: SubmissionDispatchFence) => Promise<void>;
+} {
+  return {
+    ledger: createContentSubmissionLedger(),
+    readCurrentCarrier: async () => {
+      const current = runtimeObservationLedger.value;
+      if (!current) throw new Error("carrier_unavailable");
+      return toHumanGoCarrierSnapshot(current);
+    },
+    dispatch: async (dispatchPayload, fence) => {
+      // A fresh *reading*, never a full observer tick (issues #104, #106): a
+      // tick would fire `probeOutbox`/`probeGoalReanchor`/`probeChildDelivery`
+      // from inside this actuation, so a second writer would reach the same
+      // composer while this one is still mid-insert. Same reasoning that gave
+      // the outbox probe its own `readLiveCarrier` (issue #102).
+      await actuateGovernedPayload(dispatchPayload, {
+        readCurrent: () => readRuntimeObservation(getPageContext()),
+        isFenceCurrent: current => isCurrentSubmissionObservation(current, observation, fence)
+      });
+    }
+  };
+}
+
 async function dispatchHumanGo(payload: string, context: PageContext, workItemId: string,
   options: { operationId?: string; runLinked?: boolean; onResult?: (status: "DISPATCHED" | "UNCERTAIN" | "BLOCKED") => void } = {}
 ): Promise<boolean> {
@@ -1724,14 +1904,8 @@ async function dispatchHumanGo(payload: string, context: PageContext, workItemId
     viewState.message = COPY[viewState.locale].bcrRunActive;
     return false;
   }
-  let observation = runtimeObservationLedger.value;
-  const deadline = Date.now() + 6_000;
-  while ((!observation || observation.state !== "READY" || observation.carrierIdentityState !== "browser-tab") && Date.now() < deadline) {
-    await new Promise(resolve => window.setTimeout(resolve, 100));
-    observation = runtimeObservationLedger.value;
-  }
-  if (!observation || observation.state !== "READY" || !observation.providerConversationRef ||
-    observation.carrierIdentityState !== "browser-tab") return false;
+  let observation = await awaitReadyObservation();
+  if (!observation) return false;
   // Issue #106: the Human's unsent draft outranks a generated payload, and it
   // has to be decided *here*, before anything is claimed. Refusing after the
   // claim would park the transport as `UNCERTAIN`, which nothing in the ledger
@@ -1759,27 +1933,11 @@ async function dispatchHumanGo(payload: string, context: PageContext, workItemId
   const operationId = options.operationId ?? `go-${now.toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   const runtime = globalThis.chrome?.runtime;
   if (!runtime?.sendMessage) return false;
-  const humanGo = new HumanGoRuntime(
-    createContentSubmissionLedger(),
-    {
-      readCurrentCarrier: async () => {
-        const current = runtimeObservationLedger.value;
-        if (!current) throw new Error("carrier_unavailable");
-        return toHumanGoCarrierSnapshot(current);
-      },
-      dispatch: async (dispatchPayload, fence) => {
-        // A fresh *reading*, never a full observer tick (issues #104, #106): a
-        // tick would fire `probeOutbox`/`probeGoalReanchor`/`probeChildDelivery`
-        // from inside this actuation, so a second writer would reach the same
-        // composer while this one is still mid-insert. Same reasoning that gave
-        // the outbox probe its own `readLiveCarrier` (issue #102).
-        await actuateGovernedPayload(dispatchPayload, {
-          readCurrent: () => readRuntimeObservation(getPageContext()),
-          isFenceCurrent: current => isCurrentSubmissionObservation(current, observation, fence)
-        });
-      }
-    }
-  );
+  const deps = createGovernedDispatchDeps(observation);
+  const humanGo = new HumanGoRuntime(deps.ledger, {
+    readCurrentCarrier: deps.readCurrentCarrier,
+    dispatch: deps.dispatch
+  });
   let result: Awaited<ReturnType<typeof humanGo.execute>>;
   try {
     result = await humanGo.execute({
