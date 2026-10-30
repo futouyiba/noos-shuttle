@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { JSDOM } from "jsdom";
-import { findMainChatComposer, getChatComposer, isChatbotGenerating } from "../src/content/chatgpt-dom";
+import { findMainChatComposer, getChatComposer, isChatbotGenerating, isChatComposerEmpty } from "../src/content/chatgpt-dom";
 
 /**
  * `chatgpt-dom` reads the live `document`/`window`, so each case installs a
@@ -181,6 +181,20 @@ describe("isChatbotGenerating — lexical exactness is not authority", () => {
     });
   });
 
+  it("does not read a stop-word button inside the transcript scroll container as a live stop (issue #143)", () => {
+    // The same Tailwind class substring that promoted the transcript to a
+    // composer region also let its stop-word buttons pass the placement guard.
+    withDom(
+      `<body><main><div class="${TAILWIND_TRANSCRIPT_CLASS}">
+        <button type="button">Stop</button>
+        <button type="button" aria-label="停止"></button>
+      </div></main>${COMPOSER}${COMPOSER_END}</body>`,
+      () => {
+        expect(isChatbotGenerating()).toBe(false);
+      }
+    );
+  });
+
   it("does not read an exact stop control carrying aria-expanded as active", () => {
     withDom(`<body>${COMPOSER}<button type="button" data-testid="stop-button" aria-expanded="false"></button>${COMPOSER_END}</body>`, () => {
       expect(isChatbotGenerating()).toBe(false);
@@ -220,6 +234,16 @@ const PROSEMIRROR_COMPOSER = `<form><div class="ProseMirror" role="textbox" cont
 /** An open historical-message edit box: a usable textarea inside a turn. */
 const EDITING_TURN = `<section data-message-author-role="assistant" data-testid="conversation-turn-6"><textarea>editing history</textarea></section>`;
 
+/**
+ * ChatGPT's transcript scroll container (issue #143, 2026-10-29 first-hand CDP
+ * read). Its class carries the Tailwind arbitrary variant
+ * `group-has-[[data-expanded-composer]]/thread-scroll-layout`, whose text
+ * contains `composer`; the historical-message editor inside has neither a form
+ * ancestor nor a turn marker in the newer DOM.
+ */
+const TAILWIND_TRANSCRIPT_CLASS = "group-has-[[data-expanded-composer]]/thread-scroll-layout";
+const TAILWIND_TRANSCRIPT = `<div class="${TAILWIND_TRANSCRIPT_CLASS}"><div class="writing-block-editor" role="textbox" contenteditable="true">An earlier user message, kept editable in place.</div></div>`;
+
 describe("findMainChatComposer", () => {
   it("finds the ProseMirror composer when #prompt-textarea is absent (issue #134)", () => {
     withDom(`<body><main><article>a turn</article></main>${PROSEMIRROR_COMPOSER}</body>`, () => {
@@ -232,6 +256,21 @@ describe("findMainChatComposer", () => {
       const composer = findMainChatComposer();
       expect(composer).toBe(document.querySelector(".ProseMirror"));
       expect(composer?.tagName).not.toBe("TEXTAREA");
+    });
+  });
+
+  it("does not read the transcript scroll container's composer-suffixed class as a composer region (issue #143)", () => {
+    // The class name says "composer" only as a Tailwind variant; the historical
+    // editor it contains has no form ancestry, so it must not win the fallback.
+    withDom(`<body><main>${TAILWIND_TRANSCRIPT}${PROSEMIRROR_COMPOSER}</main></body>`, () => {
+      expect(findMainChatComposer()).toBe(document.querySelector(".ProseMirror"));
+      expect(isChatComposerEmpty()).toBe(true);
+    });
+  });
+
+  it("does not select a historical editor when only the transcript container exists (issue #143)", () => {
+    withDom(`<body><main>${TAILWIND_TRANSCRIPT}</main></body>`, () => {
+      expect(findMainChatComposer()).toBeNull();
     });
   });
 

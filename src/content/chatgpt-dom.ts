@@ -32,7 +32,16 @@ const GENERATION_ACTIVE_SELECTORS = [
 // Wording that *may* identify a live stop control; placement decides.
 const GENERIC_STOP_LABEL = /stop|停止/i;
 
-const COMPOSER_REGION_SELECTOR = "form, [data-testid*='composer'], [class*='composer']";
+// Composer region identity is structural: a form, or an element whose
+// `data-testid` names it as a composer. A class name that merely contains the
+// word "composer" is not identity (issues #84/#143): ChatGPT's transcript
+// scroll container carries a Tailwind arbitrary variant
+// (`group-has-[[data-expanded-composer]]/thread-scroll-layout`) in its class,
+// so a substring match there promoted the whole transcript — historical-message
+// editors included — to "composer region". That made a history editor the main
+// composer (GO stuck on "waiting for the composer to clear") and let transcript
+// stop-word buttons read as a live stop control.
+const COMPOSER_REGION_SELECTOR = "form, [data-testid*='composer']";
 
 // A turn whose stream was interrupted keeps a re-rendered disclosure toggle
 // describing the *finished* generation ("已停止思考" / "Stopped thinking"). It
