@@ -7,6 +7,8 @@
 > Successor to `cross-agent-handoff-manual-dogfood-baseline-v0.md` (2026-09-15): that note captured how the loop was *discovered* (traces A/B, pre-spec clipboard era). This note captures how the loop *actually runs today*, after the cross-conversation workflow spec (`futouyiba/noos_docs` `docs/agent-workflow.md`, v0.3.x @ `a3d33514cc3c` at the time of writing) and its Appendix B cipher/marker protocol were adopted and dogfooded.
 >
 > Method: every step is anchored to real dogfood events on this repository (issue/PR/comment/commit refs). Nothing here is aspirational. Verbatim quotes are marked as such. Dates follow the repo's local (+08) convention (matching commit dates); GitHub renders comment timestamps in UTC.
+>
+> 规范引用口径：本文写就于 canonical v0.3.1 时期（`noos_docs@a3d33514cc3c502067b4e10faa239557c87697b2`，blob `919360055b7f6a33449de440ac1c9ca4acff85c5`）；文中 §N 及附录编号按 `doc-governance-proposal-v0.md` §2.0 映射表换算到当前结构（当前 canonical blob `eed3d6cd28d080bcb05ee0aebd66fe0afccd2bcb`），不在此复制映射表。
 
 ## 1. What changed since the v0 baseline
 
