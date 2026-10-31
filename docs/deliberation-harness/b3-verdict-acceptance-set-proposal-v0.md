@@ -9,6 +9,8 @@
 >
 > 仓库 `futouyiba/noos-shuttle`｜分支 `docs/b3-verdict-acceptance-set`｜rev.0 base = `main` @ `6731a60e7d468e040c86e7e28a5f87161b193e1e`
 > 被审 exact head（rev.0）：`7f85808cfdf20dda045192a33c2ce926be741f42`
+>
+> 规范引用口径：对规范（`noos_docs` `docs/agent-workflow.md`）的引用写就于历史 v0.3.1 时期（commit `a3d33514cc3c502067b4e10faa239557c87697b2`，blob `919360055b7f6a33449de440ac1c9ca4acff85c5`）；当前 canonical 为 blob `eed3d6cd28d080bcb05ee0aebd66fe0afccd2bcb`（结构 `## 0`–`## 7`）。其中 `doc-governance-proposal-v0.md` §2.0 映射表覆盖的条目按该表换算；表外条目与本文自身章节号不在该表射程内，换算以当前 canonical 原文为准。
 
 ## 锚定表（本文全部引用以此为准）
 
