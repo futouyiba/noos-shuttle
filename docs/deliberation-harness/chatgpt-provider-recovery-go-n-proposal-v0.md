@@ -5,7 +5,7 @@
 > Source handoff: `.noos/handoffs/active/chatgpt-provider-recovery-go-n-handoff.md`  
 > Decision provenance: [Issue #54 designer record](https://github.com/futouyiba/noos-shuttle/issues/54#issuecomment-5712703481)
 >
-> 规范引用口径：本文写就于 canonical v0.3.1 时期（`noos_docs@a3d33514cc3c502067b4e10faa239557c87697b2`，blob `919360055b7f6a33449de440ac1c9ca4acff85c5`）；文中 §N 及附录编号按 `doc-governance-proposal-v0.md` §2.0 映射表换算到当前结构（当前 canonical blob `eed3d6cd28d080bcb05ee0aebd66fe0afccd2bcb`），不在此复制映射表。
+> 规范引用口径：对规范（`noos_docs` `docs/agent-workflow.md`）的引用写就于历史 v0.3.1 时期（commit `a3d33514cc3c502067b4e10faa239557c87697b2`，blob `919360055b7f6a33449de440ac1c9ca4acff85c5`）；当前 canonical 为 blob `eed3d6cd28d080bcb05ee0aebd66fe0afccd2bcb`（结构 `## 0`–`## 7`）。其中 `doc-governance-proposal-v0.md` §2.0 映射表覆盖的条目按该表换算；表外条目与本文自身章节号不在该表射程内，换算以当前 canonical 原文为准。
 
 ## 1. Scope and evidence posture
 
