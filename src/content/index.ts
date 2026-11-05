@@ -36,7 +36,7 @@ import {
 import { ClipboardAdapter } from "../storage/ClipboardAdapter";
 import { DownloadAdapter } from "../storage/DownloadAdapter";
 import { NoosVaultAdapter } from "../storage/NoosVaultAdapter";
-import { attachMarkdownFilesToChatInput, findMainChatComposer, getPageText, insertIntoChatInput, isChatComposerEmpty, isChatbotGenerating } from "./chatgpt-dom";
+import { attachMarkdownFilesToChatInput, findMainChatComposer, getPageText, getRawPageText, insertIntoChatInput, isChatComposerEmpty, isChatbotGenerating } from "./chatgpt-dom";
 import { handleBackgroundDispatch } from "./background-dispatch";
 import { actuateGovernedPayload } from "./governed-dispatch";
 import { dispatchSediment } from "./sediment-dispatch";
@@ -1896,7 +1896,9 @@ async function generateAndCollectOverview(app: HTMLElement): Promise<void> {
 
   const now = Date.now();
   // Baseline before dispatch so the wait only accepts a *new* HTML marker.
-  const baselineBegin = newestHtmlMarkerBegin(captureNoosOverviews(getPageText()).overviews);
+  // Raw, non-Markdown text: the captured bytes are downloaded verbatim, so the
+  // baseline and the wait must read the same unnormalized source (#150 R1).
+  const baselineBegin = newestHtmlMarkerBegin(captureNoosOverviews(getRawPageText()).overviews);
   const payload = buildShortcutPayload("OVERVIEW_HTML", {
     sourceUrl: window.location.href,
     conversationRef: observation.providerConversationRef,
@@ -3356,7 +3358,10 @@ function waitForGeneratedOverview(app: HTMLElement, baselineBegin: number): void
   let retryTimerId: number | null = null;
 
   const tryCapture = (): boolean => {
-    const result = captureNoosOverviews(getPageText());
+    // Raw text, not `getPageText()`: Markdown normalization would trim line
+    // ends and collapse blank lines inside `<pre>` and script template
+    // literals, so the downloaded bytes would differ from the capture (#150 R1).
+    const result = captureNoosOverviews(getRawPageText());
     const candidate = findNewestHtmlAfter(result.overviews, baselineBegin);
     if (!candidate) {
       return false;
