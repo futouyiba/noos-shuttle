@@ -439,6 +439,15 @@
   padding-top: 10px;
 }
 
+/* PR comment sweep inputs (issue #61 slice 5): explicit ref + optional cursor. */
+.pr-sweep-form {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
 .vault-route {
   display: grid;
   grid-template-columns: 1fr auto;

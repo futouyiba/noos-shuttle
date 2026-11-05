@@ -17,6 +17,8 @@ import type { NoosThread } from "../core/noos-thread";
 import { extractProviderConversationId } from "../shared/provider-identity";
 import { runGoalReanchorProbe } from "./goal-reanchor-runtime";
 import { runChildDeliveryProbe } from "./delivery-runtime";
+import { advanceStoredPrSweepCursor, readStoredPrSweepCursor } from "./pr-sweep-cursor";
+import { normalizePrSweepCursor, normalizePrSweepRef } from "../core/pr-sweep-cursor";
 import {
   OUTBOX_MAX_ATTEMPTS,
   OUTBOX_STORE_KEY,
@@ -778,6 +780,48 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     handleOutboxProbe(message)
       .then(result => sendResponse(result))
+      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+    return true;
+  }
+
+  if (message?.type === "NOOS_PR_SWEEP_CURSOR_READ") {
+    // Issue #61 slice 5: the PR comment sweep watermark is feature-local
+    // (proposal §5.3 constraint 1). The content script never touches
+    // `.tmp/watcher-state.json`; it can only read this slot through here.
+    const storage = chrome.storage?.local;
+    const prRef = normalizePrSweepRef((message as { prRef?: unknown }).prRef);
+    if (sender.frameId !== 0 || !isAllowedProviderSender(sender) || !storage || !prRef) {
+      sendResponse({ ok: false, error: "sender_not_allowed" });
+      return false;
+    }
+    readStoredPrSweepCursor(storage, prRef)
+      .then(record => sendResponse(record
+        ? { ok: true, cursor: record.cursor, observedAt: record.observedAt }
+        : { ok: true }))
+      .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+    return true;
+  }
+
+  if (message?.type === "NOOS_PR_SWEEP_CURSOR_ADVANCE") {
+    const storage = chrome.storage?.local;
+    const prRef = normalizePrSweepRef((message as { prRef?: unknown }).prRef);
+    const cursor = normalizePrSweepCursor((message as { cursor?: unknown }).cursor);
+    const expectedRaw = (message as { expectedStoredCursor?: unknown }).expectedStoredCursor;
+    const expectedStoredCursor = expectedRaw === null ? null : normalizePrSweepCursor(expectedRaw);
+    const operationId = typeof (message as { operationId?: unknown }).operationId === "string"
+      ? ((message as { operationId: string }).operationId).trim()
+      : "";
+    const observedAt = (message as { observedAt?: unknown }).observedAt;
+    if (sender.frameId !== 0 || !isAllowedProviderSender(sender) || !storage || !prRef || !cursor ||
+      expectedStoredCursor === undefined || !operationId ||
+      typeof observedAt !== "number" || !Number.isSafeInteger(observedAt) || observedAt < 0) {
+      sendResponse({ ok: false, error: "sender_not_allowed" });
+      return false;
+    }
+    advanceStoredPrSweepCursor(storage, { prRef, expectedStoredCursor, cursor, operationId, observedAt })
+      .then(result => sendResponse(result.ok
+        ? { ok: true, cursor: result.record.cursor, observedAt: result.record.observedAt }
+        : { ok: false, reason: result.reason }))
       .catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
     return true;
   }

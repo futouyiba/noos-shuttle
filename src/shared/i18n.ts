@@ -17,6 +17,9 @@ export interface ShuttleCopy {
   scanCrystal: string;
   sedimentAction: string;
   overviewAction: string;
+  prSweepAction: string;
+  prSweepPrRefPlaceholder: string;
+  prSweepCursorPlaceholder: string;
   downloadImages: string;
   cancel: string;
   bcrSectionTitle: string;
@@ -242,8 +245,18 @@ export interface ShuttleCopy {
   crystalSubmitted: string;
   sedimentSubmitted: string;
   overviewSubmitted: string;
+  prSweepSubmitted: string;
+  prSweepMissingPrRef: string;
+  prSweepMissingCursor: string;
   waitingForCrystal: string;
   waitingForOverview: string;
+  prSweepWaitingForCursor: string;
+  prSweepCursorAdvanced: string;
+  prSweepCursorConflict: string;
+  prSweepNoCursorEcho: string;
+  prSweepNoNewComments: string;
+  prSweepCursorError: string;
+  prSweepUncertainNoAdvance: string;
   crystalCaptured: string;
   crystalCapturedWithWarnings: string;
   overviewCaptured: string;
@@ -287,6 +300,9 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     scanCrystal: "Scan Crystal",
     sedimentAction: "Sediment Takeaways",
     overviewAction: "Overview HTML",
+    prSweepAction: "Check PR Comments",
+    prSweepPrRefPlaceholder: "PR ref, e.g. owner/repo#61",
+    prSweepCursorPlaceholder: "Cursor (optional if stored)",
     downloadImages: "Download Reply Images",
     cancel: "Cancel",
     bcrSectionTitle: "Bounded run",
@@ -515,8 +531,18 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     crystalSubmitted: "Crystal prompt sent. Waiting for generation...",
     sedimentSubmitted: "Sediment prompt sent. Waiting for generation...",
     overviewSubmitted: "Overview prompt sent. Waiting for generation...",
+    prSweepSubmitted: "PR comment sweep sent. Waiting for the cursor echo...",
+    prSweepMissingPrRef: "Enter an explicit PR ref. The sweep never guesses.",
+    prSweepMissingCursor: "No cursor stored for this PR ref. Enter one explicitly.",
     waitingForCrystal: "Generation appears complete. Collecting the crystal...",
     waitingForOverview: "Generation appears complete. Collecting the overview...",
+    prSweepWaitingForCursor: "Generation appears complete. Reading the cursor echo...",
+    prSweepCursorAdvanced: "Sweep watermark advanced.",
+    prSweepCursorConflict: "Watermark changed while this sweep ran; it was not overwritten. Re-run to re-read.",
+    prSweepNoCursorEcho: "No cursor echo observed; the watermark was not advanced.",
+    prSweepNoNewComments: "No new comments; the watermark was not advanced.",
+    prSweepCursorError: "Could not read or advance the sweep watermark.",
+    prSweepUncertainNoAdvance: "Sweep dispatch is uncertain; the watermark was not advanced.",
     crystalCaptured: "Crystal collected.",
     crystalCapturedWithWarnings: "Crystal collected with validation warnings.",
     overviewCaptured: "Overview HTML collected.",
@@ -549,6 +575,9 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     scanCrystal: "扫描结晶",
     sedimentAction: "沉淀要点",
     overviewAction: "速览 HTML",
+    prSweepAction: "查 PR 评论",
+    prSweepPrRefPlaceholder: "PR 引用，例如 owner/repo#61",
+    prSweepCursorPlaceholder: "水位游标（已有可留空）",
     downloadImages: "下载本条回复图",
     cancel: "取消",
     bcrSectionTitle: "有界连续运行",
@@ -776,8 +805,18 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     crystalSubmitted: "结晶提示词已发送，正在等待生成...",
     sedimentSubmitted: "沉淀提示词已发送，正在等待生成...",
     overviewSubmitted: "速览提示词已发送，正在等待生成...",
+    prSweepSubmitted: "PR 评论巡检已发送，正在等待水位回传...",
+    prSweepMissingPrRef: "请显式填写 PR 引用；巡检从不猜测。",
+    prSweepMissingCursor: "该 PR 引用还没有水位，请显式填写一个。",
     waitingForCrystal: "生成看起来已完成，正在收取结晶...",
     waitingForOverview: "生成看起来已完成，正在收取速览...",
+    prSweepWaitingForCursor: "生成看起来已完成，正在读取水位回传...",
+    prSweepCursorAdvanced: "巡检水位已推进。",
+    prSweepCursorConflict: "巡检期间水位已被其他写入推进，本次未覆盖；请重跑以重新读取。",
+    prSweepNoCursorEcho: "未观测到水位回传，水位保持不变。",
+    prSweepNoNewComments: "无新评论，水位未推进。",
+    prSweepCursorError: "无法读取或推进巡检水位。",
+    prSweepUncertainNoAdvance: "巡检投递状态不确定，水位未推进。",
     crystalCaptured: "结晶已收取。",
     crystalCapturedWithWarnings: "结晶已收取，但存在校验提醒。",
     overviewCaptured: "速览 HTML 已收取。",
