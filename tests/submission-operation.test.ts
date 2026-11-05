@@ -1131,3 +1131,39 @@ describe("per-thread submission authority", () => {
     expect(superseded.sameFence).toBe(false);
   });
 });
+
+describe("issue #61 slice 3 — shortcut operation kinds", () => {
+  const shortcutKinds = ["OVERVIEW_HTML", "PR_COMMENT_SWEEP"] as const;
+
+  it("accepts the new kinds at prepare and returns them from persisted read-back", async () => {
+    const ledger = new SubmissionOperationLedger(memoryStore());
+    for (const kind of shortcutKinds) {
+      const payload = `shortcut payload for ${kind}`;
+      const prepared = await ledger.prepare({
+        ...input(`shortcut-${kind}`),
+        operationKind: kind,
+        payload,
+        payloadFingerprint: fingerprintSubmissionPayload(payload)
+      });
+      expect(prepared.operationKind).toBe(kind);
+      expect(prepared.state).toBe("PREPARED");
+    }
+    // list() re-validates every persisted record through isSubmissionOperation,
+    // so a kind missing from the runtime guard would silently disappear here.
+    expect((await ledger.list()).map(operation => operation.operationKind)).toEqual([...shortcutKinds]);
+  });
+
+  it("requires the dispatched payload for kinds whose acceptance is its own bytes", async () => {
+    // `requiresPayloadAcceptance` coverage: without the payload there is nothing
+    // to match on reconcile, so prepare must reject rather than record a kind
+    // whose acceptance could later be satisfied by an unrelated turn.
+    for (const kind of shortcutKinds) {
+      const ledger = new SubmissionOperationLedger(memoryStore());
+      await expect(ledger.prepare({
+        ...input(`no-payload-${kind}`),
+        operationKind: kind,
+        payload: undefined
+      })).rejects.toThrow("submission_prepare_invalid");
+    }
+  });
+});
