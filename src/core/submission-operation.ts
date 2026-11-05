@@ -10,7 +10,7 @@
  * (which continues the assistant's own stated next step), NOT `SEDIMENT`, and
  * NOT a focus request.
  */
-export type SubmissionOperationKind = "GO" | "REANCHOR_GOAL" | "BOOTSTRAP" | "REVIEW_DISPATCH" | "SEDIMENT" | "DELIVER_CHILD_RESULT" | "OUTBOX_MESSAGE";
+export type SubmissionOperationKind = "GO" | "REANCHOR_GOAL" | "BOOTSTRAP" | "REVIEW_DISPATCH" | "SEDIMENT" | "OVERVIEW_HTML" | "PR_COMMENT_SWEEP" | "DELIVER_CHILD_RESULT" | "OUTBOX_MESSAGE";
 export type SubmissionOperationState = "PREPARED" | "DISPATCHING" | "OBSERVED_ACCEPTED" | "COMPLETED" | "UNCERTAIN" | "FAILED_SAFE" | "CANCELLED";
 export interface SubmissionBaseline { conversationRef?: string; routeRef: string; assistantMessageCount: number; userMessageCount: number; lastUserMessageFingerprint?: string; lastAssistantMessageFingerprint?: string; headFingerprint?: string; observedAt: number; }
 export interface SubmissionObservation extends Omit<SubmissionBaseline, "observedAt"> {
@@ -723,20 +723,22 @@ function extractAuthorityMap(raw: unknown): SubmissionAuthorityMap {
   const value = raw && typeof raw === "object" ? (raw as Record<string, unknown>)[SUBMISSION_AUTHORITY_KEY] : undefined;
   return foldAuthorityMap(value);
 }
-function isSubmissionOperationKind(value: unknown): value is SubmissionOperationKind { return value === "GO" || value === "REANCHOR_GOAL" || value === "BOOTSTRAP" || value === "REVIEW_DISPATCH" || value === "SEDIMENT" || value === "DELIVER_CHILD_RESULT" || value === "OUTBOX_MESSAGE"; }
+function isSubmissionOperationKind(value: unknown): value is SubmissionOperationKind { return value === "GO" || value === "REANCHOR_GOAL" || value === "BOOTSTRAP" || value === "REVIEW_DISPATCH" || value === "SEDIMENT" || value === "OVERVIEW_HTML" || value === "PR_COMMENT_SWEEP" || value === "DELIVER_CHILD_RESULT" || value === "OUTBOX_MESSAGE"; }
 /**
  * Kinds whose whole meaning is "the exact bytes I handed the composer became
  * the conversation's next user turn", so acceptance must match the payload
  * fingerprint rather than any new turn. `GO`/`REANCHOR_GOAL` are governed
  * continuations; `OUTBOX_MESSAGE` is a Human-authored message whose only proof
- * is its own text appearing; `SEDIMENT` (issue #61) is a shortcut action whose
- * completion evidence is likewise the dispatched bytes — the same
- * "exact dispatched payload bytes" acceptance the proposal's §3 and §5.6(d)
- * require. A kind that is not listed here is delivered by content (e.g.
- * `DELIVER_CHILD_RESULT`), which tightens the same check in its own runtime.
+ * is its own text appearing; `SEDIMENT`, `OVERVIEW_HTML` and
+ * `PR_COMMENT_SWEEP` (issue #61) are shortcut actions whose completion evidence
+ * is likewise the dispatched bytes — the same "exact dispatched payload bytes"
+ * acceptance the proposal's §3 and §5.6(d) require. A kind that is not listed
+ * here is delivered by content (e.g. `DELIVER_CHILD_RESULT`), which tightens the
+ * same check in its own runtime.
  */
 function requiresPayloadAcceptance(kind: unknown): boolean {
-  return kind === "GO" || kind === "REANCHOR_GOAL" || kind === "OUTBOX_MESSAGE" || kind === "SEDIMENT";
+  return kind === "GO" || kind === "REANCHOR_GOAL" || kind === "OUTBOX_MESSAGE" ||
+    kind === "SEDIMENT" || kind === "OVERVIEW_HTML" || kind === "PR_COMMENT_SWEEP";
 }
 function isSubmissionOperationState(value: unknown): value is SubmissionOperationState { return value === "PREPARED" || value === "DISPATCHING" || value === "OBSERVED_ACCEPTED" || value === "COMPLETED" || value === "UNCERTAIN" || value === "FAILED_SAFE" || value === "CANCELLED"; }
 function isBaselineValue(value: unknown): value is SubmissionBaseline {

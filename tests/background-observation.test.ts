@@ -102,6 +102,42 @@ describe("read-only observation carrier handshake", () => {
     expect(invalidReply).not.toHaveBeenCalled();
   });
 
+  it("accepts the issue #61 shortcut kinds through the prepare whitelist", async () => {
+    // Issue #61 slice 3: `OVERVIEW_HTML` and `PR_COMMENT_SWEEP` must be known to
+    // the background `isPrepareInput` whitelist as well as to the core ledger,
+    // otherwise prepare messages for them are silently dropped here.
+    for (const operationKind of ["OVERVIEW_HTML", "PR_COMMENT_SWEEP"]) {
+      const handler = await loadMutation();
+      const reply = vi.fn();
+      handler({
+        type: "NOOS_SUBMISSION_MUTATION",
+        mutation: {
+          type: "prepare",
+          input: {
+            operationId: `shortcut-${operationKind}`,
+            operationKind,
+            workItemId: `work-${operationKind}`,
+            logicalThreadId: "thread-1",
+            targetCarrierRef: "browser-tab:11",
+            providerConversationRef: "conversation-a",
+            dispatchFence: {
+              providerConversationRef: "conversation-a",
+              bindingEpoch: 1,
+              leaseGeneration: 1,
+              leaseOwnerRef: "owner-1",
+              targetCarrierRef: "browser-tab:11"
+            },
+            payloadFingerprint: "f9a9bbb2",
+            payload: "payload-1",
+            preSubmitBaseline: { routeRef: "/c/conversation-a", assistantMessageCount: 1, userMessageCount: 1, observedAt: 1 }
+          }
+        }
+      }, { id: "extension-id", frameId: 0, tab: { id: 11 }, url: "https://chatgpt.com/c/conversation-a" }, reply);
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(reply).toHaveBeenLastCalledWith(expect.objectContaining({ ok: true }));
+    }
+  });
+
   it("initializes and persists authority before granting a real claim", async () => {
     const { handler, backing } = await loadMutationWithBacking();
     const reply = vi.fn();

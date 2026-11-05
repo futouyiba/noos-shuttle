@@ -393,7 +393,7 @@ describe("CONTINUE_PROVIDER_TURN gate (§4.1, §4.2, §5.2)", () => {
   });
 
   it("refuses acceptance borrowed from a discovery operation (§4.1)", () => {
-    for (const kind of ["BOOTSTRAP", "REVIEW_DISPATCH", "SEDIMENT", "DELIVER_CHILD_RESULT", "REANCHOR_GOAL"]) {
+    for (const kind of ["BOOTSTRAP", "REVIEW_DISPATCH", "SEDIMENT", "OVERVIEW_HTML", "PR_COMMENT_SWEEP", "DELIVER_CHILD_RESULT", "REANCHOR_GOAL"]) {
       expectDeny(gate("CONTINUE_PROVIDER_TURN", { ...CONTINUE_ACCEPTED_OK, acceptedOperationKind: kind }).decision, "CONTINUATION_NOT_THE_RECOVERY_ACTION");
     }
   });

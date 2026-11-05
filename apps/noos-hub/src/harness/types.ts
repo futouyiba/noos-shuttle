@@ -61,6 +61,8 @@ export type FixtureOperationKind =
   | "BOOTSTRAP"
   | "REVIEW_DISPATCH"
   | "SEDIMENT"
+  | "OVERVIEW_HTML"
+  | "PR_COMMENT_SWEEP"
   | "DELIVER_CHILD_RESULT"
   | "OUTBOX_MESSAGE";
 

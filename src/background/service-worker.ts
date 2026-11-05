@@ -1213,7 +1213,7 @@ function isPrepareInput(value: unknown): boolean {
   if (!value || typeof value !== "object") return false;
   const input = value as Record<string, unknown>;
   return isOperationId(input.operationId) &&
-    ["GO", "REANCHOR_GOAL", "BOOTSTRAP", "REVIEW_DISPATCH", "SEDIMENT", "DELIVER_CHILD_RESULT", "OUTBOX_MESSAGE"].includes(input.operationKind as string) &&
+    ["GO", "REANCHOR_GOAL", "BOOTSTRAP", "REVIEW_DISPATCH", "SEDIMENT", "OVERVIEW_HTML", "PR_COMMENT_SWEEP", "DELIVER_CHILD_RESULT", "OUTBOX_MESSAGE"].includes(input.operationKind as string) &&
     isNonEmptyString(input.workItemId) &&
     isNonEmptyString(input.logicalThreadId) &&
     isNonEmptyString(input.targetCarrierRef) &&
