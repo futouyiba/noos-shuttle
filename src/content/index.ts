@@ -1,10 +1,12 @@
-import { createCrystalFilename, createThreadFilenameFromThread } from "../core/filename";
+import { createCrystalFilename, createOverviewHtmlFilename, createThreadFilenameFromThread } from "../core/filename";
 import { createContextPack, type ContextPack } from "../core/context-pack";
 import { createGenerateCrystalPrompt, createGenerateThreadPrompt } from "../core/prompt-templates";
 import { captureNoosThreads } from "../core/thread-capture";
 import { captureNoosCrystals } from "../core/crystal-capture";
+import { captureNoosOverviews, deriveOverviewTitle } from "../core/html-capture";
 import type { NoosThread } from "../core/noos-thread";
 import type { NoosCrystal } from "../core/noos-crystal";
+import type { NoosOverview } from "../core/noos-html";
 import { HumanGoRuntime, type HumanGoCarrierSnapshot, type HumanGoLedger } from "../core/human-go-runtime";
 import type { SubmissionAuthority, SubmissionOperation, SubmissionOperationMutation, SubmissionReconcileResult } from "../core/submission-operation";
 // Types only: the content entry must not share a runtime module with the
@@ -38,6 +40,7 @@ import { attachMarkdownFilesToChatInput, findMainChatComposer, getPageText, inse
 import { handleBackgroundDispatch } from "./background-dispatch";
 import { actuateGovernedPayload } from "./governed-dispatch";
 import { dispatchSediment } from "./sediment-dispatch";
+import { dispatchOverviewHtml } from "./overview-html-dispatch";
 import { snapshotEditableControls, restoreEditableControls } from "./panel-input-preservation";
 import { createRenderThrottle } from "./observation-render-throttle";
 import { captureChatGptTranscriptWithScroll, captureRenderedChatGptTranscript } from "./chatgpt-transcript";
@@ -611,6 +614,9 @@ function renderChatGptSurface(selectedThread: NoosThread | undefined, copy: (typ
     <button type="button" data-action="generate-sediment" ${
       viewState.state === "waiting" ? "disabled" : ""
     }>${copy.sedimentAction}</button>
+    <button type="button" data-action="generate-overview" ${
+      viewState.state === "waiting" ? "disabled" : ""
+    }>${copy.overviewAction}</button>
     <button type="button" data-action="generate">${copy.draftHandoff}</button>
     <button type="button" data-action="capture">${copy.collectHandoff}</button>
     <button type="button" data-action="capture-crystal">${copy.scanCrystal}</button>
@@ -1570,6 +1576,10 @@ async function handleAction(action: string, app: HTMLElement, source?: HTMLEleme
     await generateAndCollectSediment(app);
     return;
   }
+  if (action === "generate-overview") {
+    await generateAndCollectOverview(app);
+    return;
+  }
 
   if (action === "generate") {
     cancelActiveWait();
@@ -1842,6 +1852,125 @@ async function generateAndCollectSediment(app: HTMLElement): Promise<void> {
   viewState.message = result.status === "DISPATCHED" ? copy.sedimentSubmitted : `${copy.bcrStartFailed}: uncertain`;
   render(app);
   waitForGeneratedCrystal(app, baselineBegin);
+}
+
+/**
+ * `OVERVIEW_HTML` shortcut action (issue #61 slice 4). Same governed shape as
+ * `generateAndCollectSediment`: the ledger identity is `OVERVIEW_HTML` (never
+ * `GO`), so it goes through the dedicated kind-specialised composer
+ * `dispatchOverviewHtml`; the wait state machine is reused with the dedicated
+ * capture predicate from `html-capture.ts`. The only landing is Downloads
+ * (proposal §6 Q9), and the captured bytes are never executed.
+ */
+async function generateAndCollectOverview(app: HTMLElement): Promise<void> {
+  const copy = COPY[viewState.locale];
+  // Issue #61 delta 13: a non-run shortcut is refused while a bounded run is
+  // ACTIVE, with the same generic copy as every other manual action. It never
+  // consumes the run's expected-turn reservation (#63 delta 3/9).
+  if (bcrRun?.status === "ACTIVE") {
+    viewState.message = copy.bcrRunActive;
+    render(app);
+    return;
+  }
+  const observation = await awaitReadyObservation();
+  if (!observation) {
+    viewState.state = "error";
+    viewState.message = copy.inputNotFound;
+    render(app);
+    return;
+  }
+  // Same pre-claim draft priority as every governed actuation (issue #98/#106):
+  // the Human's unsent text is never overwritten, and nothing is claimed.
+  if (!isChatComposerEmpty()) {
+    viewState.message = copy.outboxWaitComposerNotEmpty;
+    render(app);
+    return;
+  }
+  const runtime = globalThis.chrome?.runtime;
+  if (!runtime?.sendMessage) {
+    viewState.state = "error";
+    viewState.message = copy.inputNotFound;
+    render(app);
+    return;
+  }
+
+  const now = Date.now();
+  // Baseline before dispatch so the wait only accepts a *new* HTML marker.
+  const baselineBegin = newestHtmlMarkerBegin(captureNoosOverviews(getPageText()).overviews);
+  const payload = buildShortcutPayload("OVERVIEW_HTML", {
+    sourceUrl: window.location.href,
+    conversationRef: observation.providerConversationRef,
+    now: new Date(now)
+  });
+  const baseline: SubmissionBaseline = {
+    conversationRef: observation.providerConversationRef,
+    routeRef: getPageContext().pathname,
+    assistantMessageCount: observation.assistantMessageCount ?? 0,
+    userMessageCount: observation.userMessageCount ?? 0,
+    ...readSubmissionMessageEvidence(),
+    observedAt: now
+  };
+  const operationId = `overview-html-${now.toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  let result: Awaited<ReturnType<typeof dispatchOverviewHtml>>;
+  try {
+    result = await dispatchOverviewHtml(
+      {
+        operationId,
+        payload,
+        payloadFingerprint: fingerprintText(payload),
+        preSubmitBaseline: baseline,
+        carrier: {
+          providerConversationRef: observation.providerConversationRef,
+          targetCarrierRef: observation.carrierRef,
+          bindingEpoch: observation.sourceEpoch,
+          leaseGeneration: observation.sourceEpoch,
+          leaseOwnerRef: observation.executionInstanceRef,
+          sourceEpoch: observation.sourceEpoch,
+          sourceObservedAt: observation.observedAt
+        },
+        now
+      },
+      createGovernedDispatchDeps(observation)
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    viewState.state = "error";
+    viewState.message = `${copy.bcrStartFailed}: ${message}`;
+    render(app);
+    return;
+  }
+  if (result.status === "BLOCKED") {
+    viewState.state = "error";
+    viewState.message = `${copy.bcrStartFailed}: ${result.reason}`;
+    render(app);
+    return;
+  }
+  if (result.status === "REFUSED") {
+    viewState.message = copy.outboxWaitComposerNotEmpty;
+    render(app);
+    return;
+  }
+  // DISPATCHED or UNCERTAIN: the payload was, or may have been, sent. Adopt the
+  // operation for the generic reconciliation lane and wait read-only — this
+  // never re-sends on UNCERTAIN (#54 Evidence Gate).
+  activeSubmission = {
+    operationId: result.operation.operationId,
+    logicalThreadId: result.operation.logicalThreadId,
+    fence: result.operation.dispatchFence ?? {
+      providerConversationRef: observation.providerConversationRef,
+      bindingEpoch: observation.sourceEpoch,
+      leaseGeneration: observation.sourceEpoch,
+      leaseOwnerRef: observation.executionInstanceRef,
+      targetCarrierRef: observation.carrierRef
+    },
+    claimedAt: result.operation.dispatchClaimedAt ?? now
+  };
+  cancelActiveWait();
+  viewState.state = "waiting";
+  closePanels();
+  viewState.message = result.status === "DISPATCHED" ? copy.overviewSubmitted : `${copy.bcrStartFailed}: uncertain`;
+  render(app);
+  waitForGeneratedOverview(app, baselineBegin);
 }
 
 /**
@@ -3216,6 +3345,144 @@ function waitForGeneratedCrystal(app: HTMLElement, baselineBegin: number): void 
   observeGenerationState();
 }
 
+/**
+ * Third instance of the one generated-artifact wait state machine (proposal
+ * §2 F7 / §6 Q10). The increment over `waitForGeneratedCrystal` is exactly the
+ * capture predicate and the completion copy; the observer, quiet period,
+ * retry, grace and timeout logic are identical. No second wait protocol.
+ */
+function waitForGeneratedOverview(app: HTMLElement, baselineBegin: number): void {
+  const copy = COPY[viewState.locale];
+  let retryTimerId: number | null = null;
+
+  const tryCapture = (): boolean => {
+    const result = captureNoosOverviews(getPageText());
+    const candidate = findNewestHtmlAfter(result.overviews, baselineBegin);
+    if (!candidate) {
+      return false;
+    }
+
+    viewState.state = candidate.warnings.length ? "warning" : "captured";
+    viewState.message = candidate.warnings.length ? copy.overviewCapturedWithWarnings : copy.overviewCaptured;
+    openSurfacePanel();
+    cancelActiveWait();
+    // Downloads-only landing (proposal §6 Q9). The captured bytes are handed to
+    // a Blob download; they are never parsed, rendered or executed here.
+    void deliverOverview(candidate, app);
+    return true;
+  };
+
+  const retryCapture = () => {
+    if (!activeWait) {
+      return;
+    }
+    if (tryCapture()) {
+      return;
+    }
+    retryTimerId = window.setTimeout(retryCapture, CAPTURE_RETRY_MS);
+    if (activeWait) {
+      activeWait.retryTimerId = retryTimerId;
+    }
+  };
+
+  let quietTimerId: number | null = null;
+  let hasStartedGenerating = false;
+
+  const completeAfterQuietPeriod = () => {
+    if (!activeWait || !hasStartedGenerating || isChatbotGenerating()) {
+      return;
+    }
+
+    if (quietTimerId !== null) {
+      return;
+    }
+    quietTimerId = window.setTimeout(() => {
+      if (!activeWait || isChatbotGenerating()) {
+        return;
+      }
+      quietTimerId = null;
+      if (activeWait) {
+        activeWait.quietTimerId = null;
+      }
+      viewState.message = copy.waitingForOverview;
+      render(app);
+      retryCapture();
+    }, GENERATION_QUIET_MS);
+    if (activeWait) {
+      activeWait.quietTimerId = quietTimerId;
+    }
+  };
+
+  const observeGenerationState = () => {
+    if (!activeWait) {
+      return;
+    }
+    if (isChatbotGenerating()) {
+      hasStartedGenerating = true;
+      activeWait.hasStartedGenerating = true;
+      if (quietTimerId !== null) {
+        window.clearTimeout(quietTimerId);
+        quietTimerId = null;
+        activeWait.quietTimerId = null;
+      }
+      viewState.message = copy.waitingForGenerationStart;
+      return;
+    }
+    completeAfterQuietPeriod();
+  };
+
+  const observer = new MutationObserver(() => {
+    observeGenerationState();
+  });
+  observer.observe(document.body, { attributes: true, childList: true, characterData: true, subtree: true });
+  const capturePollId = window.setInterval(() => {
+    if (!activeWait) {
+      return;
+    }
+    observeGenerationState();
+  }, CAPTURE_POLL_MS);
+  const fallbackStartId = window.setTimeout(() => {
+    if (!activeWait || hasStartedGenerating) {
+      return;
+    }
+    hasStartedGenerating = true;
+    activeWait.hasStartedGenerating = true;
+    completeAfterQuietPeriod();
+  }, GENERATION_START_GRACE_MS);
+  const timeoutId = window.setTimeout(() => {
+    cancelActiveWait();
+    viewState.state = "error";
+    openSurfacePanel();
+    viewState.message = copy.waitingTimedOut;
+    render(app);
+  }, WAIT_FOR_HANDOFF_TIMEOUT_MS);
+  activeWait = { observer, timeoutId, fallbackStartId, capturePollId, quietTimerId, retryTimerId, hasStartedGenerating };
+  observeGenerationState();
+}
+
+async function deliverOverview(overview: NoosOverview, app: HTMLElement): Promise<void> {
+  const copy = COPY[viewState.locale];
+  const filename = createOverviewHtmlFilename(deriveOverviewTitle(overview.html));
+  const result = await downloadAdapter.saveHtml(overview.html, { filename });
+  const warnings = [...overview.warnings];
+  openSurfacePanel();
+  if (!result.ok) {
+    warnings.push(result.message ?? copy.vaultUnavailable);
+  }
+  viewState.message = result.ok
+    ? warnings.length > 0 ? copy.overviewCapturedWithWarnings : copy.overviewDownloaded
+    : warnings[0] ?? copy.vaultUnavailable;
+  viewState.modal = warnings.length > 0
+    ? {
+        kind: "warnings",
+        title: copy.deliveryIssueTitle,
+        message: viewState.message,
+        warnings
+      }
+    : { kind: "success", title: copy.deliverySuccessTitle, message: viewState.message };
+  render(app);
+}
+
 function cancelActiveWait(): void {
   if (!activeWait) {
     return;
@@ -3242,6 +3509,10 @@ function newestCrystalMarkerBegin(crystals: NoosCrystal[]): number {
   return crystals.reduce((max, crystal) => Math.max(max, crystal.markerRange.begin), -1);
 }
 
+function newestHtmlMarkerBegin(overviews: NoosOverview[]): number {
+  return overviews.reduce((max, overview) => Math.max(max, overview.markerRange.begin), -1);
+}
+
 function findNewestThreadAfter(threads: NoosThread[], baselineBegin: number): NoosThread | undefined {
   for (let index = threads.length - 1; index >= 0; index -= 1) {
     if (threads[index].markerRange.begin > baselineBegin) {
@@ -3256,6 +3527,16 @@ function findNewestCrystalAfter(crystals: NoosCrystal[], baselineBegin: number):
   for (let index = crystals.length - 1; index >= 0; index -= 1) {
     if (crystals[index].markerRange.begin > baselineBegin) {
       return crystals[index];
+    }
+  }
+
+  return undefined;
+}
+
+function findNewestHtmlAfter(overviews: NoosOverview[], baselineBegin: number): NoosOverview | undefined {
+  for (let index = overviews.length - 1; index >= 0; index -= 1) {
+    if (overviews[index].markerRange.begin > baselineBegin) {
+      return overviews[index];
     }
   }
 

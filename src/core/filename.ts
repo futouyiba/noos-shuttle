@@ -23,6 +23,17 @@ export function createCrystalFilename(titleOrKey: string, date = new Date()): st
   return `${isoDate}-${slug}.md`;
 }
 
+/**
+ * Downloads-only filename for an `OVERVIEW_HTML` artifact (issue #61 slice 4,
+ * proposal §6 Q9). The extension stays `.html`; the slug is derived from the
+ * document's own title and is sanitized like every other filename.
+ */
+export function createOverviewHtmlFilename(titleOrKey: string, date = new Date()): string {
+  const isoDate = date.toISOString().slice(0, 10);
+  const slug = slugify(titleOrKey) || "noos-overview";
+  return `${isoDate}-${slug}.html`;
+}
+
 export function createPreferredPath(title: string, date = new Date()): string {
   return `.noos/handoffs/active/${createThreadFilename(title, date)}`;
 }
