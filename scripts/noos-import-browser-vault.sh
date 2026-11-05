@@ -52,6 +52,13 @@ copy_artifacts \
   "<!-- NOOS:CRYSTAL:BEGIN -->" \
   "<!-- NOOS:CRYSTAL:END -->"
 
+copy_artifacts \
+  "Result" \
+  "$HOME/Downloads/NOOS/vault/results/inbox" \
+  "$NOOS_HOME/vault/results/inbox" \
+  "<!-- NOOS:RESULT:BEGIN -->" \
+  "<!-- NOOS:RESULT:END -->"
+
 copy_context_packs() {
   local source_dir="$HOME/Downloads/NOOS/vault/context-packs"
   local target_dir="$NOOS_HOME/vault/context-packs"

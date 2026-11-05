@@ -1417,6 +1417,53 @@ describe("content script smoke flow", () => {
     await page.close();
   });
 
+  it("auto-captures a NOOS:RESULT marker and sends the vault save message", async () => {
+    const page = await newMockChatPage({ startWithHandoffs: false, startWithResults: true });
+
+    const saved = () =>
+      page.evaluate(() => (globalThis as unknown as { lastResultSave?: unknown }).lastResultSave);
+    await expect.poll(async () => Boolean(await saved()), { timeout: 8000 }).toBe(true);
+
+    const message = (await saved()) as { type: string; filename: string; content: string };
+    expect(message.type).toBe("NOOS_SAVE_RESULT_TO_VAULT");
+    expect(message.filename).toMatch(/^\d{4}-\d{2}-\d{2}-.*\.md$/);
+    expect(message.content).toContain("<!-- NOOS:RESULT:BEGIN -->");
+    expect(message.content).toContain("<!-- NOOS:RESULT:END -->");
+    expect(message.content).toContain("result_key: shortest-loop-result");
+    await page.close();
+  });
+
+  it("captures a Result that arrives inside a replacement main after the install scan", async () => {
+    const page = await newMockChatPage({ startWithHandoffs: false });
+    const saved = () =>
+      page.evaluate(() => (globalThis as unknown as { lastResultSave?: unknown }).lastResultSave);
+
+    // Let the install-time scan finish with no Result on the page.
+    await page.waitForTimeout(2500);
+    expect(await saved()).toBeUndefined();
+
+    // SPA navigation can swap in a root that is already fully rendered. Build
+    // the replacement off-DOM, insert it in one step, and make no further
+    // assistant mutations: only the root-rebind poll can schedule a scan.
+    await page.evaluate(result => {
+      const oldMain = document.querySelector("main")!;
+      const nextMain = document.createElement("main");
+      const article = document.createElement("article");
+      article.dataset.messageAuthorRole = "assistant";
+      const pre = document.createElement("pre");
+      pre.textContent = result;
+      article.append(pre);
+      nextMain.append(article);
+      oldMain.replaceWith(nextMain);
+    }, createResult());
+
+    await expect.poll(async () => Boolean(await saved()), { timeout: 8000 }).toBe(true);
+    const message = (await saved()) as { type: string; content: string };
+    expect(message.type).toBe("NOOS_SAVE_RESULT_TO_VAULT");
+    expect(message.content).toContain("result_key: shortest-loop-result");
+    await page.close();
+  }, 20000);
+
   it("shows Browser Vault Mirror fallback when Hub is unavailable", async () => {
     const page = await newMockChatPage({ vaultBackend: "downloads_mirror" });
 
@@ -2197,6 +2244,7 @@ async function newMockChatPage(
     autoVault?: boolean;
     startWithHandoffs?: boolean;
     startWithCrystals?: boolean;
+    startWithResults?: boolean;
     vaultBackend?: "hub_local" | "downloads_mirror";
     withFileInput?: boolean;
     injectContentScript?: boolean;
@@ -2248,6 +2296,15 @@ async function newMockChatPage(
               return { ok: true, result: { outcome: "PROVEN_ACCEPTED", operation } };
             }
             return { ok: true, result: undefined };
+          }
+          if (message.type === "NOOS_SAVE_RESULT_TO_VAULT") {
+            (globalThis as unknown as { lastResultSave?: unknown }).lastResultSave = message;
+            return {
+              ok: true,
+              backend: "hub_local",
+              location: "/tmp/noos/results/inbox/shortest-loop-result.md",
+              message: "Saved to local NOOS Vault: /tmp/noos/results/inbox/shortest-loop-result.md"
+            };
           }
           if (message.type === "NOOS_GET_VAULT_STATUS") {
             return vaultBackend === "downloads_mirror"
@@ -2345,7 +2402,12 @@ async function newMockChatPage(
   await page.route("https://chatgpt.com/c/noos-content-smoke", (route) =>
     route.fulfill({
       contentType: "text/html",
-      body: createMockChatHtml(options.startWithHandoffs ?? true, Boolean(options.startWithCrystals), Boolean(options.withFileInput))
+      body: createMockChatHtml(
+        options.startWithHandoffs ?? true,
+        Boolean(options.startWithCrystals),
+        Boolean(options.withFileInput),
+        Boolean(options.startWithResults)
+      )
     })
   );
   await page.goto("https://chatgpt.com/c/noos-content-smoke");
@@ -2596,7 +2658,7 @@ async function newMockFeishuPage(
   return page;
 }
 
-function createMockChatHtml(startWithHandoffs: boolean, startWithCrystals: boolean, withFileInput = false): string {
+function createMockChatHtml(startWithHandoffs: boolean, startWithCrystals: boolean, withFileInput = false, withResult = false): string {
   return `<!doctype html>
 <html>
   <body>
@@ -2611,6 +2673,7 @@ function createMockChatHtml(startWithHandoffs: boolean, startWithCrystals: boole
           : ""
       }
       ${startWithCrystals ? `<article><pre>${escapeHtml(createCrystal())}</pre></article>` : ""}
+      ${withResult ? `<article><pre>${escapeHtml(createResult())}</pre></article>` : ""}
     </main>
     <div id="prompt-textarea" role="textbox" contenteditable="true"></div>
     ${withFileInput ? `<input type="file" />` : ""}
@@ -2652,6 +2715,23 @@ None.
 - Vault file list
 
 <!-- NOOS:CRYSTAL:END -->`;
+}
+
+function createResult(): string {
+  return `<!-- NOOS:RESULT:BEGIN -->
+---
+type: noos_result
+version: 0.1
+result_key: shortest-loop-result
+title: Shortest Loop Result
+summary: The chatbot returned a markerized Result.
+---
+
+# 结果：Shortest Loop Result
+
+The loop closed.
+
+<!-- NOOS:RESULT:END -->`;
 }
 
 function createThread(title: string, slug: string): string {
