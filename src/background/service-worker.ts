@@ -948,6 +948,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // Chatbot-returned `NOOS:RESULT` capture (issue #152). Same write path as
+  // crystal/handoff: `/v1/ingest` with object_type=result, which Hub validates
+  // and lands in `vault/results/inbox` (the `/v1/results` compatibility route
+  // is the same handler).
+  if (isResultSaveMessage(message)) {
+    saveMarkdownToVault(message.filename, message.content, "result", sender.tab?.url)
+      .then(sendResponse)
+      .catch((error) => {
+        sendResponse({
+          ok: false,
+          errorCode: "vault_failed",
+          message: error instanceof Error ? error.message : "NOOS Vault save failed."
+        });
+      });
+
+    return true;
+  }
+
   if (isContextPackSaveMessage(message)) {
     saveContextPackToVault(message.directory, message.files, message.sourceUrl)
       .then(sendResponse)
@@ -1710,6 +1728,12 @@ interface CrystalSaveMessage {
   content: string;
 }
 
+interface ResultSaveMessage {
+  type: "NOOS_SAVE_RESULT_TO_VAULT";
+  filename: string;
+  content: string;
+}
+
 interface ContextPackSaveMessage {
   type: "NOOS_SAVE_CONTEXT_PACK_TO_VAULT";
   directory: string;
@@ -1803,6 +1827,15 @@ function isCrystalSaveMessage(value: unknown): value is CrystalSaveMessage {
 
   const message = value as Partial<CrystalSaveMessage>;
   return message.type === "NOOS_SAVE_CRYSTAL_TO_VAULT" && typeof message.filename === "string" && typeof message.content === "string";
+}
+
+function isResultSaveMessage(value: unknown): value is ResultSaveMessage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const message = value as Partial<ResultSaveMessage>;
+  return message.type === "NOOS_SAVE_RESULT_TO_VAULT" && typeof message.filename === "string" && typeof message.content === "string";
 }
 
 function isContextPackSaveMessage(value: unknown): value is ContextPackSaveMessage {
@@ -2128,7 +2161,7 @@ async function getVaultStatus(): Promise<VaultStatusResponse> {
 async function saveMarkdownToVault(
   filename: string,
   content: string,
-  kind: "handoff" | "crystal" | "context_pack_file",
+  kind: "handoff" | "crystal" | "result" | "context_pack_file",
   sourceUrl?: string
 ): Promise<{ ok: boolean; backend: string; location: string; importHint: string; message: string; lookupKey?: string; key?: string; objectId?: string }> {
   const hubResult = await saveMarkdownToHub(filename, content, kind, sourceUrl);
@@ -2148,11 +2181,13 @@ async function saveMarkdownToVault(
   }
 
   const safeFilename = sanitizeFilename(filename);
-  const artifactLabel = kind === "crystal" ? "crystal" : kind === "context_pack_file" ? "context pack file" : "handoff";
+  const artifactLabel = kind === "crystal" ? "crystal" : kind === "result" ? "result" : kind === "context_pack_file" ? "context pack file" : "handoff";
   const relativePath =
     kind === "context_pack_file"
       ? `NOOS/vault/context-packs/${sanitizeRelativePath(filename)}`
-      : `NOOS/vault/${kind === "crystal" ? "crystals" : "handoffs"}/active/${safeFilename}`;
+      : kind === "result"
+        ? `NOOS/vault/results/inbox/${safeFilename}`
+        : `NOOS/vault/${kind === "crystal" ? "crystals" : "handoffs"}/active/${safeFilename}`;
   await chrome.downloads.download({
     url: `data:text/markdown;charset=utf-8,${encodeURIComponent(content)}`,
     filename: relativePath,
@@ -2172,7 +2207,7 @@ async function saveMarkdownToVault(
 async function saveMarkdownToHub(
   filename: string,
   content: string,
-  kind: "handoff" | "crystal" | "context_pack_file",
+  kind: "handoff" | "crystal" | "result" | "context_pack_file",
   sourceUrl?: string
 ): Promise<{ ok: boolean; location?: string; message?: string; errorCode?: string; lookupKey?: string; key?: string; objectId?: string }> {
   const firstAttempt = await postMarkdownToHub(filename, content, kind, await getOrPairHubToken(), sourceUrl);
@@ -2193,7 +2228,7 @@ async function saveMarkdownToHub(
 async function postMarkdownToHub(
   filename: string,
   content: string,
-  kind: "handoff" | "crystal" | "context_pack_file",
+  kind: "handoff" | "crystal" | "result" | "context_pack_file",
   token: string | null,
   sourceUrl?: string
 ): Promise<{ ok: boolean; location?: string; message?: string; errorCode?: string; lookupKey?: string; key?: string; objectId?: string }> {

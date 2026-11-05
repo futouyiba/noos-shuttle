@@ -59,6 +59,13 @@ import styles from "./styles.css?inline";
 
 const SUBMISSION_STABLE_WINDOW_MS = 2_000;
 
+// Issue #152: the fed conversation should close the loop by returning a
+// markerized Result the Shuttle can capture and save to `/v1/results`.
+// Chunked the same way as the handoff/crystal prompts so the marker survives
+// Markdown rendering.
+const RESULT_BEGIN_MARKER_INSTRUCTION = "`<` + `!-- NOOS:RESULT:BEGIN --` + `>`";
+const RESULT_END_MARKER_INSTRUCTION = "`<` + `!-- NOOS:RESULT:END --` + `>`";
+
 type ShuttleState = "idle" | "prompt-ready" | "waiting" | "captured" | "needs-choice" | "warning" | "saved" | "error";
 type DeliveryMode = "copy" | "download" | "vault";
 type VaultRoute = "checking" | "hub" | "needs-repair" | "mirror";
@@ -5567,10 +5574,11 @@ function createChatbotFeedInstruction(objects: VaultObjectContent[], attached: b
     title: object.title || object.lookup_key || object.key || object.name || "NOOS context"
   }));
   const refText = refs.map((ref) => `- ${ref.key}: ${ref.title}`).join("\n");
+  const resultInstruction = createResultInstruction(locale);
   if (attached) {
     return locale === "zh"
-      ? `请读取我刚刚附上的 NOOS Markdown 文件，并基于其中内容继续当前对话。\n\nNOOS 对象：\n${refText}\n\n请不要复述全文，先总结你理解到的任务/知识要点，再继续推进。`
-      : `Please read the attached NOOS Markdown files and continue this conversation from them.\n\nNOOS objects:\n${refText}\n\nDo not repeat the full files. First summarize the task or knowledge you understood, then continue.`;
+      ? `请读取我刚刚附上的 NOOS Markdown 文件，并基于其中内容继续当前对话。\n\nNOOS 对象：\n${refText}\n\n请不要复述全文，先总结你理解到的任务/知识要点，再继续推进。${resultInstruction}`
+      : `Please read the attached NOOS Markdown files and continue this conversation from them.\n\nNOOS objects:\n${refText}\n\nDo not repeat the full files. First summarize the task or knowledge you understood, then continue.${resultInstruction}`;
   }
 
   const content = objects
@@ -5582,8 +5590,16 @@ function createChatbotFeedInstruction(objects: VaultObjectContent[], attached: b
     .join("\n\n---\n\n");
 
   return locale === "zh"
-    ? `请基于下面这些 NOOS 对象继续当前对话。\n\n${content}`
-    : `Please continue this conversation using the NOOS objects below.\n\n${content}`;
+    ? `请基于下面这些 NOOS 对象继续当前对话。\n\n${content}${resultInstruction}`
+    : `Please continue this conversation using the NOOS objects below.\n\n${content}${resultInstruction}`;
+}
+
+function createResultInstruction(locale: ShuttleLocale): string {
+  if (locale === "zh") {
+    return `\n\n完成本轮工作后，请返回一份 NOOS Result。直接输出 marker 包裹的 Markdown，不要使用 fenced code block，不要在 marker 外写解释、寒暄或补充说明。\n结果必须被两个精确 HTML 注释 marker 包裹：\n- begin marker 由这几段字符直接拼成，不要添加空格或反引号：${RESULT_BEGIN_MARKER_INSTRUCTION}\n- end marker 由这几段字符直接拼成，不要添加空格或反引号：${RESULT_END_MARKER_INSTRUCTION}\n使用 YAML frontmatter，字段保持英文键名：type: noos_result、version: 0.1、result_key、title、summary、source_url。\n重要：你的最终回答里只能出现一组 begin/end marker。`;
+  }
+
+  return `\n\nWhen this round is done, return a NOOS Result. Output the marker-wrapped Markdown directly; do not use a fenced code block, and do not write explanations outside the markers.\nThe result must be wrapped by two exact HTML comment markers:\n- begin marker is made by directly joining these character chunks, with no extra spaces or backticks: ${RESULT_BEGIN_MARKER_INSTRUCTION}\n- end marker is made by directly joining these character chunks, with no extra spaces or backticks: ${RESULT_END_MARKER_INSTRUCTION}\nUse YAML frontmatter with English keys: type: noos_result, version: 0.1, result_key, title, summary, source_url.\nImportant: your final answer must contain exactly one begin/end marker pair.`;
 }
 
 function showValidationModal(thread: NoosThread): void {
