@@ -139,3 +139,99 @@ describe("advancePrSweepCursor (Q7 single-writer compare-and-set)", () => {
     expect(readPrSweepCursorRecord({ [PR]: { cursor: "c", operationId: "o", observedAt: -1 } }, PR)).toBeUndefined();
   });
 });
+
+describe("replay / concurrency judgement (Q8 evidence surface)", () => {
+  it("lets exactly one of two concurrent advances from the same snapshot land", () => {
+    const start = observed("c-1");
+    if (!start.ok) throw new Error("setup");
+    // Both writers dispatched after reading the same snapshot (c-1). The first
+    // one to reach the coordinator advances; the second is applied to the state
+    // the first produced, so its stale expectation conflicts.
+    const writerA = advancePrSweepCursor(start.records, {
+      prRef: PR,
+      expectedStoredCursor: "c-1",
+      cursor: "c-2",
+      operationId: "sweep-a",
+      observedAt: 2_000
+    });
+    if (!writerA.ok) throw new Error("setup");
+    const writerB = advancePrSweepCursor(writerA.records, {
+      prRef: PR,
+      expectedStoredCursor: "c-1",
+      cursor: "c-3",
+      operationId: "sweep-b",
+      observedAt: 2_001
+    });
+
+    expect(writerA.ok).toBe(true);
+    expect(writerB).toEqual({ ok: false, reason: "cursor_conflict" });
+    expect(readPrSweepCursorRecord(writerA.records, PR)?.cursor).toBe("c-2");
+  });
+
+  it("rejects a delayed replay of an older echo when its dispatch snapshot is stale", () => {
+    // A sweep advanced the slot to c-10; a delayed writer that had read c-1
+    // still carries an older echo (c-2). CAS refuses it instead of moving the
+    // watermark backwards.
+    const start = observed("c-1");
+    if (!start.ok) throw new Error("setup");
+    const advanced = advancePrSweepCursor(start.records, {
+      prRef: PR,
+      expectedStoredCursor: "c-1",
+      cursor: "c-10",
+      operationId: "sweep-new",
+      observedAt: 2_000
+    });
+    if (!advanced.ok) throw new Error("setup");
+    const replay = advancePrSweepCursor(advanced.records, {
+      prRef: PR,
+      expectedStoredCursor: "c-1",
+      cursor: "c-2",
+      operationId: "sweep-replayed",
+      observedAt: 3_000
+    });
+
+    expect(replay).toEqual({ ok: false, reason: "cursor_conflict" });
+    expect(readPrSweepCursorRecord(advanced.records, PR)?.cursor).toBe("c-10");
+  });
+
+  it("does not order opaque tokens: ordering cannot be a cursor property", () => {
+    // Honest boundary: with the *current* snapshot a smaller token is accepted.
+    // This is deliberate — the token has no frozen shape (Q8 did not settle
+    // one). Rejecting an old/out-of-order echo is the reply-binding predicate's
+    // job (`findPrSweepReply`); CAS only prevents stale writers from overwriting.
+    const start = observed("c-10");
+    if (!start.ok) throw new Error("setup");
+    const smaller = advancePrSweepCursor(start.records, {
+      prRef: PR,
+      expectedStoredCursor: "c-10",
+      cursor: "c-2",
+      operationId: "sweep-opaque",
+      observedAt: 2_000
+    });
+
+    expect(smaller.ok).toBe(true);
+    if (!smaller.ok) return;
+    expect(readPrSweepCursorRecord(smaller.records, PR)?.cursor).toBe("c-2");
+  });
+
+  it("does not create a second slot when the same PR echoes the same token again", () => {
+    const first = observed("c-1");
+    if (!first.ok) throw new Error("setup");
+    const duplicate = advancePrSweepCursor(first.records, {
+      prRef: PR,
+      expectedStoredCursor: "c-1",
+      cursor: "c-1",
+      operationId: "sweep-duplicate",
+      observedAt: 2_000
+    });
+
+    expect(duplicate.ok).toBe(true);
+    if (!duplicate.ok) return;
+    expect(Object.keys(duplicate.records)).toEqual([PR]);
+    expect(readPrSweepCursorRecord(duplicate.records, PR)).toEqual({
+      cursor: "c-1",
+      operationId: "sweep-duplicate",
+      observedAt: 2_000
+    });
+  });
+});

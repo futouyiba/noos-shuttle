@@ -42,7 +42,8 @@ import { actuateGovernedPayload } from "./governed-dispatch";
 import { dispatchSediment } from "./sediment-dispatch";
 import { dispatchOverviewHtml } from "./overview-html-dispatch";
 import { dispatchPrCommentSweep } from "./pr-comment-sweep-dispatch";
-import { parsePrSweepCursorEcho, prSweepReportsNoNewComments } from "../core/pr-sweep-cursor";
+import { runPrSweepAction, type PrSweepActionObservation } from "./pr-sweep-action";
+import { capturePrSweepReplyBaseline, findPrSweepReply, type PrSweepReplyBaseline } from "./pr-sweep-reply-capture";
 import { snapshotEditableControls, restoreEditableControls } from "./panel-input-preservation";
 import { createRenderThrottle } from "./observation-render-throttle";
 import { captureChatGptTranscriptWithScroll, captureRenderedChatGptTranscript } from "./chatgpt-transcript";
@@ -2004,122 +2005,72 @@ async function generateAndCollectOverview(app: HTMLElement): Promise<void> {
  */
 async function generateAndCollectPrSweep(app: HTMLElement): Promise<void> {
   const copy = COPY[viewState.locale];
-  // Issue #61 delta 13: a non-run shortcut is refused while a bounded run is
-  // ACTIVE, with the same generic copy as every other manual action. It never
-  // consumes the run's expected-turn reservation (#63 delta 3/9).
-  if (bcrRun?.status === "ACTIVE") {
-    viewState.message = copy.bcrRunActive;
-    render(app);
-    return;
-  }
-  const prRef = app.querySelector<HTMLInputElement>("[data-pr-sweep-pr-ref]")?.value.trim() ?? "";
-  const explicitCursor = app.querySelector<HTMLInputElement>("[data-pr-sweep-cursor]")?.value.trim() ?? "";
-  if (!prRef) {
-    viewState.state = "error";
-    viewState.message = copy.prSweepMissingPrRef;
-    render(app);
-    return;
-  }
-  const runtime = globalThis.chrome?.runtime;
-  if (!runtime?.sendMessage) {
-    viewState.state = "error";
-    viewState.message = copy.inputNotFound;
-    render(app);
-    return;
-  }
-
-  // Read the durable slot BEFORE dispatch: this value is both the payload cursor
-  // (unless the Human overrode it) and the compare-and-set snapshot that keeps
-  // two tabs from advancing the same slot concurrently (proposal §6 Q7).
-  let storedCursor: string | null = null;
-  try {
-    const stored = await sendExtensionMessage<
+  const outcome = await runPrSweepAction({
+    // Issue #61 delta 13: a non-run shortcut is refused while a bounded run is
+    // ACTIVE, with the same generic copy as every other manual action. It never
+    // consumes the run's expected-turn reservation (#63 delta 3/9).
+    isRunActive: () => bcrRun?.status === "ACTIVE",
+    readInputs: () => ({
+      prRef: app.querySelector<HTMLInputElement>("[data-pr-sweep-pr-ref]")?.value.trim() ?? "",
+      explicitCursor: app.querySelector<HTMLInputElement>("[data-pr-sweep-cursor]")?.value.trim() ?? ""
+    }),
+    isRuntimeAvailable: () => Boolean(globalThis.chrome?.runtime?.sendMessage),
+    // Read the durable slot BEFORE dispatch: this value is both the payload
+    // cursor (unless the Human overrode it) and the compare-and-set snapshot
+    // that keeps two tabs from advancing the same slot concurrently (§6 Q7).
+    readStoredCursor: prRef => sendExtensionMessage<
       { type: string; prRef: string },
       { ok?: boolean; cursor?: string; error?: string }
-    >({ type: "NOOS_PR_SWEEP_CURSOR_READ", prRef });
-    if (stored?.ok !== true) throw new Error(stored?.error ?? "cursor_read_failed");
-    if (typeof stored.cursor === "string" && stored.cursor.trim()) storedCursor = stored.cursor;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    viewState.state = "error";
-    viewState.message = `${copy.prSweepCursorError}: ${message}`;
-    render(app);
-    return;
-  }
-  const payloadCursor = explicitCursor || storedCursor;
-  if (!payloadCursor) {
-    viewState.state = "error";
-    viewState.message = copy.prSweepMissingCursor;
-    render(app);
-    return;
-  }
-
-  const observation = await awaitReadyObservation();
-  if (!observation) {
-    viewState.state = "error";
-    viewState.message = copy.inputNotFound;
-    render(app);
-    return;
-  }
-  // Same pre-claim draft priority as every governed actuation (issue #98/#106).
-  if (!isChatComposerEmpty()) {
-    viewState.message = copy.outboxWaitComposerNotEmpty;
-    render(app);
-    return;
-  }
-
-  const now = Date.now();
-  const baselineAssistantCount = document.querySelectorAll("[data-message-author-role='assistant']").length;
-  const payload = buildShortcutPayload("PR_COMMENT_SWEEP", {
-    prRef,
-    cursor: payloadCursor,
-    sourceUrl: window.location.href,
-    conversationRef: observation.providerConversationRef
+    >({ type: "NOOS_PR_SWEEP_CURSOR_READ", prRef }),
+    awaitReadyObservation,
+    isComposerEmpty: isChatComposerEmpty,
+    routeRef: () => getPageContext().pathname,
+    sourceUrl: () => window.location.href,
+    assistantMessageCount: () => document.querySelectorAll("[data-message-author-role='assistant']").length,
+    readMessageEvidence: readSubmissionMessageEvidence,
+    // R2: the wait accepts only content after this boundary and anchored to the
+    // submitted user turn, so back-loaded history and unrelated turns cannot
+    // satisfy the echo predicate.
+    captureReplyBaseline: payload => capturePrSweepReplyBaseline(document, payload),
+    fingerprintText,
+    now: () => Date.now(),
+    dispatch: (request, observation) => dispatchPrCommentSweep(request, createGovernedDispatchDeps(observation))
   });
-  const baseline: SubmissionBaseline = {
-    conversationRef: observation.providerConversationRef,
-    routeRef: getPageContext().pathname,
-    assistantMessageCount: observation.assistantMessageCount ?? baselineAssistantCount,
-    userMessageCount: observation.userMessageCount ?? 0,
-    ...readSubmissionMessageEvidence(),
-    observedAt: now
-  };
-  const operationId = `pr-comment-sweep-${now.toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  let result: Awaited<ReturnType<typeof dispatchPrCommentSweep>>;
-  try {
-    result = await dispatchPrCommentSweep(
-      {
-        operationId,
-        payload,
-        payloadFingerprint: fingerprintText(payload),
-        preSubmitBaseline: baseline,
-        carrier: {
-          providerConversationRef: observation.providerConversationRef,
-          targetCarrierRef: observation.carrierRef,
-          bindingEpoch: observation.sourceEpoch,
-          leaseGeneration: observation.sourceEpoch,
-          leaseOwnerRef: observation.executionInstanceRef,
-          sourceEpoch: observation.sourceEpoch,
-          sourceObservedAt: observation.observedAt
-        },
-        now
-      },
-      createGovernedDispatchDeps(observation)
-    );
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+
+  if (outcome.status === "refused") {
+    if (outcome.reason === "run_active") {
+      viewState.message = copy.bcrRunActive;
+      render(app);
+      return;
+    }
+    if (outcome.reason === "composer_not_empty") {
+      viewState.message = copy.outboxWaitComposerNotEmpty;
+      render(app);
+      return;
+    }
     viewState.state = "error";
-    viewState.message = `${copy.bcrStartFailed}: ${message}`;
+    viewState.message =
+      outcome.reason === "missing_pr_ref" ? copy.prSweepMissingPrRef :
+        outcome.reason === "missing_cursor" ? copy.prSweepMissingCursor :
+          outcome.reason === "cursor_read_failed" ? `${copy.prSweepCursorError}: ${outcome.detail ?? "cursor_read_failed"}` :
+            outcome.reason === "reply_baseline_unavailable" ? copy.prSweepCursorError :
+              copy.inputNotFound;
     render(app);
     return;
   }
-  if (result.status === "BLOCKED") {
+  if (outcome.status === "failed") {
     viewState.state = "error";
-    viewState.message = `${copy.bcrStartFailed}: ${result.reason}`;
+    viewState.message = `${copy.bcrStartFailed}: ${outcome.detail}`;
     render(app);
     return;
   }
-  if (result.status === "REFUSED") {
+  if (outcome.status === "BLOCKED") {
+    viewState.state = "error";
+    viewState.message = `${copy.bcrStartFailed}: ${outcome.reason ?? "blocked"}`;
+    render(app);
+    return;
+  }
+  if (outcome.status === "REFUSED") {
     viewState.message = copy.outboxWaitComposerNotEmpty;
     render(app);
     return;
@@ -2128,21 +2079,21 @@ async function generateAndCollectPrSweep(app: HTMLElement): Promise<void> {
   // lane. An UNCERTAIN dispatch never advances the watermark: the ledger cannot
   // prove the turn went out, and a premature advance could skip comments.
   activeSubmission = {
-    operationId: result.operation.operationId,
-    logicalThreadId: result.operation.logicalThreadId,
-    fence: result.operation.dispatchFence ?? {
-      providerConversationRef: observation.providerConversationRef,
-      bindingEpoch: observation.sourceEpoch,
-      leaseGeneration: observation.sourceEpoch,
-      leaseOwnerRef: observation.executionInstanceRef,
-      targetCarrierRef: observation.carrierRef
+    operationId: outcome.operation.operationId,
+    logicalThreadId: outcome.operation.logicalThreadId,
+    fence: outcome.operation.dispatchFence ?? {
+      providerConversationRef: outcome.observation.providerConversationRef,
+      bindingEpoch: outcome.observation.sourceEpoch,
+      leaseGeneration: outcome.observation.sourceEpoch,
+      leaseOwnerRef: outcome.observation.executionInstanceRef,
+      targetCarrierRef: outcome.observation.carrierRef
     },
-    claimedAt: result.operation.dispatchClaimedAt ?? now
+    claimedAt: outcome.operation.dispatchClaimedAt ?? outcome.now
   };
   cancelActiveWait();
   viewState.state = "waiting";
   closePanels();
-  if (result.status === "UNCERTAIN") {
+  if (outcome.status === "UNCERTAIN") {
     viewState.state = "warning";
     viewState.message = copy.prSweepUncertainNoAdvance;
     render(app);
@@ -2151,15 +2102,16 @@ async function generateAndCollectPrSweep(app: HTMLElement): Promise<void> {
   viewState.message = copy.prSweepSubmitted;
   render(app);
   waitForPrSweepCursor(app, {
-    baselineAssistantCount,
-    prRef,
-    storedCursor,
-    operationId: result.operation.operationId
+    replyBaseline: outcome.replyBaseline,
+    prRef: outcome.prRef,
+    storedCursor: outcome.storedCursor,
+    operationId: outcome.operationId
   });
 }
 
 interface PrSweepCursorWait {
-  baselineAssistantCount: number;
+  /** The dispatch boundary and submitted-turn anchor captured before dispatch. */
+  replyBaseline: PrSweepReplyBaseline;
   prRef: string;
   /** The pre-dispatch slot value; the compare-and-set expectation. */
   storedCursor: string | null;
@@ -2167,40 +2119,36 @@ interface PrSweepCursorWait {
 }
 
 /**
- * Wait for the cursor echo in a *new* assistant reply, then hand it to the
- * background coordinator. This is the same generated-artifact state machine as
- * the three capture paths (proposal §2 F7), with the completion predicate being
- * the machine-readable echo line instead of a marker-wrapped artifact.
+ * Wait for the cursor echo in the reply bound to this operation's submitted user
+ * turn, then hand it to the background coordinator. This is the same
+ * generated-artifact state machine as the three capture paths (proposal §2 F7),
+ * with the completion predicate being the machine-readable echo line instead of
+ * a marker-wrapped artifact.
  */
 function waitForPrSweepCursor(app: HTMLElement, wait: PrSweepCursorWait): void {
   const copy = COPY[viewState.locale];
   let retryTimerId: number | null = null;
 
   const tryCapture = (): boolean => {
-    const messages = Array.from(document.querySelectorAll<HTMLElement>("[data-message-author-role='assistant']"));
-    // Only a reply that appeared after this dispatch may advance the slot. The
-    // payload's own instruction (a user turn) also contains the echo prefix, so
-    // scanning the whole page would match the placeholder.
-    if (messages.length <= wait.baselineAssistantCount) return false;
-    const text = messages[messages.length - 1]?.textContent ?? "";
-    const cursor = parsePrSweepCursorEcho(text);
-    if (!cursor) {
-      // The payload's explicit no-silence branch. This finishes the wait but
-      // still advances nothing: no observed range, no watermark movement.
-      if (prSweepReportsNoNewComments(text)) {
-        cancelActiveWait();
-        openSurfacePanel();
-        viewState.state = "warning";
-        viewState.message = copy.prSweepNoNewComments;
-        render(app);
-        return true;
-      }
-      return false;
+    // Never "the last assistant message": history re-renders and back-loads
+    // older turns, so the reply must be the assistant content inside this
+    // operation's submitted turn. Anything we cannot bind reports `waiting`.
+    const capture = findPrSweepReply(document, wait.replyBaseline);
+    if (capture.state === "waiting") return false;
+    if (capture.state === "no_new_comments") {
+      // R3: the explicit no-silence branch is a global veto — it finishes the
+      // wait but advances nothing even when the same reply also echoes a cursor.
+      cancelActiveWait();
+      openSurfacePanel();
+      viewState.state = "warning";
+      viewState.message = copy.prSweepNoNewComments;
+      render(app);
+      return true;
     }
 
     cancelActiveWait();
     openSurfacePanel();
-    void commitPrSweepCursor(app, wait, cursor);
+    void commitPrSweepCursor(app, wait, capture.cursor);
     return true;
   };
 
@@ -2336,7 +2284,7 @@ async function awaitReadyObservation(): Promise<(CarrierObservation & { provider
  * page reading. The `dispatch` closure deliberately takes the instant reading
  * instead of re-entering the observer tick (issues #104, #106).
  */
-function createGovernedDispatchDeps(observation: CarrierObservation): {
+function createGovernedDispatchDeps(observation: PrSweepActionObservation): {
   ledger: HumanGoLedger;
   readCurrentCarrier: () => Promise<HumanGoCarrierSnapshot>;
   dispatch: (dispatchPayload: string, fence: SubmissionDispatchFence) => Promise<void>;
@@ -5007,7 +4955,7 @@ function isStableSubmissionObservation(observation: CarrierObservation, claimedA
     observation.observedAt - Math.max(claimedAt, observation.quietSince) >= SUBMISSION_STABLE_WINDOW_MS;
 }
 
-function isCurrentSubmissionObservation(current: CarrierObservation, initial: CarrierObservation, fence: SubmissionDispatchFence): boolean {
+function isCurrentSubmissionObservation(current: CarrierObservation, initial: PrSweepActionObservation, fence: SubmissionDispatchFence): boolean {
   return current.carrierIdentityState === "browser-tab" &&
     current.state === "READY" &&
     current.providerConversationRef === initial.providerConversationRef &&
