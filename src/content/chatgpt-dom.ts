@@ -63,6 +63,48 @@ export function getPageText(): string {
   return collectMarkdownAndComments(main ?? document.body).trim();
 }
 
+/**
+ * Raw text reader for artifacts whose bytes must survive verbatim (issue #61
+ * slice 4, `OVERVIEW_HTML`). `getPageText` renders the transcript as Markdown
+ * and then normalizes it — `trimEnd()` on every line and collapsed blank
+ * lines — which silently rewrites HTML `<pre>` blocks and JavaScript template
+ * literals. This reader keeps each text node byte-for-byte and only re-emits
+ * comment nodes (`<!-- ... -->`), so the marker protocol still reads the same
+ * while the bytes between markers stay untouched.
+ *
+ * Deliberately scoped to overview capture: Thread/Crystal capture consumes
+ * Markdown and their existing normalization is unchanged.
+ */
+export function getRawPageText(): string {
+  const main = document.querySelector("main");
+  return collectRawText(main ?? document.body).trim();
+}
+
+function collectRawText(root: Element): string {
+  const chunks: string[] = [];
+
+  const walk = (node: Node): void => {
+    if (shouldIgnoreNode(node)) {
+      return;
+    }
+
+    if (node.nodeType === Node.TEXT_NODE) {
+      chunks.push(node.nodeValue ?? "");
+      return;
+    }
+
+    if (node.nodeType === Node.COMMENT_NODE) {
+      chunks.push(`<!--${node.nodeValue ?? ""}-->`);
+      return;
+    }
+
+    node.childNodes.forEach(walk);
+  };
+
+  walk(root);
+  return chunks.join("");
+}
+
 export function getChatComposer(): HTMLElement | null {
   return findChatInput();
 }

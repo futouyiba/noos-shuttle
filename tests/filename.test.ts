@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createCrystalFilename,
   createCrystalPreferredPath,
+  createOverviewHtmlFilename,
   createPreferredPath,
   createThreadFilename,
   createThreadFilenameFromThread,
@@ -65,5 +66,11 @@ describe("filename helpers", () => {
     expect(createCrystalPreferredPath("NOOS Vault Route", DATE)).toBe(
       ".noos/crystals/active/2026-05-02-noos-vault-route.md"
     );
+  });
+
+  it("creates a Downloads filename for the overview HTML artifact", () => {
+    expect(createOverviewHtmlFilename("速览：快捷动作", DATE)).toBe("2026-05-02-noos-overview.html");
+    expect(createOverviewHtmlFilename("Overview Route", DATE)).toBe("2026-05-02-overview-route.html");
+    expect(createOverviewHtmlFilename("", DATE)).toBe("2026-05-02-noos-overview.html");
   });
 });

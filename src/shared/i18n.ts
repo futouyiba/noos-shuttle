@@ -16,6 +16,7 @@ export interface ShuttleCopy {
   extractCrystal: string;
   scanCrystal: string;
   sedimentAction: string;
+  overviewAction: string;
   downloadImages: string;
   cancel: string;
   bcrSectionTitle: string;
@@ -240,9 +241,14 @@ export interface ShuttleCopy {
   capturedWithWarnings: string;
   crystalSubmitted: string;
   sedimentSubmitted: string;
+  overviewSubmitted: string;
   waitingForCrystal: string;
+  waitingForOverview: string;
   crystalCaptured: string;
   crystalCapturedWithWarnings: string;
+  overviewCaptured: string;
+  overviewCapturedWithWarnings: string;
+  overviewDownloaded: string;
   crystalSaved: (key: string) => string;
   crystalSavedWithoutClipboard: (key: string) => string;
   autoDeliverySkipped: string;
@@ -280,6 +286,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     extractCrystal: "Extract Crystal",
     scanCrystal: "Scan Crystal",
     sedimentAction: "Sediment Takeaways",
+    overviewAction: "Overview HTML",
     downloadImages: "Download Reply Images",
     cancel: "Cancel",
     bcrSectionTitle: "Bounded run",
@@ -507,9 +514,14 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     capturedWithWarnings: "Collected with validation warnings.",
     crystalSubmitted: "Crystal prompt sent. Waiting for generation...",
     sedimentSubmitted: "Sediment prompt sent. Waiting for generation...",
+    overviewSubmitted: "Overview prompt sent. Waiting for generation...",
     waitingForCrystal: "Generation appears complete. Collecting the crystal...",
+    waitingForOverview: "Generation appears complete. Collecting the overview...",
     crystalCaptured: "Crystal collected.",
     crystalCapturedWithWarnings: "Crystal collected with validation warnings.",
+    overviewCaptured: "Overview HTML collected.",
+    overviewCapturedWithWarnings: "Overview HTML collected with warnings.",
+    overviewDownloaded: "Overview HTML downloaded.",
     crystalSaved: (key) => `Crystal saved. Key copied: ${key}`,
     crystalSavedWithoutClipboard: (key) => `Crystal saved. Copy this key manually: ${key}`,
     autoDeliverySkipped: "Collected with warnings. Review before delivery.",
@@ -536,6 +548,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     extractCrystal: "沉淀结晶",
     scanCrystal: "扫描结晶",
     sedimentAction: "沉淀要点",
+    overviewAction: "速览 HTML",
     downloadImages: "下载本条回复图",
     cancel: "取消",
     bcrSectionTitle: "有界连续运行",
@@ -762,9 +775,14 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     capturedWithWarnings: "已收取，但存在校验提醒。",
     crystalSubmitted: "结晶提示词已发送，正在等待生成...",
     sedimentSubmitted: "沉淀提示词已发送，正在等待生成...",
+    overviewSubmitted: "速览提示词已发送，正在等待生成...",
     waitingForCrystal: "生成看起来已完成，正在收取结晶...",
+    waitingForOverview: "生成看起来已完成，正在收取速览...",
     crystalCaptured: "结晶已收取。",
     crystalCapturedWithWarnings: "结晶已收取，但存在校验提醒。",
+    overviewCaptured: "速览 HTML 已收取。",
+    overviewCapturedWithWarnings: "速览 HTML 已收取，但存在提醒。",
+    overviewDownloaded: "速览 HTML 已下载。",
     crystalSaved: (key) => `结晶已保存，检索 key 已复制：${key}`,
     crystalSavedWithoutClipboard: (key) => `结晶已保存，请手动复制检索 key：${key}`,
     autoDeliverySkipped: "已收取，但存在校验提醒。请确认后再交付。",
