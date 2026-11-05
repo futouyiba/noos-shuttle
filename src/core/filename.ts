@@ -23,6 +23,13 @@ export function createCrystalFilename(titleOrKey: string, date = new Date()): st
   return `${isoDate}-${slug}.md`;
 }
 
+/** Chatbot-returned Result filename (issue #152), same shape as the crystal one. */
+export function createResultFilename(titleOrKey: string, date = new Date()): string {
+  const isoDate = date.toISOString().slice(0, 10);
+  const slug = slugify(titleOrKey) || "noos-result";
+  return `${isoDate}-${slug}.md`;
+}
+
 /**
  * Downloads-only filename for an `OVERVIEW_HTML` artifact (issue #61 slice 4,
  * proposal §6 Q9). The extension stays `.html`; the slug is derived from the

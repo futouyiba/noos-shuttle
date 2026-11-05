@@ -11,9 +11,10 @@ import {
 /**
  * Capture predicate for chatbot-returned `NOOS:RESULT` objects (issue #152).
  * It is the same marker shape as `captureNoosThreads` / `captureNoosCrystals`:
- * find a begin marker, find the matching end marker, keep the exact bytes in
- * between. Missing markers are simply "nothing to capture"; an unclosed begin
- * marker is an error, and placeholder blocks are ignored.
+ * find a begin marker, find the matching end marker, and capture the segment
+ * between them (with the same fence/heading-frontmatter repair as crystal —
+ * not a byte-for-byte copy). Missing markers are simply "nothing to capture";
+ * an unclosed begin marker is an error, and placeholder blocks are ignored.
  */
 export function captureNoosResults(source: string, detectedAt = new Date().toISOString()): ResultCaptureResult {
   const results: NoosResult[] = [];

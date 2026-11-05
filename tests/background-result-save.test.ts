@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { hubVaultRelativePath } from "../src/core/hub-object-path";
 
 /**
  * Issue #152: a chatbot-returned Result uses the same Hub write path as
@@ -118,10 +119,12 @@ describe("chatbot Result save path (issue #152)", () => {
     expect((init.headers as Record<string, string>).Authorization).toBe("Bearer tok-result");
     const body = JSON.parse(String(init.body)) as Record<string, unknown>;
     expect(body.object_type).toBe("result");
-    expect(body.suggested).toMatchObject({
-      filename: "2026-11-05-shortest-useful-loop.md",
-      status: "active"
-    });
+    expect(body.suggested).toMatchObject({ filename: "2026-11-05-shortest-useful-loop.md" });
+    // F1: an explicit `active` would make Hub write to vault/results/active,
+    // which its browse/recent enumerators never read. Omitting it lets Hub's
+    // result default (`inbox`) apply.
+    expect((body.suggested as Record<string, unknown>).status).toBeUndefined();
+    expect(hubVaultRelativePath("result", (body.suggested as { status?: string }).status)).toBe("vault/results/inbox");
     expect(body.source).toMatchObject({
       app: "browser-shuttle",
       url: "https://chatgpt.com/c/conversation-a"

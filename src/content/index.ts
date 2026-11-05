@@ -1,8 +1,9 @@
-import { createCrystalFilename, createOverviewHtmlFilename, createThreadFilenameFromThread } from "../core/filename";
+import { createCrystalFilename, createOverviewHtmlFilename, createResultFilename, createThreadFilenameFromThread } from "../core/filename";
 import { createContextPack, type ContextPack } from "../core/context-pack";
 import { createGenerateCrystalPrompt, createGenerateThreadPrompt } from "../core/prompt-templates";
 import { captureNoosThreads } from "../core/thread-capture";
 import { captureNoosCrystals } from "../core/crystal-capture";
+import { captureNoosResults } from "../core/result-capture";
 import { captureNoosOverviews, deriveOverviewTitle } from "../core/html-capture";
 import type { NoosThread } from "../core/noos-thread";
 import type { NoosCrystal } from "../core/noos-crystal";
@@ -226,6 +227,10 @@ const CAPTURE_RETRY_MS = 1_200;
 const CAPTURE_POLL_MS = 1_500;
 const PAGE_CONTEXT_POLL_MS = 1_000;
 const PAGE_CONTEXT_DEBOUNCE_MS = 250;
+// Issue #152: let assistant output settle before scanning for a returned Result,
+// mirroring the generated-artifact quiet window. No new button; this lane is
+// the runtime consumer of `captureNoosResults`.
+const RESULT_CAPTURE_DEBOUNCE_MS = 1_500;
 /** Issue #126: observation-driven panel repaints coalesce to at most one per this window. */
 const OBSERVATION_RENDER_MIN_INTERVAL_MS = 200;
 const PROJECT_IMPORT_REFRESH_MIN_INTERVAL_MS = 500;
@@ -240,6 +245,10 @@ let currentPageContext = getPageContext();
 let conversationWatcherInstalled = false;
 let projectImportBridgeInstalled = false;
 let pageContextDebounceId: number | null = null;
+let resultCaptureTimerId: number | null = null;
+// Results already handed to the background in this page lifetime. Hub's
+// idempotency key makes a reload harmless; this only avoids per-mutation spam.
+const attemptedResultSignatures = new Set<string>();
 let shuttlePosition = getStoredPosition();
 let suppressNextFabClick = false;
 let vaultFeedTarget: VaultFeedTarget = "chat";
@@ -2888,6 +2897,51 @@ function applyManualCrystalCapture(): void {
   viewState.modal = { kind: "choose-crystal" };
 }
 
+/**
+ * Issue #152 F2: the fed conversation returns a `NOOS:RESULT` marker, so the
+ * content script must be the runtime caller of `captureNoosResults`. This lane
+ * rides the existing assistant-output watcher (no new button): once output
+ * settles, scan the page and hand every new Result to the background through
+ * the same save channel crystal uses, which writes `object_type=result` to the
+ * Hub results inbox.
+ */
+function scheduleResultCapture(): void {
+  if (resultCaptureTimerId !== null) {
+    window.clearTimeout(resultCaptureTimerId);
+  }
+  resultCaptureTimerId = window.setTimeout(() => {
+    resultCaptureTimerId = null;
+    void captureAndSaveNoosResults();
+  }, RESULT_CAPTURE_DEBOUNCE_MS);
+}
+
+async function captureAndSaveNoosResults(): Promise<void> {
+  const { results } = captureNoosResults(getPageText());
+  for (const result of results) {
+    const signature = `${result.key}\u0000${result.rawMarkdown}`;
+    if (attemptedResultSignatures.has(signature)) {
+      continue;
+    }
+    attemptedResultSignatures.add(signature);
+    try {
+      const response = await sendExtensionMessage<
+        { type: "NOOS_SAVE_RESULT_TO_VAULT"; filename: string; content: string },
+        { ok?: boolean; backend?: string; location?: string }
+      >({
+        type: "NOOS_SAVE_RESULT_TO_VAULT",
+        filename: createResultFilename(result.key || result.title),
+        content: result.rawMarkdown
+      });
+      if (!response?.ok) {
+        throw new Error("result_save_not_acknowledged");
+      }
+    } catch {
+      // Let a later assistant-output change retry this exact Result.
+      attemptedResultSignatures.delete(signature);
+    }
+  }
+}
+
 async function downloadGeneratedImages(app: HTMLElement): Promise<void> {
   const copy = COPY[viewState.locale];
   const images = await collectGeneratedImages();
@@ -3638,11 +3692,16 @@ function installConversationWatcher(app: HTMLElement): void {
       // runtime-observer.ts sample stability on 1-2s windows anyway (#22).
       observationOutputChangedAt = Date.now();
       scheduleContextCheck();
+      // A returned Result is assistant output: re-scan after the stream settles
+      // so the capture lane sees the complete begin/end marker pair.
+      scheduleResultCapture();
     }
   });
   let outputRoot = document.querySelector("main");
   if (outputRoot) outputObserver.observe(outputRoot, { childList: true, subtree: true, characterData: true });
   checkPageContext(app);
+  // The page may already contain a Result (e.g. after a reload); scan once.
+  scheduleResultCapture();
 }
 
 function installProjectImportBridge(app: HTMLElement): void {

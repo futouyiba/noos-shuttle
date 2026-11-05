@@ -15,6 +15,7 @@ import { createChromeWorkItemCoordinator } from "../core/work-item-coordinator";
 import type { NoosCrystal } from "../core/noos-crystal";
 import type { NoosThread } from "../core/noos-thread";
 import { extractProviderConversationId } from "../shared/provider-identity";
+import { hubVaultRelativePath } from "../core/hub-object-path";
 import { runGoalReanchorProbe } from "./goal-reanchor-runtime";
 import { runChildDeliveryProbe } from "./delivery-runtime";
 import {
@@ -2182,12 +2183,12 @@ async function saveMarkdownToVault(
 
   const safeFilename = sanitizeFilename(filename);
   const artifactLabel = kind === "crystal" ? "crystal" : kind === "result" ? "result" : kind === "context_pack_file" ? "context pack file" : "handoff";
+  // Derive the mirror directory from the same mapping the Hub uses, so a
+  // result mirror is `NOOS/vault/results/inbox` (not Hub's `active` override).
   const relativePath =
     kind === "context_pack_file"
       ? `NOOS/vault/context-packs/${sanitizeRelativePath(filename)}`
-      : kind === "result"
-        ? `NOOS/vault/results/inbox/${safeFilename}`
-        : `NOOS/vault/${kind === "crystal" ? "crystals" : "handoffs"}/active/${safeFilename}`;
+      : `NOOS/${hubVaultRelativePath(kind)}/${safeFilename}`;
   await chrome.downloads.download({
     url: `data:text/markdown;charset=utf-8,${encodeURIComponent(content)}`,
     filename: relativePath,
@@ -2252,7 +2253,10 @@ async function postMarkdownToHub(
         },
         suggested: {
           filename,
-          status: "active"
+          // Hub's default status for a Result is `inbox`; an explicit `active`
+          // would land it in `vault/results/active`, which browse/recent never
+          // read (issue #152 finding F1). Handoff/crystal keep their `active`.
+          ...(kind === "result" ? {} : { status: "active" })
         },
         content: {
           media_type: "text/markdown",
