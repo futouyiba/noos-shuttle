@@ -3671,7 +3671,14 @@ function installConversationWatcher(app: HTMLElement): void {
       outputRoot = nextRoot;
       // A new root invalidates output quiet even when it has identical text.
       observationOutputChangedAt = Date.now();
-      if (outputRoot) outputObserver.observe(outputRoot, { childList: true, subtree: true, characterData: true });
+      if (outputRoot) {
+        outputObserver.observe(outputRoot, { childList: true, subtree: true, characterData: true });
+        // Mutation records are not replayed to a freshly observed root. A
+        // replacement (or first) root can arrive already carrying a complete
+        // Result and then stay mutation-free, so scan it once here; otherwise
+        // only the install-time scan could ever see it.
+        scheduleResultCapture();
+      }
     }
     checkPageContext(app);
   }, PAGE_CONTEXT_POLL_MS);

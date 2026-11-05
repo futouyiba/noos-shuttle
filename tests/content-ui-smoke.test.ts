@@ -1433,6 +1433,37 @@ describe("content script smoke flow", () => {
     await page.close();
   });
 
+  it("captures a Result that arrives inside a replacement main after the install scan", async () => {
+    const page = await newMockChatPage({ startWithHandoffs: false });
+    const saved = () =>
+      page.evaluate(() => (globalThis as unknown as { lastResultSave?: unknown }).lastResultSave);
+
+    // Let the install-time scan finish with no Result on the page.
+    await page.waitForTimeout(2500);
+    expect(await saved()).toBeUndefined();
+
+    // SPA navigation can swap in a root that is already fully rendered. Build
+    // the replacement off-DOM, insert it in one step, and make no further
+    // assistant mutations: only the root-rebind poll can schedule a scan.
+    await page.evaluate(result => {
+      const oldMain = document.querySelector("main")!;
+      const nextMain = document.createElement("main");
+      const article = document.createElement("article");
+      article.dataset.messageAuthorRole = "assistant";
+      const pre = document.createElement("pre");
+      pre.textContent = result;
+      article.append(pre);
+      nextMain.append(article);
+      oldMain.replaceWith(nextMain);
+    }, createResult());
+
+    await expect.poll(async () => Boolean(await saved()), { timeout: 8000 }).toBe(true);
+    const message = (await saved()) as { type: string; content: string };
+    expect(message.type).toBe("NOOS_SAVE_RESULT_TO_VAULT");
+    expect(message.content).toContain("result_key: shortest-loop-result");
+    await page.close();
+  }, 20000);
+
   it("shows Browser Vault Mirror fallback when Hub is unavailable", async () => {
     const page = await newMockChatPage({ vaultBackend: "downloads_mirror" });
 
