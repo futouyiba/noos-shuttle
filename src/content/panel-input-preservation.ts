@@ -36,6 +36,8 @@ export interface EditableControlSnapshot {
 
 const KEYED_ATTRIBUTES: ReadonlyArray<{ attribute: string; prefix: string; useValue: boolean }> = [
   { attribute: "data-hub-pairing-input", prefix: "hub-pairing", useValue: false },
+  { attribute: "data-pr-sweep-pr-ref", prefix: "pr-sweep-ref", useValue: false },
+  { attribute: "data-pr-sweep-cursor", prefix: "pr-sweep-cursor", useValue: false },
   { attribute: "data-outbox-input", prefix: "outbox-compose", useValue: false },
   { attribute: "data-outbox-edit-input", prefix: "outbox-edit", useValue: true },
   { attribute: "data-feishu-category-dialog-input", prefix: "feishu-category", useValue: false },

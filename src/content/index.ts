@@ -42,6 +42,9 @@ import { handleBackgroundDispatch } from "./background-dispatch";
 import { actuateGovernedPayload } from "./governed-dispatch";
 import { dispatchSediment } from "./sediment-dispatch";
 import { dispatchOverviewHtml } from "./overview-html-dispatch";
+import { dispatchPrCommentSweep } from "./pr-comment-sweep-dispatch";
+import { runPrSweepAction, type PrSweepActionObservation } from "./pr-sweep-action";
+import { capturePrSweepReplyBaseline, findPrSweepReply, type PrSweepReplyBaseline } from "./pr-sweep-reply-capture";
 import { snapshotEditableControls, restoreEditableControls } from "./panel-input-preservation";
 import { createRenderThrottle } from "./observation-render-throttle";
 import { captureChatGptTranscriptWithScroll, captureRenderedChatGptTranscript } from "./chatgpt-transcript";
@@ -627,6 +630,15 @@ function renderChatGptSurface(selectedThread: NoosThread | undefined, copy: (typ
   ${renderBcrSection(copy)}
   ${renderOutboxSection(copy)}
   <div class="actions supporting-actions">
+    <div class="pr-sweep-form" role="group" aria-label="${escapeAttribute(copy.prSweepAction)}">
+      <input class="bcr-eval-input" type="text" data-pr-sweep-pr-ref aria-label="${escapeAttribute(copy.prSweepPrRefPlaceholder)}"
+        placeholder="${escapeAttribute(copy.prSweepPrRefPlaceholder)}" autocomplete="off" />
+      <input class="bcr-eval-input" type="text" data-pr-sweep-cursor aria-label="${escapeAttribute(copy.prSweepCursorPlaceholder)}"
+        placeholder="${escapeAttribute(copy.prSweepCursorPlaceholder)}" autocomplete="off" />
+      <button type="button" data-action="pr-comment-sweep" ${
+        viewState.state === "waiting" ? "disabled" : ""
+      }>${copy.prSweepAction}</button>
+    </div>
     <button type="button" data-action="generate-sediment" ${
       viewState.state === "waiting" ? "disabled" : ""
     }>${copy.sedimentAction}</button>
@@ -1596,6 +1608,10 @@ async function handleAction(action: string, app: HTMLElement, source?: HTMLEleme
     await generateAndCollectOverview(app);
     return;
   }
+  if (action === "pr-comment-sweep") {
+    await generateAndCollectPrSweep(app);
+    return;
+  }
 
   if (action === "generate") {
     cancelActiveWait();
@@ -1992,10 +2008,278 @@ async function generateAndCollectOverview(app: HTMLElement): Promise<void> {
 }
 
 /**
- * Wait briefly for a READY, browser-tab carrier that names a conversation.
- * Shared by every panel-triggered actuation (GO and the shortcut actions); the
- * 6 s budget and the readiness conditions are unchanged.
+ * `PR_COMMENT_SWEEP` shortcut action (issue #61 slice 5; proposal §5.3, §6
+ * Q6/Q7/Q8). The ledger identity is `PR_COMMENT_SWEEP` (never `GO`), so it goes
+ * through the dedicated kind-specialised composer. The PR ref is always explicit
+ * — the action refuses rather than guessing (delta 6) — and the watermark lives
+ * in the background coordinator, one opaque slot per PR ref.
+ *
+ * The cursor is never interpreted here. Q8 did not freeze a shape, so the
+ * extension stores whatever token the retrieval path echoes back and advances
+ * only on an observed echo. A missing echo leaves the watermark untouched: an
+ * extra re-read is safe; a skipped comment is not.
  */
+async function generateAndCollectPrSweep(app: HTMLElement): Promise<void> {
+  const copy = COPY[viewState.locale];
+  const outcome = await runPrSweepAction({
+    // Issue #61 delta 13: a non-run shortcut is refused while a bounded run is
+    // ACTIVE, with the same generic copy as every other manual action. It never
+    // consumes the run's expected-turn reservation (#63 delta 3/9).
+    isRunActive: () => bcrRun?.status === "ACTIVE",
+    readInputs: () => ({
+      prRef: app.querySelector<HTMLInputElement>("[data-pr-sweep-pr-ref]")?.value.trim() ?? "",
+      explicitCursor: app.querySelector<HTMLInputElement>("[data-pr-sweep-cursor]")?.value.trim() ?? ""
+    }),
+    isRuntimeAvailable: () => Boolean(globalThis.chrome?.runtime?.sendMessage),
+    // Read the durable slot BEFORE dispatch: this value is both the payload
+    // cursor (unless the Human overrode it) and the compare-and-set snapshot
+    // that keeps two tabs from advancing the same slot concurrently (§6 Q7).
+    readStoredCursor: prRef => sendExtensionMessage<
+      { type: string; prRef: string },
+      { ok?: boolean; cursor?: string; error?: string }
+    >({ type: "NOOS_PR_SWEEP_CURSOR_READ", prRef }),
+    awaitReadyObservation,
+    isComposerEmpty: isChatComposerEmpty,
+    routeRef: () => getPageContext().pathname,
+    sourceUrl: () => window.location.href,
+    assistantMessageCount: () => document.querySelectorAll("[data-message-author-role='assistant']").length,
+    readMessageEvidence: readSubmissionMessageEvidence,
+    // R2: the wait accepts only content after this boundary and anchored to the
+    // submitted user turn, so back-loaded history and unrelated turns cannot
+    // satisfy the echo predicate.
+    captureReplyBaseline: payload => capturePrSweepReplyBaseline(document, payload),
+    fingerprintText,
+    now: () => Date.now(),
+    dispatch: (request, observation) => dispatchPrCommentSweep(request, createGovernedDispatchDeps(observation))
+  });
+
+  if (outcome.status === "refused") {
+    if (outcome.reason === "run_active") {
+      viewState.message = copy.bcrRunActive;
+      render(app);
+      return;
+    }
+    if (outcome.reason === "composer_not_empty") {
+      viewState.message = copy.outboxWaitComposerNotEmpty;
+      render(app);
+      return;
+    }
+    viewState.state = "error";
+    viewState.message =
+      outcome.reason === "missing_pr_ref" ? copy.prSweepMissingPrRef :
+        outcome.reason === "missing_cursor" ? copy.prSweepMissingCursor :
+          outcome.reason === "cursor_read_failed" ? `${copy.prSweepCursorError}: ${outcome.detail ?? "cursor_read_failed"}` :
+            outcome.reason === "reply_baseline_unavailable" ? copy.prSweepCursorError :
+              copy.inputNotFound;
+    render(app);
+    return;
+  }
+  if (outcome.status === "failed") {
+    viewState.state = "error";
+    viewState.message = `${copy.bcrStartFailed}: ${outcome.detail}`;
+    render(app);
+    return;
+  }
+  if (outcome.status === "BLOCKED") {
+    viewState.state = "error";
+    viewState.message = `${copy.bcrStartFailed}: ${outcome.reason ?? "blocked"}`;
+    render(app);
+    return;
+  }
+  if (outcome.status === "REFUSED") {
+    viewState.message = copy.outboxWaitComposerNotEmpty;
+    render(app);
+    return;
+  }
+  // DISPATCHED or UNCERTAIN: adopt the operation for the generic reconciliation
+  // lane. An UNCERTAIN dispatch never advances the watermark: the ledger cannot
+  // prove the turn went out, and a premature advance could skip comments.
+  activeSubmission = {
+    operationId: outcome.operation.operationId,
+    logicalThreadId: outcome.operation.logicalThreadId,
+    fence: outcome.operation.dispatchFence ?? {
+      providerConversationRef: outcome.observation.providerConversationRef,
+      bindingEpoch: outcome.observation.sourceEpoch,
+      leaseGeneration: outcome.observation.sourceEpoch,
+      leaseOwnerRef: outcome.observation.executionInstanceRef,
+      targetCarrierRef: outcome.observation.carrierRef
+    },
+    claimedAt: outcome.operation.dispatchClaimedAt ?? outcome.now
+  };
+  cancelActiveWait();
+  viewState.state = "waiting";
+  closePanels();
+  if (outcome.status === "UNCERTAIN") {
+    viewState.state = "warning";
+    viewState.message = copy.prSweepUncertainNoAdvance;
+    render(app);
+    return;
+  }
+  viewState.message = copy.prSweepSubmitted;
+  render(app);
+  waitForPrSweepCursor(app, {
+    replyBaseline: outcome.replyBaseline,
+    prRef: outcome.prRef,
+    storedCursor: outcome.storedCursor,
+    operationId: outcome.operationId
+  });
+}
+
+interface PrSweepCursorWait {
+  /** The dispatch boundary and submitted-turn anchor captured before dispatch. */
+  replyBaseline: PrSweepReplyBaseline;
+  prRef: string;
+  /** The pre-dispatch slot value; the compare-and-set expectation. */
+  storedCursor: string | null;
+  operationId: string;
+}
+
+/**
+ * Wait for the cursor echo in the reply bound to this operation's submitted user
+ * turn, then hand it to the background coordinator. This is the same
+ * generated-artifact state machine as the three capture paths (proposal §2 F7),
+ * with the completion predicate being the machine-readable echo line instead of
+ * a marker-wrapped artifact.
+ */
+function waitForPrSweepCursor(app: HTMLElement, wait: PrSweepCursorWait): void {
+  const copy = COPY[viewState.locale];
+  let retryTimerId: number | null = null;
+
+  const tryCapture = (): boolean => {
+    // Never "the last assistant message": history re-renders and back-loads
+    // older turns, so the reply must be the assistant content inside this
+    // operation's submitted turn. Anything we cannot bind reports `waiting`.
+    const capture = findPrSweepReply(document, wait.replyBaseline);
+    if (capture.state === "waiting") return false;
+    if (capture.state === "no_new_comments") {
+      // R3: the explicit no-silence branch is a global veto — it finishes the
+      // wait but advances nothing even when the same reply also echoes a cursor.
+      cancelActiveWait();
+      openSurfacePanel();
+      viewState.state = "warning";
+      viewState.message = copy.prSweepNoNewComments;
+      render(app);
+      return true;
+    }
+
+    cancelActiveWait();
+    openSurfacePanel();
+    void commitPrSweepCursor(app, wait, capture.cursor);
+    return true;
+  };
+
+  const retryCapture = () => {
+    if (!activeWait) return;
+    if (tryCapture()) return;
+    retryTimerId = window.setTimeout(retryCapture, CAPTURE_RETRY_MS);
+    if (activeWait) activeWait.retryTimerId = retryTimerId;
+  };
+
+  let quietTimerId: number | null = null;
+  let hasStartedGenerating = false;
+
+  const completeAfterQuietPeriod = () => {
+    if (!activeWait || !hasStartedGenerating || isChatbotGenerating() || quietTimerId !== null) return;
+    quietTimerId = window.setTimeout(() => {
+      if (!activeWait || isChatbotGenerating()) return;
+      quietTimerId = null;
+      if (activeWait) activeWait.quietTimerId = null;
+      viewState.message = copy.prSweepWaitingForCursor;
+      render(app);
+      retryCapture();
+    }, GENERATION_QUIET_MS);
+    if (activeWait) activeWait.quietTimerId = quietTimerId;
+  };
+
+  const observeGenerationState = () => {
+    if (!activeWait) return;
+    if (isChatbotGenerating()) {
+      hasStartedGenerating = true;
+      activeWait.hasStartedGenerating = true;
+      if (quietTimerId !== null) {
+        window.clearTimeout(quietTimerId);
+        quietTimerId = null;
+        activeWait.quietTimerId = null;
+      }
+      viewState.message = copy.waitingForGenerationStart;
+      return;
+    }
+    completeAfterQuietPeriod();
+  };
+
+  const observer = new MutationObserver(() => observeGenerationState());
+  observer.observe(document.body, { attributes: true, childList: true, characterData: true, subtree: true });
+  const capturePollId = window.setInterval(() => {
+    if (!activeWait) return;
+    observeGenerationState();
+  }, CAPTURE_POLL_MS);
+  const fallbackStartId = window.setTimeout(() => {
+    if (!activeWait || hasStartedGenerating) return;
+    hasStartedGenerating = true;
+    activeWait.hasStartedGenerating = true;
+    completeAfterQuietPeriod();
+  }, GENERATION_START_GRACE_MS);
+  const timeoutId = window.setTimeout(() => {
+    cancelActiveWait();
+    // Fail closed: no echo means the watermark stays where it was. The next
+    // sweep re-reads the same range instead of skipping it.
+    viewState.state = "warning";
+    openSurfacePanel();
+    viewState.message = copy.prSweepNoCursorEcho;
+    render(app);
+  }, WAIT_FOR_HANDOFF_TIMEOUT_MS);
+  activeWait = { observer, timeoutId, fallbackStartId, capturePollId, quietTimerId, retryTimerId, hasStartedGenerating };
+  observeGenerationState();
+}
+
+async function commitPrSweepCursor(app: HTMLElement, wait: PrSweepCursorWait, cursor: string): Promise<void> {
+  const copy = COPY[viewState.locale];
+  try {
+    const response = await sendExtensionMessage<
+      {
+        type: string;
+        prRef: string;
+        expectedStoredCursor: string | null;
+        cursor: string;
+        operationId: string;
+        observedAt: number;
+      },
+      { ok?: boolean; reason?: string; error?: string }
+    >({
+      type: "NOOS_PR_SWEEP_CURSOR_ADVANCE",
+      prRef: wait.prRef,
+      expectedStoredCursor: wait.storedCursor,
+      cursor,
+      operationId: wait.operationId,
+      observedAt: Date.now()
+    });
+    if (response?.ok === true) {
+      // The stored slot now holds the echo; clear the explicit override so the
+      // next sweep continues from the durable watermark instead of the old one.
+      setPrSweepCursorInput(app, "");
+      viewState.state = "captured";
+      viewState.message = copy.prSweepCursorAdvanced;
+    } else if (response?.reason === "cursor_conflict") {
+      setPrSweepCursorInput(app, "");
+      viewState.state = "warning";
+      viewState.message = copy.prSweepCursorConflict;
+    } else {
+      viewState.state = "warning";
+      viewState.message = copy.prSweepCursorError;
+    }
+  } catch {
+    viewState.state = "warning";
+    viewState.message = copy.prSweepCursorError;
+  }
+  render(app);
+}
+
+function setPrSweepCursorInput(app: HTMLElement, value: string): void {
+  const input = app.querySelector<HTMLInputElement>("[data-pr-sweep-cursor]");
+  if (input) input.value = value;
+}
+
+
 async function awaitReadyObservation(): Promise<(CarrierObservation & { providerConversationRef: string }) | undefined> {
   let observation = runtimeObservationLedger.value;
   const deadline = Date.now() + 6_000;
@@ -2016,7 +2300,7 @@ async function awaitReadyObservation(): Promise<(CarrierObservation & { provider
  * page reading. The `dispatch` closure deliberately takes the instant reading
  * instead of re-entering the observer tick (issues #104, #106).
  */
-function createGovernedDispatchDeps(observation: CarrierObservation): {
+function createGovernedDispatchDeps(observation: PrSweepActionObservation): {
   ledger: HumanGoLedger;
   readCurrentCarrier: () => Promise<HumanGoCarrierSnapshot>;
   dispatch: (dispatchPayload: string, fence: SubmissionDispatchFence) => Promise<void>;
@@ -4744,7 +5028,7 @@ function isStableSubmissionObservation(observation: CarrierObservation, claimedA
     observation.observedAt - Math.max(claimedAt, observation.quietSince) >= SUBMISSION_STABLE_WINDOW_MS;
 }
 
-function isCurrentSubmissionObservation(current: CarrierObservation, initial: CarrierObservation, fence: SubmissionDispatchFence): boolean {
+function isCurrentSubmissionObservation(current: CarrierObservation, initial: PrSweepActionObservation, fence: SubmissionDispatchFence): boolean {
   return current.carrierIdentityState === "browser-tab" &&
     current.state === "READY" &&
     current.providerConversationRef === initial.providerConversationRef &&
