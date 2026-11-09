@@ -620,6 +620,9 @@ function renderChatGptSurface(selectedThread: NoosThread | undefined, copy: (typ
     <button class="primary-action" type="button" data-action="generate-capture" ${
       viewState.state === "waiting" ? "disabled" : ""
     }>${copy.generateAndCollect}</button>
+    <button class="primary-action" type="button" data-action="continue-run" ${
+      viewState.state === "waiting" ? "disabled" : ""
+    }>${copy.continueAction}</button>
     <button class="secondary-action" type="button" data-action="generate-crystal" ${
       viewState.state === "waiting" ? "disabled" : ""
     }>${copy.extractCrystal}</button>
@@ -644,6 +647,12 @@ function renderChatGptSurface(selectedThread: NoosThread | undefined, copy: (typ
   ${renderBcrSection(copy)}
   ${renderOutboxSection(copy)}
   <div class="actions supporting-actions">
+    <button type="button" data-action="generate-sediment" ${
+      viewState.state === "waiting" ? "disabled" : ""
+    }>${copy.sedimentAction}</button>
+    <button type="button" data-action="generate-overview" ${
+      viewState.state === "waiting" ? "disabled" : ""
+    }>${copy.overviewAction}</button>
     <div class="pr-sweep-form" role="group" aria-label="${escapeAttribute(copy.prSweepAction)}">
       <input class="bcr-eval-input" type="text" data-pr-sweep-pr-ref aria-label="${escapeAttribute(copy.prSweepPrRefPlaceholder)}"
         placeholder="${escapeAttribute(copy.prSweepPrRefPlaceholder)}" autocomplete="off" />
@@ -653,12 +662,6 @@ function renderChatGptSurface(selectedThread: NoosThread | undefined, copy: (typ
         viewState.state === "waiting" ? "disabled" : ""
       }>${copy.prSweepAction}</button>
     </div>
-    <button type="button" data-action="generate-sediment" ${
-      viewState.state === "waiting" ? "disabled" : ""
-    }>${copy.sedimentAction}</button>
-    <button type="button" data-action="generate-overview" ${
-      viewState.state === "waiting" ? "disabled" : ""
-    }>${copy.overviewAction}</button>
     <button type="button" data-action="generate">${copy.draftHandoff}</button>
     <button type="button" data-action="capture">${copy.collectHandoff}</button>
     <button type="button" data-action="capture-crystal">${copy.scanCrystal}</button>
@@ -1649,6 +1652,10 @@ async function handleAction(action: string, app: HTMLElement, source?: HTMLEleme
     await generateAndCollect(app);
     return;
   }
+  if (action === "continue-run") {
+    await continueRun(app);
+    return;
+  }
   if (action === "generate-crystal") {
     await generateAndCollectCrystal(app);
     return;
@@ -1773,6 +1780,47 @@ async function handleOutboxAction(action: string, app: HTMLElement, source?: HTM
     if (itemId) await client.cancel(itemId);
     render(app);
   }
+}
+
+/**
+ * Continuation quick action (issue #61 §C, proposal §6 Q12). Continuation is
+ * the panel's primary operation; it is placed in `primary-actions` beside the
+ * handoff actions and the other three shortcut actions stay in
+ * `supporting-actions`. The provider-facing bytes come from the #60 canonical
+ * registry (`buildContinuationPayload`), never a literal in this file or in
+ * `COPY` — the button label and the dispatched token are separate surfaces.
+ *
+ * It rides the existing manual-GO path (`dispatchHumanGo`, no run link), so the
+ * generic `bcrRunActive` refusal while a bounded run owns the carrier applies
+ * unchanged and no #63 expected-turn reservation is consumed (proposal §5.4,
+ * §6 Q13). The work item id names this manual continuation, not a run.
+ */
+async function continueRun(app: HTMLElement): Promise<void> {
+  const copy = COPY[viewState.locale];
+  // Same generic refusal as every other non-run action: an ACTIVE run owns the
+  // carrier, and this action never borrows the run's expected-turn reservation.
+  if (bcrRun?.status === "ACTIVE") {
+    viewState.message = copy.bcrRunActive;
+    render(app);
+    return;
+  }
+  const previousMessage = viewState.message;
+  const sent = await dispatchHumanGo(
+    buildContinuationPayload(viewState.locale, "PLAIN_GO"),
+    getPageContext(),
+    "shuttle-continue"
+  );
+  // `dispatchHumanGo` writes the specific refusal reason it can prove (composer
+  // draft, ledger refusal, …); only invent a message when it stayed silent,
+  // which happens when no READY carrier was acquired inside the 6 s budget.
+  if (sent) {
+    viewState.state = "prompt-ready";
+    viewState.message = copy.continuationSent;
+  } else {
+    viewState.state = "error";
+    if (viewState.message === previousMessage) viewState.message = copy.continuationNotSent;
+  }
+  render(app);
 }
 
 async function generateAndCollect(app: HTMLElement): Promise<void> {

@@ -109,13 +109,22 @@ describe("canonical continuation payload registry", () => {
         if (/"继续"|"go on"/.test(line)) hits.push(`${relative}: ${line.trim()}`);
       }
     }
-    // The panel's own button label is a different surface and stays in COPY;
+    // The panel's own button labels are a different surface and stay in COPY;
     // any other standalone occurrence means a second payload definition site.
-    expect(hits).toEqual(['src/shared/i18n.ts: bcrContinue: "继续",']);
+    // `continueAction` (#61 slice 6) is the primary-region continuation button
+    // label — like `bcrContinue`, it is user-facing copy, not the dispatch
+    // source (the payload still comes from the registry below).
+    expect(hits).toEqual([
+      'src/shared/i18n.ts: continueAction: "继续",',
+      'src/shared/i18n.ts: bcrContinue: "继续",'
+    ]);
 
     // The dispatch path must take its payload from the registry, not a literal.
     const index = readFileSync(new URL("../src/content/index.ts", import.meta.url), "utf8");
     expect(index).toContain('buildContinuationPayload(payloadLocale, payloadMode, bcrRun.goal)');
+    // The primary-region continuation quick action (#61 slice 6) is the same
+    // contract: locale token from the registry, manual-GO work item id.
+    expect(index).toContain('buildContinuationPayload(viewState.locale, "PLAIN_GO")');
     expect(index).toContain("await dispatchHumanGo(payload, getPageContext()");
     expect(index).not.toContain('return "go";');
   });
