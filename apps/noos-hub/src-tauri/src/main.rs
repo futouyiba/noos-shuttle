@@ -4887,10 +4887,21 @@ const DEFAULT_PROMPT_PACK_INSTRUCTION: &str =
 /// The marker chunking matches the Shuttle's own instruction text: the pack
 /// must never contain a literal Result marker, or a page carrying the pack
 /// could be captured as a Result.
-const PROMPT_PACK_RETURN_CONTRACT: &str = "When this round is done, return one NOOS Result. Output the marker-wrapped Markdown directly; do not use a fenced code block, and do not write explanations outside the markers.\n\nThe result must be wrapped by two exact HTML comment markers. Each is shown below in split chunks so this instruction is not itself mistaken for a Result:\n- begin marker: `<` + `!-- NOOS:RESULT:BEGIN --` + `>`\n- end marker: `<` + `!-- NOOS:RESULT:END --` + `>`\n\nUse YAML frontmatter with English keys: type: noos_result, version: 0.1, result_key, title, summary, source_url.";
+const PROMPT_PACK_RETURN_CONTRACT: &str = "When this round is done, return one NOOS Result. Output the marker-wrapped Markdown directly; do not use a fenced code block, and do not write explanations outside the markers.\n\nThe result must be wrapped by two exact HTML comment markers. Each is shown below in split chunks so this instruction is not itself mistaken for a Result:\n- begin marker: `<` + `!-- NOOS:RESULT` + `:BEGIN --` + `>`\n- end marker: `<` + `!-- NOOS:RESULT` + `:END --` + `>`\n\nUse YAML frontmatter with English keys: type: noos_result, version: 0.1, result_key, title, summary, source_url.";
 
 fn one_line(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Neutralizes literal `NOOS:RESULT:*` sequences in text copied into a pack.
+///
+/// A zero-width space is inserted immediately after the `NOOS:RESULT` token so
+/// neither `NOOS:RESULT:BEGIN` / `NOOS:RESULT:END` nor a complete HTML comment
+/// marker can survive serialization, while the rendered Markdown still reads
+/// the same. This is the same split-the-marker discipline the Shuttle prompt
+/// templates use, but at the token boundary rather than inside the comment.
+fn neutralize_result_marker_literals(value: &str) -> String {
+    value.replace("NOOS:RESULT:", "NOOS:RESULT:\u{200b}")
 }
 
 fn default_prompt_pack_title(sources: &[PromptPackSource]) -> String {
@@ -4925,6 +4936,7 @@ fn render_prompt_pack_markdown(
     } else {
         title
     };
+    let title = neutralize_result_marker_literals(&title);
 
     let mut markdown = String::new();
     markdown.push_str("---\n");
@@ -4944,7 +4956,7 @@ fn render_prompt_pack_markdown(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or(DEFAULT_PROMPT_PACK_INSTRUCTION);
-    markdown.push_str(instruction);
+    markdown.push_str(&neutralize_result_marker_literals(instruction));
     markdown.push_str("\n\n");
 
     markdown.push_str("## Source Manifest\n\n");
@@ -4955,7 +4967,7 @@ fn render_prompt_pack_markdown(
             one_line(&source.object_id),
             one_line(&source.content_hash),
             one_line(source.display_type()),
-            one_line(source.display_title()),
+            one_line(&neutralize_result_marker_literals(source.display_title())),
         ));
     }
     markdown.push('\n');
@@ -4965,8 +4977,11 @@ fn render_prompt_pack_markdown(
         if index > 0 {
             markdown.push_str("\n---\n\n");
         }
-        markdown.push_str(&format!("### {}\n\n", one_line(source.display_title())));
-        markdown.push_str(source.content.trim());
+        markdown.push_str(&format!(
+            "### {}\n\n",
+            one_line(&neutralize_result_marker_literals(source.display_title()))
+        ));
+        markdown.push_str(&neutralize_result_marker_literals(source.content.trim()));
         markdown.push('\n');
     }
 
@@ -10156,10 +10171,41 @@ See [Spec](.assets/feishu_docx_abc123/spec.pdf).
         assert!(markdown.contains("### Source A"));
         assert!(markdown.contains("source a body snapshot"));
         assert!(markdown.contains("source b body snapshot"));
-        // The pack must never contain a literal Result marker.
-        assert!(markdown.contains("NOOS:RESULT:BEGIN"));
+        // The pack must never contain a literal Result marker, whole or partial.
+        assert!(!markdown.contains("NOOS:RESULT:BEGIN"));
+        assert!(!markdown.contains("NOOS:RESULT:END"));
         assert!(!markdown.contains("<!-- NOOS:RESULT:BEGIN -->"));
+        assert!(!markdown.contains("<!-- NOOS:RESULT:END -->"));
         assert!(markdown.contains("## Return Contract"));
+    }
+
+    #[test]
+    fn prompt_pack_renderer_neutralizes_result_markers_in_selected_text() {
+        let marker_source = "Body starts here.\n\n<!-- NOOS:RESULT:BEGIN -->\ntype: noos_result\n<!-- NOOS:RESULT:END -->\n";
+        let instruction =
+            "Do not echo <!-- NOOS:RESULT:BEGIN --> or NOOS:RESULT:END from the source.";
+        let sources = vec![prompt_pack_source_fixture(
+            "20261109-marker-source",
+            "Marker Source NOOS:RESULT:BEGIN",
+            marker_source,
+        )];
+        let markdown = render_prompt_pack_markdown(
+            "20261109-marker-pack",
+            "Marker Pack",
+            "2026-11-09T10:00:00Z",
+            Some(instruction),
+            &sources,
+        );
+
+        // Selected source/instruction/title text cannot reintroduce the marker.
+        assert!(!markdown.contains("NOOS:RESULT:BEGIN"));
+        assert!(!markdown.contains("NOOS:RESULT:END"));
+        assert!(!markdown.contains("<!-- NOOS:RESULT:BEGIN -->"));
+        assert!(!markdown.contains("<!-- NOOS:RESULT:END -->"));
+        // The neutralized text still carries the original body and instruction.
+        assert!(markdown.contains("Body starts here."));
+        assert!(markdown.contains("Do not echo"));
+        assert!(markdown.contains("Marker Source"));
     }
 
     #[test]
@@ -10244,7 +10290,10 @@ See [Spec](.assets/feishu_docx_abc123/spec.pdf).
         assert!(content.contains("source one body snapshot"));
         assert!(content.contains("Summarize the source."));
         assert!(content.contains("<!-- NOOS:HUB:SOURCE app=noos-hub"));
+        assert!(!content.contains("NOOS:RESULT:BEGIN"));
+        assert!(!content.contains("NOOS:RESULT:END"));
         assert!(!content.contains("<!-- NOOS:RESULT:BEGIN -->"));
+        assert!(!content.contains("<!-- NOOS:RESULT:END -->"));
 
         let lookup_key = receipt["lookup_key"].as_str().expect("lookup key");
         assert!(find_indexed_object_by_key(&root, lookup_key).is_some());
