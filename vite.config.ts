@@ -25,15 +25,6 @@ const contentInlinedModules: Array<{ pattern: RegExp; virtualId: string; sourceP
     pattern: /(^|\/)core\/outbox-queue(\.ts)?$/,
     virtualId: "\0noos-content-outbox-queue",
     sourcePath: "src/core/outbox-queue.ts"
-  },
-  {
-    // Issue #61 slice 5: the content script parses the cursor echo and the
-    // background coordinator applies the same compare-and-set reducer, so
-    // Rollup would otherwise hoist this pure module into a shared chunk an MV3
-    // classic content script cannot import.
-    pattern: /(^|\/)core\/pr-sweep-cursor(\.ts)?$/,
-    virtualId: "\0noos-content-pr-sweep-cursor",
-    sourcePath: "src/core/pr-sweep-cursor.ts"
   }
 ];
 

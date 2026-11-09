@@ -251,8 +251,7 @@ export interface ShuttleCopy {
   waitingForCrystal: string;
   waitingForOverview: string;
   prSweepWaitingForCursor: string;
-  prSweepCursorAdvanced: string;
-  prSweepCursorConflict: string;
+  prSweepCursorObserved: (cursor: string) => string;
   prSweepNoCursorEcho: string;
   prSweepNoNewComments: string;
   prSweepCursorError: string;
@@ -302,7 +301,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     overviewAction: "Overview HTML",
     prSweepAction: "Check PR Comments",
     prSweepPrRefPlaceholder: "PR ref, e.g. owner/repo#61",
-    prSweepCursorPlaceholder: "Cursor (optional if stored)",
+    prSweepCursorPlaceholder: "Cursor (explicit; not persisted)",
     downloadImages: "Download Reply Images",
     cancel: "Cancel",
     bcrSectionTitle: "Bounded run",
@@ -533,16 +532,15 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     overviewSubmitted: "Overview prompt sent. Waiting for generation...",
     prSweepSubmitted: "PR comment sweep sent. Waiting for the cursor echo...",
     prSweepMissingPrRef: "Enter an explicit PR ref. The sweep never guesses.",
-    prSweepMissingCursor: "No cursor stored for this PR ref. Enter one explicitly.",
+    prSweepMissingCursor: "Enter an explicit cursor. This harness never reads a stored watermark.",
     waitingForCrystal: "Generation appears complete. Collecting the crystal...",
     waitingForOverview: "Generation appears complete. Collecting the overview...",
     prSweepWaitingForCursor: "Generation appears complete. Reading the cursor echo...",
-    prSweepCursorAdvanced: "Sweep watermark advanced.",
-    prSweepCursorConflict: "Watermark changed while this sweep ran; it was not overwritten. Re-run to re-read.",
-    prSweepNoCursorEcho: "No cursor echo observed; the watermark was not advanced.",
-    prSweepNoNewComments: "No new comments; the watermark was not advanced.",
-    prSweepCursorError: "Could not read or advance the sweep watermark.",
-    prSweepUncertainNoAdvance: "Sweep dispatch is uncertain; the watermark was not advanced.",
+    prSweepCursorObserved: cursor => `Observed cursor (not persisted): ${cursor}`,
+    prSweepNoCursorEcho: "No cursor echo observed; nothing was recorded.",
+    prSweepNoNewComments: "No new comments; nothing was recorded.",
+    prSweepCursorError: "Could not observe the sweep cursor.",
+    prSweepUncertainNoAdvance: "Sweep dispatch is uncertain; nothing was recorded.",
     crystalCaptured: "Crystal collected.",
     crystalCapturedWithWarnings: "Crystal collected with validation warnings.",
     overviewCaptured: "Overview HTML collected.",
@@ -577,7 +575,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     overviewAction: "速览 HTML",
     prSweepAction: "查 PR 评论",
     prSweepPrRefPlaceholder: "PR 引用，例如 owner/repo#61",
-    prSweepCursorPlaceholder: "水位游标（已有可留空）",
+    prSweepCursorPlaceholder: "水位游标（须显式填写，不持久化）",
     downloadImages: "下载本条回复图",
     cancel: "取消",
     bcrSectionTitle: "有界连续运行",
@@ -807,16 +805,15 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     overviewSubmitted: "速览提示词已发送，正在等待生成...",
     prSweepSubmitted: "PR 评论巡检已发送，正在等待水位回传...",
     prSweepMissingPrRef: "请显式填写 PR 引用；巡检从不猜测。",
-    prSweepMissingCursor: "该 PR 引用还没有水位，请显式填写一个。",
+    prSweepMissingCursor: "请显式填写水位游标；本实验形态不读取已存水位。",
     waitingForCrystal: "生成看起来已完成，正在收取结晶...",
     waitingForOverview: "生成看起来已完成，正在收取速览...",
     prSweepWaitingForCursor: "生成看起来已完成，正在读取水位回传...",
-    prSweepCursorAdvanced: "巡检水位已推进。",
-    prSweepCursorConflict: "巡检期间水位已被其他写入推进，本次未覆盖；请重跑以重新读取。",
-    prSweepNoCursorEcho: "未观测到水位回传，水位保持不变。",
-    prSweepNoNewComments: "无新评论，水位未推进。",
-    prSweepCursorError: "无法读取或推进巡检水位。",
-    prSweepUncertainNoAdvance: "巡检投递状态不确定，水位未推进。",
+    prSweepCursorObserved: cursor => `已观测到水位（未持久化）：${cursor}`,
+    prSweepNoCursorEcho: "未观测到水位回传，未记录任何状态。",
+    prSweepNoNewComments: "无新评论，未记录任何状态。",
+    prSweepCursorError: "无法读取巡检水位观测结果。",
+    prSweepUncertainNoAdvance: "巡检投递状态不确定，未记录任何状态。",
     crystalCaptured: "结晶已收取。",
     crystalCapturedWithWarnings: "结晶已收取，但存在校验提醒。",
     overviewCaptured: "速览 HTML 已收取。",

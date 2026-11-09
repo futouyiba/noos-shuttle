@@ -1,56 +1,40 @@
 /**
- * PR comment sweep watermark (issue #61 slice 5, proposal §5.3 and §6 Q7/Q8).
+ * PR comment sweep cursor (issue #61 slice 5, proposal §5.3 and §6 Q7/Q8).
  *
- * The cursor is deliberately *opaque*. Q8's validation gate — the retrieval
- * path's ordering semantics, whether a single scalar is replay-safe, whether the
- * assistant reports its range stably, whether edited old comments re-enter a
- * sweep — cannot be proven from the extension: GitHub is unreachable here (F3),
- * and retrieval happens inside the injected ChatGPT turn. So this module freezes
- * no shape. It does not treat a comment id high-water mark as a contract, does
- * not compare cursors, and never derives one from wall-clock time.
+ * EXPERIMENTAL HARNESS — observe-only, no durable watermark.
  *
- * Replay safety therefore comes from the protocol, not from the token shape:
- *  - one slot per explicit `prRef`, written only by the background coordinator;
- *  - advancement is compare-and-set against the snapshot read before dispatch;
- *  - the reply must echo the range it actually read
- *    (`NOOS:PR_SWEEP:CURSOR=<token>`);
- *  - no echo means no advance (fail closed), so a sweep may re-read comments but
- *    can never skip them;
- *  - an `UNCERTAIN` dispatch never advances.
+ * The designer ruling on PR #151 (`DESIGN: REQUEST_CHANGES`, comment
+ * 6680747888) narrowed this slice to path B: until Q8 evidence establishes what
+ * a retrieved range means for deterministic replay/dedup, the sweep may exist
+ * as an instrument but MUST NOT promote a durable cursor. Q8's open questions —
+ * the retrieval path's ordering semantics, whether one scalar is replay-safe,
+ * whether the assistant reports its range stably, whether edited old comments
+ * re-enter a sweep — cannot be proven from the extension: GitHub is unreachable
+ * here (F3), and retrieval happens inside the injected ChatGPT turn.
  *
- * This store is feature-local. It MUST NOT read, write or advance the instance
- * watcher's `.tmp/watcher-state.json` (proposal §5.3 constraint 1, delta 7).
+ * So production behavior is: parse and attribute the echo (R2), honor the
+ * "no new comments" veto (R3), and *display* the observed token. Nothing is
+ * persisted, no compare-and-set commit runs, and no stored value can become the
+ * authority for "already processed". This module therefore makes no claim
+ * that a sweep can never skip comments — that property is exactly what Q8 has
+ * to establish before the durable path below may be re-enabled.
+ *
+ * The durable reducer at the bottom of this file is retained as the frozen
+ * design for that promotion. It has no production caller: the background
+ * writer and both cursor storage messages were removed. Re-enable it only with
+ * Q8 evidence and a fresh independent review.
  */
 
-export const PR_SWEEP_CURSOR_STORAGE_KEY = "noosPrSweepCursors";
 export const PR_SWEEP_CURSOR_ECHO_PREFIX = "NOOS:PR_SWEEP:CURSOR=";
 
-/** Transport bounds only: a ref/cursor must fit one payload line. Not a shape. */
-export const PR_SWEEP_MAX_REF_LENGTH = 256;
+/** Transport bound only: a cursor must fit one payload line. Not a shape. */
 export const PR_SWEEP_MAX_CURSOR_LENGTH = 512;
-
-/** One durable watermark, keyed by PR ref. */
-export interface PrSweepCursorRecord {
-  /** The opaque token echoed by the last completed sweep. */
-  readonly cursor: string;
-  /** Ledger operation that produced the echo; ties the watermark to provenance. */
-  readonly operationId: string;
-  /** When the echo was observed (not when the comments were written). */
-  readonly observedAt: number;
-}
-
-export type PrSweepCursorRecords = Readonly<Record<string, PrSweepCursorRecord>>;
 
 function singleLine(value: string, maxLength: number): string | undefined {
   const trimmed = value.trim();
   if (!trimmed || trimmed.length > maxLength) return undefined;
   if (/[\r\n\u0000]/.test(trimmed)) return undefined;
   return trimmed;
-}
-
-/** Normalize an explicitly supplied PR ref; undefined means "refuse, never guess". */
-export function normalizePrSweepRef(value: unknown): string | undefined {
-  return typeof value === "string" ? singleLine(value, PR_SWEEP_MAX_REF_LENGTH) : undefined;
 }
 
 /**
@@ -103,6 +87,38 @@ export function parsePrSweepCursorEcho(text: string): string | undefined {
  */
 export function prSweepReportsNoNewComments(text: string): boolean {
   return /无新评论|no\s+new\s+comments/i.test(text);
+}
+
+/* ==================== INACTIVE DURABLE DESIGN (Q8) ====================
+ * Everything below this line is the frozen *durable watermark* design. It has
+ * NO production caller: PR #151 was narrowed to an observe-only harness, so the
+ * background writer and the `NOOS_PR_SWEEP_CURSOR_READ`/`_ADVANCE` messages no
+ * longer exist. The unit tests for this reducer are kept as the specification
+ * that must be re-enabled together with the durable path once Q8 evidence
+ * resolves. Do not wire any of it back in without that evidence and a fresh
+ * independent review (designer ruling 6680747888, path B).
+ * ==================================================================== */
+
+export const PR_SWEEP_CURSOR_STORAGE_KEY = "noosPrSweepCursors";
+
+/** Transport bound only: a ref must fit one payload line. Not a shape. */
+export const PR_SWEEP_MAX_REF_LENGTH = 256;
+
+/** One durable watermark, keyed by PR ref. */
+export interface PrSweepCursorRecord {
+  /** The opaque token echoed by the last completed sweep. */
+  readonly cursor: string;
+  /** Ledger operation that produced the echo; ties the watermark to provenance. */
+  readonly operationId: string;
+  /** When the echo was observed (not when the comments were written). */
+  readonly observedAt: number;
+}
+
+export type PrSweepCursorRecords = Readonly<Record<string, PrSweepCursorRecord>>;
+
+/** Normalize an explicitly supplied PR ref; undefined means "refuse, never guess". */
+export function normalizePrSweepRef(value: unknown): string | undefined {
+  return typeof value === "string" ? singleLine(value, PR_SWEEP_MAX_REF_LENGTH) : undefined;
 }
 
 function readRecord(value: unknown): PrSweepCursorRecord | undefined {

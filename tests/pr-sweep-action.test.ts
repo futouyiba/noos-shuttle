@@ -38,7 +38,6 @@ function dispatched(): HumanGoResult {
 
 function harness(overrides: Partial<PrSweepActionDeps> = {}) {
   const calls = {
-    storedCursorReads: 0,
     dispatches: 0
   };
   const requests: PrCommentSweepDispatchRequest[] = [];
@@ -51,10 +50,6 @@ function harness(overrides: Partial<PrSweepActionDeps> = {}) {
     isRunActive: () => false,
     readInputs: () => ({ prRef: PR_REF, explicitCursor: CURSOR }),
     isRuntimeAvailable: () => true,
-    readStoredCursor: async () => {
-      calls.storedCursorReads += 1;
-      return { ok: true, cursor: "stored-c-1" };
-    },
     awaitReadyObservation: async () => OBSERVATION,
     isComposerEmpty: () => true,
     routeRef: () => "/c/example",
@@ -72,21 +67,17 @@ function harness(overrides: Partial<PrSweepActionDeps> = {}) {
 }
 
 describe("runPrSweepAction — pre-claim refusal never reaches prepare/claim/dispatch", () => {
-  it("refuses a missing explicit PR ref before reading storage or dispatching", async () => {
+  it("refuses a missing explicit PR ref before touching inputs or dispatching", async () => {
     const h = harness({ readInputs: () => ({ prRef: "", explicitCursor: CURSOR }) });
 
     const result = await runPrSweepAction(h.deps);
 
     expect(result).toEqual({ status: "refused", reason: "missing_pr_ref" });
-    expect(h.calls.storedCursorReads).toBe(0);
     expect(h.calls.dispatches).toBe(0);
   });
 
-  it("refuses when neither an explicit nor a stored cursor exists", async () => {
-    const h = harness({
-      readInputs: () => ({ prRef: PR_REF, explicitCursor: "" }),
-      readStoredCursor: async () => ({ ok: true })
-    });
+  it("refuses when the explicit cursor is empty: there is no stored fallback", async () => {
+    const h = harness({ readInputs: () => ({ prRef: PR_REF, explicitCursor: "" }) });
 
     const result = await runPrSweepAction(h.deps);
 
@@ -94,7 +85,7 @@ describe("runPrSweepAction — pre-claim refusal never reaches prepare/claim/dis
     expect(h.calls.dispatches).toBe(0);
   });
 
-  it("refuses while a bounded run is ACTIVE without touching inputs or storage", async () => {
+  it("refuses while a bounded run is ACTIVE without touching inputs", async () => {
     const h = harness({ isRunActive: () => true });
     const readInputs = vi.fn(h.deps.readInputs);
     h.deps.readInputs = readInputs;
@@ -103,7 +94,6 @@ describe("runPrSweepAction — pre-claim refusal never reaches prepare/claim/dis
 
     expect(result).toEqual({ status: "refused", reason: "run_active" });
     expect(readInputs).not.toHaveBeenCalled();
-    expect(h.calls.storedCursorReads).toBe(0);
     expect(h.calls.dispatches).toBe(0);
   });
 
@@ -116,13 +106,13 @@ describe("runPrSweepAction — pre-claim refusal never reaches prepare/claim/dis
     expect(h.calls.dispatches).toBe(0);
   });
 
-  it("refuses when the stored cursor cannot be read", async () => {
-    const h = harness({ readStoredCursor: async () => ({ ok: false, error: "storage_unavailable" }) });
-
-    const result = await runPrSweepAction(h.deps);
-
-    expect(result).toEqual({ status: "refused", reason: "cursor_read_failed", detail: "storage_unavailable" });
-    expect(h.calls.dispatches).toBe(0);
+  it("has no stored-cursor dependency: the boundary cannot read or commit a watermark", () => {
+    // This replaces the old "stored cursor unreadable" case. The capability is
+    // gone, not merely broken: see the designer ruling on PR #151 (path B).
+    const source = readFileSync(fileURLToPath(new URL("../src/content/pr-sweep-action.ts", import.meta.url)), "utf8");
+    expect(source).not.toContain("NOOS_PR_SWEEP_CURSOR");
+    expect(source).not.toContain("readStoredCursor");
+    expect(source).not.toContain("storedCursor");
   });
 
   it("refuses without a READY observation", async () => {
@@ -193,27 +183,17 @@ describe("runPrSweepAction — a valid plan dispatches exactly once", () => {
       now: 2_000,
       replyBaseline: REPLAY_BASELINE,
       prRef: PR_REF,
-      storedCursor: "stored-c-1",
       operationId: "pr-comment-sweep-test"
     });
   });
 
-  it("uses the stored cursor when the Human left the field empty", async () => {
-    const h = harness({ readInputs: () => ({ prRef: PR_REF, explicitCursor: "" }) });
+  it("builds the payload solely from the explicit cursor", async () => {
+    const h = harness({ readInputs: () => ({ prRef: PR_REF, explicitCursor: "human-range-1" }) });
 
     const result = await runPrSweepAction(h.deps);
 
     expect(result.status).toBe("DISPATCHED");
-    expect(h.requests[0].payload).toContain("自 stored-c-1 以来");
-  });
-
-  it("lets an explicit cursor override the stored snapshot for the payload", async () => {
-    const h = harness();
-
-    await runPrSweepAction(h.deps);
-
-    expect(h.requests[0].payload).toContain(`自 ${CURSOR} 以来`);
-    expect(h.requests[0].payload).not.toContain("自 stored-c-1 以来");
+    expect(h.requests[0].payload).toContain("自 human-range-1 以来");
   });
 
   it("returns a transport failure as failed without claiming success", async () => {
@@ -270,5 +250,11 @@ describe("content script wiring", () => {
 
   it("has no separate direct sweep dispatch outside that closure", () => {
     expect(index).not.toMatch(/await\s+dispatchPrCommentSweep\(/);
+  });
+
+  it("wires the echo to observation only, with no durable cursor lane", () => {
+    expect(index).not.toContain("NOOS_PR_SWEEP_CURSOR");
+    expect(index).not.toContain("commitPrSweepCursor");
+    expect(index).toContain("reportPrSweepCursorObservation(app, capture.cursor)");
   });
 });

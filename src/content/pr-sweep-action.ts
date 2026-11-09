@@ -1,11 +1,18 @@
 /**
  * PR comment sweep action boundary (issue #61 slice 5).
  *
+ * EXPERIMENTAL HARNESS — non-durable range (designer ruling on PR #151,
+ * comment 6680747888, path B). This boundary exists so Q8 evidence can be
+ * gathered, not so a watermark can advance. The starting range is always the
+ * cursor the Human typed into the panel; the extension never reads a stored
+ * cursor and never persists one. An observed echo is surfaced for observation
+ * only.
+ *
  * This module owns everything that must happen before the governed transport is
  * allowed to prepare/claim/dispatch a sweep, plus the dispatch call itself:
  *
  *  - run/bounded-authorization gates;
- *  - explicit PR ref and explicit/stored cursor resolution;
+ *  - explicit PR ref and explicit cursor;
  *  - a READY carrier observation and the pre-claim composer guard;
  *  - the reply-baseline capture taken immediately before dispatch.
  *
@@ -31,12 +38,6 @@ export interface PrSweepActionObservation {
   userMessageCount?: number;
 }
 
-export interface PrSweepStoredCursorRead {
-  ok?: boolean;
-  cursor?: string;
-  error?: string;
-}
-
 export type PrSweepMessageEvidence = Pick<
   SubmissionBaseline,
   "headFingerprint" | "lastUserMessageFingerprint" | "lastAssistantMessageFingerprint"
@@ -46,7 +47,6 @@ export interface PrSweepActionDeps {
   isRunActive(): boolean;
   readInputs(): { prRef: string; explicitCursor: string };
   isRuntimeAvailable(): boolean;
-  readStoredCursor(prRef: string): Promise<PrSweepStoredCursorRead>;
   awaitReadyObservation(): Promise<PrSweepActionObservation | undefined>;
   isComposerEmpty(): boolean;
   routeRef(): string;
@@ -69,7 +69,6 @@ export type PrSweepActionRefusalReason =
   | "run_active"
   | "missing_pr_ref"
   | "runtime_unavailable"
-  | "cursor_read_failed"
   | "missing_cursor"
   | "observation_unavailable"
   | "composer_not_empty"
@@ -83,7 +82,6 @@ export type PrSweepActionPlan = {
   /** What the wait path must accept a reply relative to. */
   replyBaseline: PrSweepReplyBaseline;
   prRef: string;
-  storedCursor: string | null;
   operationId: string;
 };
 
@@ -115,23 +113,11 @@ export async function runPrSweepAction(deps: PrSweepActionDeps): Promise<PrSweep
   if (!prRef) return { status: "refused", reason: "missing_pr_ref" };
   if (!deps.isRuntimeAvailable()) return { status: "refused", reason: "runtime_unavailable" };
 
-  let storedCursor: string | null = null;
-  try {
-    const stored = await deps.readStoredCursor(prRef);
-    if (stored?.ok !== true) {
-      return { status: "refused", reason: "cursor_read_failed", detail: stored?.error ?? "cursor_read_failed" };
-    }
-    if (typeof stored.cursor === "string" && stored.cursor.trim()) storedCursor = stored.cursor;
-  } catch (error) {
-    return {
-      status: "refused",
-      reason: "cursor_read_failed",
-      detail: error instanceof Error ? error.message : String(error)
-    };
-  }
-
-  const payloadCursor = explicitCursor || storedCursor;
-  if (!payloadCursor) return { status: "refused", reason: "missing_cursor" };
+  // Observe-only harness: the Human's explicit cursor is the only source. There
+  // is no stored fallback to read, so a stale or model-invented cursor can never
+  // become the authority for "already processed" (Q8 is still open).
+  if (!explicitCursor) return { status: "refused", reason: "missing_cursor" };
+  const payloadCursor = explicitCursor;
 
   const observation = await deps.awaitReadyObservation();
   if (!observation) return { status: "refused", reason: "observation_unavailable" };
@@ -182,7 +168,7 @@ export async function runPrSweepAction(deps: PrSweepActionDeps): Promise<PrSweep
   } catch (error) {
     return { status: "failed", detail: error instanceof Error ? error.message : String(error) };
   }
-  const plan: PrSweepActionPlan = { observation, now, replyBaseline, prRef, storedCursor, operationId };
+  const plan: PrSweepActionPlan = { observation, now, replyBaseline, prRef, operationId };
   if (result.status === "BLOCKED") {
     return { status: "BLOCKED", reason: result.reason, ...plan };
   }

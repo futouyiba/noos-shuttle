@@ -7,6 +7,18 @@ import {
   readPrSweepCursorRecord
 } from "../src/core/pr-sweep-cursor";
 
+/**
+ * The first block covers the *live* observe-only harness: parsing the echo and
+ * honoring the no-new-comments veto.
+ *
+ * The durable compare-and-set cases below describe the frozen design that is
+ * deliberately NOT wired in PR #151 (designer ruling 6680747888, path B). They
+ * are kept — not deleted — as the specification that must be re-enabled
+ * together with the background writer once Q8 evidence resolves. Restoring the
+ * durable path therefore means re-enabling these expectations, not rewriting
+ * them from scratch.
+ */
+
 const PR = "futouyiba/noos-shuttle#61";
 
 function observed(cursor: string, expectedStoredCursor: string | null = null, operationId = "sweep-1", observedAt = 1_000) {
@@ -48,7 +60,7 @@ describe("parsePrSweepCursorEcho (issue #61 slice 5, Q8)", () => {
   });
 });
 
-describe("advancePrSweepCursor (Q7 single-writer compare-and-set)", () => {
+describe("advancePrSweepCursor (Q7 single-writer compare-and-set, INACTIVE durable design)", () => {
   it("stores the first observed echo in a per-PR slot", () => {
     const result = observed("c-1");
     expect(result.ok).toBe(true);
@@ -140,7 +152,7 @@ describe("advancePrSweepCursor (Q7 single-writer compare-and-set)", () => {
   });
 });
 
-describe("replay / concurrency judgement (Q8 evidence surface)", () => {
+describe("replay / concurrency judgement (Q8 evidence surface, INACTIVE durable design)", () => {
   it("lets exactly one of two concurrent advances from the same snapshot land", () => {
     const start = observed("c-1");
     if (!start.ok) throw new Error("setup");

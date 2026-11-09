@@ -1994,14 +1994,17 @@ async function generateAndCollectOverview(app: HTMLElement): Promise<void> {
 /**
  * `PR_COMMENT_SWEEP` shortcut action (issue #61 slice 5; proposal §5.3, §6
  * Q6/Q7/Q8). The ledger identity is `PR_COMMENT_SWEEP` (never `GO`), so it goes
- * through the dedicated kind-specialised composer. The PR ref is always explicit
- * — the action refuses rather than guessing (delta 6) — and the watermark lives
- * in the background coordinator, one opaque slot per PR ref.
+ * through the dedicated kind-specialised composer. The PR ref and the starting
+ * cursor are always explicit — the action refuses rather than guessing (delta 6).
  *
- * The cursor is never interpreted here. Q8 did not freeze a shape, so the
- * extension stores whatever token the retrieval path echoes back and advances
- * only on an observed echo. A missing echo leaves the watermark untouched: an
- * extra re-read is safe; a skipped comment is not.
+ * EXPERIMENTAL HARNESS — observe-only, no durable watermark (designer ruling on
+ * PR #151, comment 6680747888, path B). Q8 is unresolved: nothing here proves
+ * that the retrieved comment set was complete or that a later sweep can resume
+ * from a stored token. So this path never reads a stored cursor, never writes
+ * chrome.storage and never compare-and-set commits. The echo is parsed and
+ * attributed to this operation's submitted turn (R2), the "no new comments"
+ * answer is a global veto (R3), and the observed token is surfaced in the panel
+ * for evidence gathering only.
  */
 async function generateAndCollectPrSweep(app: HTMLElement): Promise<void> {
   const copy = COPY[viewState.locale];
@@ -2015,13 +2018,6 @@ async function generateAndCollectPrSweep(app: HTMLElement): Promise<void> {
       explicitCursor: app.querySelector<HTMLInputElement>("[data-pr-sweep-cursor]")?.value.trim() ?? ""
     }),
     isRuntimeAvailable: () => Boolean(globalThis.chrome?.runtime?.sendMessage),
-    // Read the durable slot BEFORE dispatch: this value is both the payload
-    // cursor (unless the Human overrode it) and the compare-and-set snapshot
-    // that keeps two tabs from advancing the same slot concurrently (§6 Q7).
-    readStoredCursor: prRef => sendExtensionMessage<
-      { type: string; prRef: string },
-      { ok?: boolean; cursor?: string; error?: string }
-    >({ type: "NOOS_PR_SWEEP_CURSOR_READ", prRef }),
     awaitReadyObservation,
     isComposerEmpty: isChatComposerEmpty,
     routeRef: () => getPageContext().pathname,
@@ -2052,9 +2048,8 @@ async function generateAndCollectPrSweep(app: HTMLElement): Promise<void> {
     viewState.message =
       outcome.reason === "missing_pr_ref" ? copy.prSweepMissingPrRef :
         outcome.reason === "missing_cursor" ? copy.prSweepMissingCursor :
-          outcome.reason === "cursor_read_failed" ? `${copy.prSweepCursorError}: ${outcome.detail ?? "cursor_read_failed"}` :
-            outcome.reason === "reply_baseline_unavailable" ? copy.prSweepCursorError :
-              copy.inputNotFound;
+          outcome.reason === "reply_baseline_unavailable" ? copy.prSweepCursorError :
+            copy.inputNotFound;
     render(app);
     return;
   }
@@ -2076,8 +2071,8 @@ async function generateAndCollectPrSweep(app: HTMLElement): Promise<void> {
     return;
   }
   // DISPATCHED or UNCERTAIN: adopt the operation for the generic reconciliation
-  // lane. An UNCERTAIN dispatch never advances the watermark: the ledger cannot
-  // prove the turn went out, and a premature advance could skip comments.
+  // lane. An UNCERTAIN dispatch must not be treated as evidence that the range
+  // was read: the ledger cannot prove the turn went out.
   activeSubmission = {
     operationId: outcome.operation.operationId,
     logicalThreadId: outcome.operation.logicalThreadId,
@@ -2101,29 +2096,23 @@ async function generateAndCollectPrSweep(app: HTMLElement): Promise<void> {
   }
   viewState.message = copy.prSweepSubmitted;
   render(app);
-  waitForPrSweepCursor(app, {
-    replyBaseline: outcome.replyBaseline,
-    prRef: outcome.prRef,
-    storedCursor: outcome.storedCursor,
-    operationId: outcome.operationId
-  });
+  waitForPrSweepCursor(app, { replyBaseline: outcome.replyBaseline });
 }
 
 interface PrSweepCursorWait {
   /** The dispatch boundary and submitted-turn anchor captured before dispatch. */
   replyBaseline: PrSweepReplyBaseline;
-  prRef: string;
-  /** The pre-dispatch slot value; the compare-and-set expectation. */
-  storedCursor: string | null;
-  operationId: string;
 }
 
 /**
  * Wait for the cursor echo in the reply bound to this operation's submitted user
- * turn, then hand it to the background coordinator. This is the same
- * generated-artifact state machine as the three capture paths (proposal §2 F7),
- * with the completion predicate being the machine-readable echo line instead of
- * a marker-wrapped artifact.
+ * turn, then surface it as an observation. This is the same generated-artifact
+ * state machine as the three capture paths (proposal §2 F7), with the completion
+ * predicate being the machine-readable echo line instead of a marker-wrapped
+ * artifact.
+ *
+ * Nothing is persisted: Q8 is open, so the observed token is evidence, not a
+ * watermark (designer ruling 6680747888).
  */
 function waitForPrSweepCursor(app: HTMLElement, wait: PrSweepCursorWait): void {
   const copy = COPY[viewState.locale];
@@ -2148,7 +2137,7 @@ function waitForPrSweepCursor(app: HTMLElement, wait: PrSweepCursorWait): void {
 
     cancelActiveWait();
     openSurfacePanel();
-    void commitPrSweepCursor(app, wait, capture.cursor);
+    reportPrSweepCursorObservation(app, capture.cursor);
     return true;
   };
 
@@ -2205,8 +2194,8 @@ function waitForPrSweepCursor(app: HTMLElement, wait: PrSweepCursorWait): void {
   }, GENERATION_START_GRACE_MS);
   const timeoutId = window.setTimeout(() => {
     cancelActiveWait();
-    // Fail closed: no echo means the watermark stays where it was. The next
-    // sweep re-reads the same range instead of skipping it.
+    // Fail closed: no echo means nothing is observed or recorded. The next
+    // sweep re-reads the same explicitly supplied range.
     viewState.state = "warning";
     openSurfacePanel();
     viewState.message = copy.prSweepNoCursorEcho;
@@ -2216,51 +2205,17 @@ function waitForPrSweepCursor(app: HTMLElement, wait: PrSweepCursorWait): void {
   observeGenerationState();
 }
 
-async function commitPrSweepCursor(app: HTMLElement, wait: PrSweepCursorWait, cursor: string): Promise<void> {
-  const copy = COPY[viewState.locale];
-  try {
-    const response = await sendExtensionMessage<
-      {
-        type: string;
-        prRef: string;
-        expectedStoredCursor: string | null;
-        cursor: string;
-        operationId: string;
-        observedAt: number;
-      },
-      { ok?: boolean; reason?: string; error?: string }
-    >({
-      type: "NOOS_PR_SWEEP_CURSOR_ADVANCE",
-      prRef: wait.prRef,
-      expectedStoredCursor: wait.storedCursor,
-      cursor,
-      operationId: wait.operationId,
-      observedAt: Date.now()
-    });
-    if (response?.ok === true) {
-      // The stored slot now holds the echo; clear the explicit override so the
-      // next sweep continues from the durable watermark instead of the old one.
-      setPrSweepCursorInput(app, "");
-      viewState.state = "captured";
-      viewState.message = copy.prSweepCursorAdvanced;
-    } else if (response?.reason === "cursor_conflict") {
-      setPrSweepCursorInput(app, "");
-      viewState.state = "warning";
-      viewState.message = copy.prSweepCursorConflict;
-    } else {
-      viewState.state = "warning";
-      viewState.message = copy.prSweepCursorError;
-    }
-  } catch {
-    viewState.state = "warning";
-    viewState.message = copy.prSweepCursorError;
-  }
+/**
+ * Observe-only: surface the echoed token in the panel. The value is deliberately
+ * not written to `chrome.storage`, not fed back into the cursor input, and not
+ * committed anywhere — an unvalidated cursor must not become trusted production
+ * history (designer ruling 6680747888, path B). This is the same panel-message
+ * channel every other capture path uses; no new protocol is introduced.
+ */
+function reportPrSweepCursorObservation(app: HTMLElement, cursor: string): void {
+  viewState.state = "captured";
+  viewState.message = COPY[viewState.locale].prSweepCursorObserved(cursor);
   render(app);
-}
-
-function setPrSweepCursorInput(app: HTMLElement, value: string): void {
-  const input = app.querySelector<HTMLInputElement>("[data-pr-sweep-cursor]");
-  if (input) input.value = value;
 }
 
 
