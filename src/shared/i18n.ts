@@ -260,6 +260,7 @@ export interface ShuttleCopy {
   crystalSubmitted: string;
   continuationSent: string;
   continuationNotSent: string;
+  continuationUncertain: string;
   sedimentSubmitted: string;
   overviewSubmitted: string;
   prSweepSubmitted: string;
@@ -562,6 +563,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     crystalSubmitted: "Crystal prompt sent. Waiting for generation...",
     continuationSent: "Continuation sent.",
     continuationNotSent: "Continuation not sent; the carrier is not ready.",
+    continuationUncertain: "Continuation may have been sent; it is not re-sent until the ledger settles.",
     sedimentSubmitted: "Sediment prompt sent. Waiting for generation...",
     overviewSubmitted: "Overview prompt sent. Waiting for generation...",
     prSweepSubmitted: "PR comment sweep sent. Waiting for the cursor echo...",
@@ -852,6 +854,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     crystalSubmitted: "结晶提示词已发送，正在等待生成...",
     continuationSent: "已发送续跑指令。",
     continuationNotSent: "续跑指令未发送：Carrier 未就绪。",
+    continuationUncertain: "续跑指令可能已发送；账本收敛前不会重发。",
     sedimentSubmitted: "沉淀提示词已发送，正在等待生成...",
     overviewSubmitted: "速览提示词已发送，正在等待生成...",
     prSweepSubmitted: "PR 评论巡检已发送，正在等待水位回传...",

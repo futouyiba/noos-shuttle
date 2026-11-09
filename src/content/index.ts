@@ -1805,10 +1805,14 @@ async function continueRun(app: HTMLElement): Promise<void> {
     return;
   }
   const previousMessage = viewState.message;
+  let outcome: "DISPATCHED" | "UNCERTAIN" | "BLOCKED" | undefined;
   const sent = await dispatchHumanGo(
     buildContinuationPayload(viewState.locale, "PLAIN_GO"),
     getPageContext(),
-    "shuttle-continue"
+    "shuttle-continue",
+    // UNCERTAIN is a real third state: the payload may have reached the
+    // provider, so it must not be reported as "not sent" (or re-sent).
+    { onResult: status => { outcome = status; } }
   );
   // `dispatchHumanGo` writes the specific refusal reason it can prove (composer
   // draft, ledger refusal, …); only invent a message when it stayed silent,
@@ -1816,6 +1820,9 @@ async function continueRun(app: HTMLElement): Promise<void> {
   if (sent) {
     viewState.state = "prompt-ready";
     viewState.message = copy.continuationSent;
+  } else if (outcome === "UNCERTAIN") {
+    viewState.state = "error";
+    viewState.message = copy.continuationUncertain;
   } else {
     viewState.state = "error";
     if (viewState.message === previousMessage) viewState.message = copy.continuationNotSent;
