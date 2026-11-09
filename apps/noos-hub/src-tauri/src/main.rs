@@ -161,6 +161,69 @@ struct IngestContent {
     text: Option<String>,
 }
 
+/// Input to the Hub-owned Prompt Pack builder (#154 slice A). The caller
+/// selects Vault objects by lookup key and may add a task/instruction and a
+/// human title; everything else (identity, rendering, placement) belongs to
+/// the Hub.
+#[derive(Default, Deserialize)]
+struct PromptPackBuildRequest {
+    #[serde(default, alias = "keys", alias = "lookupKeys")]
+    lookup_keys: Vec<String>,
+    title: Option<String>,
+    #[serde(alias = "task")]
+    instruction: Option<String>,
+    idempotency_key: Option<String>,
+}
+
+impl PromptPackBuildRequest {
+    fn selected_lookup_keys(&self) -> Vec<String> {
+        self.lookup_keys
+            .iter()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn instruction_text(&self) -> Option<&str> {
+        self.instruction
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+}
+
+/// One selected Vault object frozen into the pack. The snapshot is the
+/// rendered pack's authoritative content for this build; the source objects
+/// remain authoritative for themselves.
+#[derive(Clone, Debug)]
+struct PromptPackSource {
+    lookup_key: String,
+    object_id: String,
+    content_hash: String,
+    title: Option<String>,
+    object_type: Option<String>,
+    content: String,
+}
+
+impl PromptPackSource {
+    fn display_title(&self) -> &str {
+        self.title
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(&self.lookup_key)
+    }
+
+    fn display_type(&self) -> &str {
+        self.object_type
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("unknown")
+    }
+}
+
 #[derive(Deserialize)]
 struct HubActionRequest {
     command: String,
@@ -914,6 +977,11 @@ fn get_vault_object(
 }
 
 #[tauri::command]
+fn build_prompt_pack(request: PromptPackBuildRequest) -> Result<Value, String> {
+    build_prompt_pack_in(&noos_home(), &request)
+}
+
+#[tauri::command]
 fn read_config() -> Result<serde_json::Value, String> {
     let config_path = noos_home().join("config.json");
     if config_path.exists() {
@@ -988,6 +1056,7 @@ fn main() {
             simulate_sleep_resume,
             browse_vault,
             get_vault_object,
+            build_prompt_pack,
             read_config,
             write_config,
             get_pairing_status,
@@ -4803,6 +4872,300 @@ fn prepare_feishu_publish_markdown(content: &str, fallback_title: &str) -> Resul
     Ok(format!("# {title}\n\n{body}"))
 }
 
+// ---------------------------------------------------------------------------
+// Prompt Pack V0 builder (#154 slice A). The Hub owns pack generation,
+// identity, persistence, and lifecycle; the Shuttle only selects objects and
+// delivers the resulting artifact. This module never mints a second Shuttle
+// side pack model.
+// ---------------------------------------------------------------------------
+
+const PROMPT_PACK_VERSION: &str = "0.1";
+
+const DEFAULT_PROMPT_PACK_INSTRUCTION: &str =
+    "Use the source material in this pack as context for the current task.";
+
+/// The marker chunking matches the Shuttle's own instruction text: the pack
+/// must never contain a literal Result marker, or a page carrying the pack
+/// could be captured as a Result.
+const PROMPT_PACK_RETURN_CONTRACT: &str = "When this round is done, return one NOOS Result. Output the marker-wrapped Markdown directly; do not use a fenced code block, and do not write explanations outside the markers.\n\nThe result must be wrapped by two exact HTML comment markers. Each is shown below in split chunks so this instruction is not itself mistaken for a Result:\n- begin marker: `<` + `!-- NOOS:RESULT` + `:BEGIN --` + `>`\n- end marker: `<` + `!-- NOOS:RESULT` + `:END --` + `>`\n\nUse YAML frontmatter with English keys: type: noos_result, version: 0.1, result_key, title, summary, source_url.";
+
+fn one_line(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Neutralizes literal `NOOS:RESULT:*` sequences in text copied into a pack.
+///
+/// A zero-width space is inserted immediately after the `NOOS:RESULT` token so
+/// neither `NOOS:RESULT:BEGIN` / `NOOS:RESULT:END` nor a complete HTML comment
+/// marker can survive serialization, while the rendered Markdown still reads
+/// the same. This is the same split-the-marker discipline the Shuttle prompt
+/// templates use, but at the token boundary rather than inside the comment.
+fn neutralize_result_marker_literals(value: &str) -> String {
+    value.replace("NOOS:RESULT:", "NOOS:RESULT:\u{200b}")
+}
+
+fn default_prompt_pack_title(sources: &[PromptPackSource]) -> String {
+    match sources {
+        [single] => format!("{} Prompt Pack", single.display_title()),
+        _ => format!("Prompt Pack ({} sources)", sources.len()),
+    }
+}
+
+/// Stable frontmatter `prompt_key`: the same date-prefixed shape
+/// `derive_object_key` produces. Ingest appends its content shortcode on top,
+/// exactly as it already does for `crystal_key` and `result_key`.
+fn prompt_pack_stable_key(title: &str, date_key: &str) -> String {
+    let slug = slugify_key(title);
+    if has_date_prefix(&slug) {
+        slug
+    } else {
+        format!("{date_key}-{slug}")
+    }
+}
+
+fn render_prompt_pack_markdown(
+    prompt_key: &str,
+    title: &str,
+    created_at: &str,
+    instruction: Option<&str>,
+    sources: &[PromptPackSource],
+) -> String {
+    let title = one_line(title);
+    let title = if title.is_empty() {
+        "Prompt Pack".to_string()
+    } else {
+        title
+    };
+    let title = neutralize_result_marker_literals(&title);
+
+    let mut markdown = String::new();
+    markdown.push_str("---\n");
+    markdown.push_str("type: noos_prompt_pack\n");
+    markdown.push_str(&format!("version: {PROMPT_PACK_VERSION}\n"));
+    markdown.push_str(&format!("prompt_key: {}\n", one_line(prompt_key)));
+    markdown.push_str(&format!("title: {title}\n"));
+    markdown.push_str(&format!("created_at: {}\n", one_line(created_at)));
+    markdown.push_str("status: active\n");
+    markdown.push_str(&format!("source_count: {}\n", sources.len()));
+    markdown.push_str("---\n\n");
+
+    markdown.push_str(&format!("# Prompt Pack: {title}\n\n"));
+
+    markdown.push_str("## Instruction\n\n");
+    let instruction = instruction
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_PROMPT_PACK_INSTRUCTION);
+    markdown.push_str(&neutralize_result_marker_literals(instruction));
+    markdown.push_str("\n\n");
+
+    markdown.push_str("## Source Manifest\n\n");
+    for source in sources {
+        markdown.push_str(&format!(
+            "- `lookup_key`: {} | `object_id`: {} | `content_hash`: {} | `type`: {} | `title`: {}\n",
+            one_line(&source.lookup_key),
+            one_line(&source.object_id),
+            one_line(&source.content_hash),
+            one_line(source.display_type()),
+            one_line(&neutralize_result_marker_literals(source.display_title())),
+        ));
+    }
+    markdown.push('\n');
+
+    markdown.push_str("## Context\n\n");
+    for (index, source) in sources.iter().enumerate() {
+        if index > 0 {
+            markdown.push_str("\n---\n\n");
+        }
+        markdown.push_str(&format!(
+            "### {}\n\n",
+            one_line(&neutralize_result_marker_literals(source.display_title()))
+        ));
+        markdown.push_str(&neutralize_result_marker_literals(source.content.trim()));
+        markdown.push('\n');
+    }
+
+    markdown.push_str("\n## Return Contract\n\n");
+    markdown.push_str(PROMPT_PACK_RETURN_CONTRACT);
+    markdown.push('\n');
+
+    markdown
+}
+
+fn read_prompt_pack_source(noos_home: &Path, lookup_key: &str) -> Result<PromptPackSource, String> {
+    let lookup_key = lookup_key.trim();
+    if lookup_key.is_empty() {
+        return Err("Prompt Pack selection contains an empty lookup key.".to_string());
+    }
+    let Some(indexed) = find_indexed_object_by_key(noos_home, lookup_key)
+        .or_else(|| find_unindexed_vault_object_by_key(noos_home, lookup_key))
+        .or_else(|| find_library_source_by_key(noos_home, lookup_key))
+    else {
+        return Err(format!(
+            "Vault object not found for lookup key: {lookup_key}"
+        ));
+    };
+    let Some(raw_path) = indexed.get("path").and_then(Value::as_str) else {
+        return Err(format!("Vault object has no local path: {lookup_key}"));
+    };
+    let path = PathBuf::from(raw_path);
+    if !object_path_allowed(noos_home, &indexed, &path) {
+        return Err(format!(
+            "Vault object path is outside the local Vault: {lookup_key}"
+        ));
+    }
+    if path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| !extension.eq_ignore_ascii_case("md"))
+        .unwrap_or(true)
+    {
+        return Err(format!("Vault object is not Markdown: {lookup_key}"));
+    }
+    let content = fs::read_to_string(&path)
+        .map_err(|error| format!("Vault object could not be read ({lookup_key}): {error}"))?;
+
+    let object_type = indexed
+        .get("object_type")
+        .or_else(|| indexed.get("type"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_string();
+    let resolved_key = indexed
+        .get("lookup_key")
+        .or_else(|| indexed.get("key"))
+        .and_then(Value::as_str)
+        .unwrap_or(lookup_key)
+        .to_string();
+    let title = indexed
+        .get("title")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| extract_frontmatter_value(&content, "title"))
+        .or_else(|| extract_heading_title(&content));
+    let object_id = indexed
+        .get("object_id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            format!(
+                "noos_obj_{}",
+                stable_hash_hex(&format!("{object_type}:{content}"))
+            )
+        });
+    let content_hash = indexed
+        .get("content_hash")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("sha256ish:{}", stable_hash_hex(&content)));
+
+    Ok(PromptPackSource {
+        lookup_key: resolved_key,
+        object_id,
+        content_hash,
+        title,
+        object_type: Some(object_type),
+        content,
+    })
+}
+
+fn prompt_pack_source_manifest(sources: &[PromptPackSource]) -> Vec<Value> {
+    sources
+        .iter()
+        .map(|source| {
+            json!({
+                "lookup_key": source.lookup_key,
+                "object_id": source.object_id,
+                "content_hash": source.content_hash,
+                "title": source.display_title(),
+                "type": source.display_type(),
+            })
+        })
+        .collect()
+}
+
+/// Reads the selected Vault objects, renders one self-contained Markdown
+/// Prompt Pack, persists it through the existing `prompt_pack` ingest path
+/// (`vault/packs/prompt/active`), and returns the standard receipt plus the
+/// pack key and source manifest.
+fn build_prompt_pack_in(
+    noos_home: &Path,
+    request: &PromptPackBuildRequest,
+) -> Result<Value, String> {
+    let lookup_keys = request.selected_lookup_keys();
+    if lookup_keys.is_empty() {
+        return Err("Prompt Pack requires at least one selected Vault object.".to_string());
+    }
+
+    let mut sources: Vec<PromptPackSource> = Vec::new();
+    for lookup_key in lookup_keys {
+        if sources.iter().any(|source| source.lookup_key == lookup_key) {
+            continue;
+        }
+        sources.push(read_prompt_pack_source(noos_home, &lookup_key)?);
+    }
+
+    let title = request
+        .title
+        .as_deref()
+        .map(one_line)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| default_prompt_pack_title(&sources));
+    let created_at = now_iso_utc();
+    let prompt_key = prompt_pack_stable_key(&title, &current_date_key());
+    let markdown = render_prompt_pack_markdown(
+        &prompt_key,
+        &title,
+        &created_at,
+        request.instruction_text(),
+        &sources,
+    );
+    let manifest = prompt_pack_source_manifest(&sources);
+
+    let ingest = IngestWriteRequest {
+        protocol_version: Some(HUB_PROTOCOL_VERSION),
+        request_id: None,
+        idempotency_key: request.idempotency_key.clone(),
+        object_type: Some("prompt_pack".to_string()),
+        source: Some(HandoffSource {
+            app: Some("noos-hub".to_string()),
+            url: None,
+            conversation_id: None,
+            captured_at: Some(created_at.clone()),
+        }),
+        suggested: Some(IngestSuggested {
+            lookup_key: Some(prompt_key.clone()),
+            key: None,
+            filename: None,
+            status: Some("active".to_string()),
+        }),
+        content: Some(IngestContent {
+            media_type: Some("text/markdown".to_string()),
+            text: Some(markdown),
+        }),
+    };
+
+    let response = write_ingest_object_to_local_vault_at(noos_home, ingest);
+    if !response.ok {
+        return Err(format!(
+            "{}: {}",
+            response
+                .error_code
+                .as_deref()
+                .unwrap_or("prompt_pack_build_failed"),
+            response.message
+        ));
+    }
+
+    let mut receipt = serde_json::to_value(response).map_err(|error| error.to_string())?;
+    if let Some(object) = receipt.as_object_mut() {
+        object.insert("prompt_key".to_string(), json!(prompt_key));
+        object.insert("source_count".to_string(), json!(sources.len()));
+        object.insert("sources".to_string(), Value::Array(manifest));
+    }
+    Ok(receipt)
+}
+
 fn strip_yaml_frontmatter(content: &str) -> &str {
     let trimmed = content.trim_start();
     if !trimmed.starts_with("---\n") {
@@ -5550,6 +5913,16 @@ fn write_artifact_to_local_vault(request: HandoffWriteRequest) -> HandoffWriteRe
 }
 
 fn write_ingest_object_to_local_vault(request: IngestWriteRequest) -> HandoffWriteResponse {
+    write_ingest_object_to_local_vault_at(&noos_home(), request)
+}
+
+/// Same ingest transaction as `write_ingest_object_to_local_vault`, with an
+/// explicit NOOS home so tests (and the Prompt Pack builder) can run against
+/// an isolated root.
+fn write_ingest_object_to_local_vault_at(
+    noos_home: &Path,
+    request: IngestWriteRequest,
+) -> HandoffWriteResponse {
     let protocol_version = request.protocol_version.unwrap_or(HUB_PROTOCOL_VERSION);
     if protocol_version > HUB_PROTOCOL_VERSION {
         return write_error(
@@ -5588,8 +5961,7 @@ fn write_ingest_object_to_local_vault(request: IngestWriteRequest) -> HandoffWri
         }
     }
 
-    let noos_home = noos_home();
-    if let Err(error) = ensure_vault_layout(&noos_home) {
+    if let Err(error) = ensure_vault_layout(noos_home) {
         return write_error("vault_unavailable", &error);
     }
 
@@ -5631,7 +6003,7 @@ fn write_ingest_object_to_local_vault(request: IngestWriteRequest) -> HandoffWri
                 .and_then(|source| source.captured_at.clone())
         })
         .unwrap_or_else(now_iso_utc);
-    if let Some(existing) = existing_indexed_object(&noos_home, &object_id) {
+    if let Some(existing) = existing_indexed_object(noos_home, &object_id) {
         return existing_receipt(&object_id, existing);
     }
 
@@ -5670,7 +6042,7 @@ fn write_ingest_object_to_local_vault(request: IngestWriteRequest) -> HandoffWri
     }
 
     if let Err(error) = update_vault_indexes(
-        &noos_home,
+        noos_home,
         VaultIndexObject {
             object_type,
             object_id: object_id.clone(),
@@ -9722,5 +10094,237 @@ See [Spec](.assets/feishu_docx_abc123/spec.pdf).
         assert!(evaluator_credentials_from(&json!({ "bcrEvaluator": { "apiKey": "sk-abc" } })).is_none(), "model missing");
         let creds = evaluator_credentials_from(&json!({ "bcrEvaluator": { "apiKey": " sk-abc ", "model": " deepseek-chat " } })).unwrap();
         assert_eq!(creds, ("sk-abc".to_string(), "deepseek-chat".to_string()));
+    }
+
+    // -----------------------------------------------------------------
+    // #154 slice A: Hub-owned Prompt Pack builder.
+    // -----------------------------------------------------------------
+
+    fn prompt_pack_source_fixture(key: &str, title: &str, body: &str) -> PromptPackSource {
+        PromptPackSource {
+            lookup_key: key.to_string(),
+            object_id: format!("noos_obj_{key}"),
+            content_hash: format!("sha256ish:{}", stable_hash_hex(body)),
+            title: Some(title.to_string()),
+            object_type: Some("handoff".to_string()),
+            content: body.trim().to_string(),
+        }
+    }
+
+    #[test]
+    fn prompt_pack_renderer_emits_self_contained_snapshot() {
+        let sources = vec![
+            prompt_pack_source_fixture(
+                "20261109-source-a",
+                "Source A",
+                "# Thread: Source A\n\nsource a body snapshot",
+            ),
+            prompt_pack_source_fixture(
+                "20261109-source-b",
+                "Source B",
+                "# Thread: Source B\n\nsource b body snapshot",
+            ),
+        ];
+        let markdown = render_prompt_pack_markdown(
+            "20261109-demo-pack",
+            "Demo Pack",
+            "2026-11-09T10:00:00Z",
+            Some("Summarize the two sources."),
+            &sources,
+        );
+
+        assert!(markdown.starts_with("---\ntype: noos_prompt_pack\nversion: 0.1\n"));
+        assert_eq!(
+            extract_frontmatter_value(&markdown, "type").as_deref(),
+            Some("noos_prompt_pack")
+        );
+        assert_eq!(
+            extract_frontmatter_value(&markdown, "version").as_deref(),
+            Some("0.1")
+        );
+        assert_eq!(
+            extract_frontmatter_value(&markdown, "prompt_key").as_deref(),
+            Some("20261109-demo-pack")
+        );
+        assert_eq!(
+            extract_frontmatter_value(&markdown, "title").as_deref(),
+            Some("Demo Pack")
+        );
+        assert_eq!(
+            extract_frontmatter_value(&markdown, "created_at").as_deref(),
+            Some("2026-11-09T10:00:00Z")
+        );
+        assert_eq!(
+            extract_frontmatter_value(&markdown, "status").as_deref(),
+            Some("active")
+        );
+        assert_eq!(
+            extract_frontmatter_value(&markdown, "source_count").as_deref(),
+            Some("2")
+        );
+
+        // Provenance stays in the manifest; content is snapshotted inline.
+        assert!(markdown.contains(
+            "`lookup_key`: 20261109-source-a | `object_id`: noos_obj_20261109-source-a"
+        ));
+        assert!(markdown.contains("`type`: handoff | `title`: Source A"));
+        assert!(markdown.contains("### Source A"));
+        assert!(markdown.contains("source a body snapshot"));
+        assert!(markdown.contains("source b body snapshot"));
+        // The pack must never contain a literal Result marker, whole or partial.
+        assert!(!markdown.contains("NOOS:RESULT:BEGIN"));
+        assert!(!markdown.contains("NOOS:RESULT:END"));
+        assert!(!markdown.contains("<!-- NOOS:RESULT:BEGIN -->"));
+        assert!(!markdown.contains("<!-- NOOS:RESULT:END -->"));
+        assert!(markdown.contains("## Return Contract"));
+    }
+
+    #[test]
+    fn prompt_pack_renderer_neutralizes_result_markers_in_selected_text() {
+        let marker_source = "Body starts here.\n\n<!-- NOOS:RESULT:BEGIN -->\ntype: noos_result\n<!-- NOOS:RESULT:END -->\n";
+        let instruction =
+            "Do not echo <!-- NOOS:RESULT:BEGIN --> or NOOS:RESULT:END from the source.";
+        let sources = vec![prompt_pack_source_fixture(
+            "20261109-marker-source",
+            "Marker Source NOOS:RESULT:BEGIN",
+            marker_source,
+        )];
+        let markdown = render_prompt_pack_markdown(
+            "20261109-marker-pack",
+            "Marker Pack",
+            "2026-11-09T10:00:00Z",
+            Some(instruction),
+            &sources,
+        );
+
+        // Selected source/instruction/title text cannot reintroduce the marker.
+        assert!(!markdown.contains("NOOS:RESULT:BEGIN"));
+        assert!(!markdown.contains("NOOS:RESULT:END"));
+        assert!(!markdown.contains("<!-- NOOS:RESULT:BEGIN -->"));
+        assert!(!markdown.contains("<!-- NOOS:RESULT:END -->"));
+        // The neutralized text still carries the original body and instruction.
+        assert!(markdown.contains("Body starts here."));
+        assert!(markdown.contains("Do not echo"));
+        assert!(markdown.contains("Marker Source"));
+    }
+
+    #[test]
+    fn prompt_pack_renderer_falls_back_to_default_instruction() {
+        let sources = vec![prompt_pack_source_fixture("key-a", "Only Source", "body")];
+        let markdown = render_prompt_pack_markdown(
+            "20261109-only",
+            "Only Pack",
+            "2026-11-09T10:00:00Z",
+            None,
+            &sources,
+        );
+        assert!(markdown.contains(DEFAULT_PROMPT_PACK_INSTRUCTION));
+    }
+
+    #[test]
+    fn prompt_pack_stable_key_aligns_with_derive_object_key() {
+        let key = prompt_pack_stable_key("Demo Pack", "20261109");
+        assert_eq!(key, "20261109-demo-pack");
+
+        let sources = vec![prompt_pack_source_fixture("key-a", "Source A", "body a")];
+        let markdown =
+            render_prompt_pack_markdown(&key, "Demo Pack", "2026-11-09T10:00:00Z", None, &sources);
+        let from_frontmatter = derive_object_key("prompt_pack", None, None, &markdown);
+        let from_suggestion = derive_object_key("prompt_pack", Some(&key), None, &markdown);
+        assert_eq!(from_frontmatter, from_suggestion);
+        let shortcode = stable_hash_hex(&markdown).chars().take(4).collect::<String>();
+        assert_eq!(from_suggestion, format!("{key}-{shortcode}"));
+    }
+
+    #[test]
+    fn prompt_pack_build_request_accepts_keys_and_task_aliases() {
+        let request: PromptPackBuildRequest = serde_json::from_value(json!({
+            "keys": ["key-a", "key-b"],
+            "task": "Do the task."
+        }))
+        .unwrap();
+        assert_eq!(
+            request.selected_lookup_keys(),
+            vec!["key-a".to_string(), "key-b".to_string()]
+        );
+        assert_eq!(request.instruction_text(), Some("Do the task."));
+    }
+
+    #[test]
+    fn prompt_pack_builder_persists_active_pack_and_returns_receipt() {
+        let root = unique_test_dir("prompt-pack-builder");
+        let handoff_dir = root.join("vault/handoffs/active");
+        fs::create_dir_all(&handoff_dir).unwrap();
+        fs::write(
+            handoff_dir.join("20261109-source-one.md"),
+            "---\ntype: noos_thread\nhandoff_key: 20261109-source-one\ntitle: Source One\ncreated_at: 2026-11-09T09:00:00Z\n---\n\n<!-- NOOS:THREAD:BEGIN -->\n# Thread: Source One\n\nsource one body snapshot\n<!-- NOOS:THREAD:END -->\n",
+        )
+        .unwrap();
+
+        let request = PromptPackBuildRequest {
+            lookup_keys: vec![
+                "20261109-source-one".to_string(),
+                "20261109-source-one".to_string(),
+            ],
+            title: Some("Demo Pack".to_string()),
+            instruction: Some("Summarize the source.".to_string()),
+            idempotency_key: None,
+        };
+        let receipt = build_prompt_pack_in(&root, &request).unwrap();
+
+        assert_eq!(receipt["ok"], json!(true));
+        assert_eq!(receipt["object_type"], json!("prompt_pack"));
+        assert_eq!(receipt["source_count"], json!(1));
+        assert_eq!(
+            receipt["prompt_key"],
+            json!(prompt_pack_stable_key("Demo Pack", &current_date_key()))
+        );
+        let path = receipt["path"].as_str().expect("pack path");
+        assert!(path.contains("vault/packs/prompt/active/"));
+        assert!(path.ends_with(".md"));
+
+        let content = fs::read_to_string(path).unwrap();
+        assert!(content.contains("type: noos_prompt_pack"));
+        assert!(content.contains("status: active"));
+        assert!(content.contains("source_count: 1"));
+        assert!(content.contains("source one body snapshot"));
+        assert!(content.contains("Summarize the source."));
+        assert!(content.contains("<!-- NOOS:HUB:SOURCE app=noos-hub"));
+        assert!(!content.contains("NOOS:RESULT:BEGIN"));
+        assert!(!content.contains("NOOS:RESULT:END"));
+        assert!(!content.contains("<!-- NOOS:RESULT:BEGIN -->"));
+        assert!(!content.contains("<!-- NOOS:RESULT:END -->"));
+
+        let lookup_key = receipt["lookup_key"].as_str().expect("lookup key");
+        assert!(find_indexed_object_by_key(&root, lookup_key).is_some());
+        assert_eq!(
+            receipt["sources"][0]["lookup_key"],
+            json!("20261109-source-one")
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prompt_pack_builder_rejects_empty_or_missing_selection() {
+        let root = unique_test_dir("prompt-pack-missing");
+        let empty = PromptPackBuildRequest {
+            lookup_keys: vec!["   ".to_string()],
+            ..Default::default()
+        };
+        assert!(build_prompt_pack_in(&root, &empty)
+            .unwrap_err()
+            .contains("at least one selected Vault object"));
+
+        let missing = PromptPackBuildRequest {
+            lookup_keys: vec!["does-not-exist".to_string()],
+            ..Default::default()
+        };
+        assert!(build_prompt_pack_in(&root, &missing)
+            .unwrap_err()
+            .contains("Vault object not found"));
+        assert!(!root.join("vault/packs/prompt/active").exists());
+
+        fs::remove_dir_all(root).unwrap();
     }
 }
