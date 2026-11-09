@@ -11,6 +11,7 @@ export interface ShuttleCopy {
   close: string;
   ok: string;
   generateAndCollect: string;
+  continueAction: string;
   draftHandoff: string;
   collectHandoff: string;
   extractCrystal: string;
@@ -257,6 +258,9 @@ export interface ShuttleCopy {
   captured: string;
   capturedWithWarnings: string;
   crystalSubmitted: string;
+  continuationSent: string;
+  continuationNotSent: string;
+  continuationUncertain: string;
   sedimentSubmitted: string;
   overviewSubmitted: string;
   prSweepSubmitted: string;
@@ -307,6 +311,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     close: "Close",
     ok: "OK",
     generateAndCollect: "Generate & Collect Handoff",
+    continueAction: "Continue",
     draftHandoff: "Generate Only",
     collectHandoff: "Scan Handoff",
     extractCrystal: "Extract Crystal",
@@ -556,6 +561,9 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     captured: "Handoff collected.",
     capturedWithWarnings: "Collected with validation warnings.",
     crystalSubmitted: "Crystal prompt sent. Waiting for generation...",
+    continuationSent: "Continuation sent.",
+    continuationNotSent: "Continuation not sent; the carrier is not ready.",
+    continuationUncertain: "Continuation may have been sent; it is not re-sent until the ledger settles.",
     sedimentSubmitted: "Sediment prompt sent. Waiting for generation...",
     overviewSubmitted: "Overview prompt sent. Waiting for generation...",
     prSweepSubmitted: "PR comment sweep sent. Waiting for the cursor echo...",
@@ -595,6 +603,7 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     close: "关闭",
     ok: "知道了",
     generateAndCollect: "生成并拉取 Handoff",
+    continueAction: "继续",
     draftHandoff: "单独生成",
     collectHandoff: "扫描 Handoff",
     extractCrystal: "沉淀结晶",
@@ -843,6 +852,9 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     captured: "交接稿已收取。",
     capturedWithWarnings: "已收取，但存在校验提醒。",
     crystalSubmitted: "结晶提示词已发送，正在等待生成...",
+    continuationSent: "已发送续跑指令。",
+    continuationNotSent: "续跑指令未发送：Carrier 未就绪。",
+    continuationUncertain: "续跑指令可能已发送；账本收敛前不会重发。",
     sedimentSubmitted: "沉淀提示词已发送，正在等待生成...",
     overviewSubmitted: "速览提示词已发送，正在等待生成...",
     prSweepSubmitted: "PR 评论巡检已发送，正在等待水位回传...",

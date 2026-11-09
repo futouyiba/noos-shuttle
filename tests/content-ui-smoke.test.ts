@@ -1688,6 +1688,112 @@ describe("content script smoke flow", () => {
     await page.close();
   });
 
+  it("keeps continuation in primary-actions and the shortcut actions in supporting-actions (#61 slice 6)", async () => {
+    const page = await newMockChatPage({ startWithHandoffs: false, injectContentScript: false });
+    await page.evaluate(() => {
+      (window as unknown as { observed?: { state: string } }).observed = undefined;
+      window.addEventListener("noos:runtime-observation", (event) => {
+        (window as unknown as { observed?: { state: string } }).observed = (event as CustomEvent).detail;
+      });
+    });
+    await page.addScriptTag({ content: contentScript });
+    await expect.poll(
+      () => page.evaluate(() => (window as unknown as { observed?: { state: string } }).observed?.state),
+      { timeout: 15_000 }
+    ).toBe("READY");
+
+    await clickShuttle(page, ".surface-fab");
+
+    // Q12: continuation is the primary operation; the three shortcut actions
+    // are supporting actions. The partition is structural, not just styling.
+    await expect.poll(() => shuttleElementCount(page, ".primary-actions [data-action='continue-run']")).toBe(1);
+    expect(await shuttleElementCount(page, ".supporting-actions [data-action='continue-run']")).toBe(0);
+    expect(await shuttleElementCount(page, ".primary-actions [data-action='generate-sediment']")).toBe(0);
+    expect(await shuttleElementText(page, ".primary-actions [data-action='continue-run']")).toBe("继续");
+
+    const supportingOrder = await page.evaluate(() => {
+      const supporting = document.querySelector("#noos-shuttle-root")?.shadowRoot?.querySelector(".supporting-actions");
+      return Array.from(supporting?.querySelectorAll("[data-action]") ?? []).map((element) => element.getAttribute("data-action"));
+    });
+    expect(supportingOrder).toEqual([
+      "generate-sediment",
+      "generate-overview",
+      "pr-comment-sweep",
+      "generate",
+      "capture",
+      "capture-crystal",
+      "download-images"
+    ]);
+
+    // The quick action dispatches the #60 registry token through the existing
+    // manual-GO path — the ledger operation is GO, named as a continuation.
+    await clickShuttle(page, "[data-action='continue-run']");
+    await expect.poll(() => page.locator("[role='textbox']").innerText(), { timeout: 15_000 }).toBe("继续");
+    const operation = await page.evaluate(() =>
+      Object.values((globalThis as unknown as { submissionRecords: Record<string, any> }).submissionRecords)[0]);
+    expect(operation).toMatchObject({
+      operationKind: "GO",
+      workItemId: "shuttle-continue",
+      payload: "继续"
+    });
+    await page.close();
+  }, 30_000);
+
+  it("keeps the PR sweep inputs alive when the reordered panel rebuilds (#126, #61 slice 6)", async () => {
+    const page = await newMockChatPage({ startWithHandoffs: false });
+    await clickShuttle(page, ".surface-fab");
+    await expect.poll(() => shuttleElementCount(page, "[data-pr-sweep-pr-ref]")).toBe(1);
+    await setShuttleInputValue(page, "[data-pr-sweep-pr-ref]", "owner/repo#61");
+    await setShuttleInputValue(page, "[data-pr-sweep-cursor]", "cursor-7");
+    // Tag the live nodes so the assertion can prove the rebuild replaced them.
+    await page.evaluate(() => {
+      const root = document.querySelector("#noos-shuttle-root")?.shadowRoot;
+      (root?.querySelector("[data-pr-sweep-pr-ref]") as unknown as { __tag?: string }).__tag = "old";
+      (root?.querySelector("[data-pr-sweep-cursor]") as unknown as { __tag?: string }).__tag = "old";
+    });
+
+    // A delivery toggle repaints the panel immediately (a user-action render,
+    // not the throttled observation lane) while the surface popover stays open
+    // — the same full-DOM rebuild #126 protects against.
+    await clickShuttle(page, "[data-action='delivery-copy']");
+    await expect.poll(async () => page.evaluate(() => {
+      const root = document.querySelector("#noos-shuttle-root")?.shadowRoot;
+      const prRef = root?.querySelector<HTMLInputElement>("[data-pr-sweep-pr-ref]");
+      const cursor = root?.querySelector<HTMLInputElement>("[data-pr-sweep-cursor]");
+      return {
+        prRef: prRef?.value,
+        cursor: cursor?.value,
+        replaced: (prRef as unknown as { __tag?: string })?.__tag === undefined
+      };
+    }), { timeout: 10_000 }).toEqual({ prRef: "owner/repo#61", cursor: "cursor-7", replaced: true });
+    await page.close();
+  }, 20_000);
+
+  it("keeps the Prompt Pack task input alive when the panel rebuilds (#126, #154)", async () => {
+    const page = await newMockChatPage({ startWithHandoffs: false, withFileInput: true });
+    await clickShuttle(page, ".fab");
+    await waitForShuttleText(page, "从 NOOS 导入");
+    await clickShuttle(page, "[data-action='open-vault-picker']");
+    await waitForShuttleText(page, "搜索 Vault");
+    await setShuttleInputValue(page, "[data-prompt-pack-task]", "pack task text");
+    await page.evaluate(() => {
+      const root = document.querySelector("#noos-shuttle-root")?.shadowRoot;
+      (root?.querySelector("[data-prompt-pack-task]") as unknown as { __tag?: string }).__tag = "old";
+    });
+
+    // Typing in the picker's search repaints the modal (the async vault refresh
+    // ends in `render`) with the Prompt Pack task still in the tree.
+    await setShuttleInputValue(page, "[data-action='vault-search']", "latest");
+    await expect.poll(async () => page.evaluate(() => {
+      const input = document.querySelector("#noos-shuttle-root")?.shadowRoot?.querySelector<HTMLInputElement>("[data-prompt-pack-task]");
+      return {
+        value: input?.value,
+        replaced: (input as unknown as { __tag?: string })?.__tag === undefined
+      };
+    }), { timeout: 10_000 }).toEqual({ value: "pack task text", replaced: true });
+    await page.close();
+  }, 20_000);
+
   it("adds a NOOS import entry near ChatGPT project source areas", async () => {
     const page = await newMockProjectPage();
 
@@ -2335,6 +2441,7 @@ async function newMockChatPage(
       window.localStorage.setItem("noos-shuttle-delivery-modes", JSON.stringify(["vault"]));
     }
     const submissionRecords: Record<string, any> = {};
+    (globalThis as unknown as { submissionRecords?: unknown }).submissionRecords = submissionRecords;
     (globalThis as unknown as { chrome: unknown }).chrome = {
       runtime: {
         getURL: (path: string) => `chrome-extension://mock/${path}`,
