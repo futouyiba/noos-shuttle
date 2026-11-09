@@ -148,6 +148,20 @@ export interface ShuttleCopy {
   vaultObjectsAttachedToProject: (keys: string[]) => string;
   vaultObjectsDownloadedForProject: (keys: string[]) => string;
   vaultObjectsInserted: (keys: string[]) => string;
+  promptPackBuildAction: string;
+  promptPackTaskLabel: string;
+  promptPackTaskPlaceholder: string;
+  promptPackBuiltTitle: string;
+  promptPackBuilt: (key: string) => string;
+  promptPackBuildFailed: string;
+  promptPackNeedsChatbot: string;
+  promptPackMissing: string;
+  promptPackAttachAction: string;
+  promptPackInlineAction: string;
+  promptPackAttached: (key: string) => string;
+  promptPackInserted: (key: string) => string;
+  promptPackAttachUnavailable: string;
+  promptPackDeliveredTitle: string;
   captureFullTranscript: string;
   copyText: string;
   downloadFile: string;
@@ -431,6 +445,20 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     vaultObjectsDownloadedForProject: (keys) =>
       `Project source input was not found. Downloaded NOOS objects for manual upload: ${formatKeyList(keys, ", ")}`,
     vaultObjectsInserted: (keys) => `Inserted NOOS object text: ${formatKeyList(keys, ", ")}`,
+    promptPackBuildAction: "Build Prompt Pack",
+    promptPackTaskLabel: "Task or instruction (optional)",
+    promptPackTaskPlaceholder: "What should the chatbot do with these sources?",
+    promptPackBuiltTitle: "Prompt Pack ready",
+    promptPackBuilt: (key) => `Prompt Pack built: ${key}. Choose how to deliver it to the current chat.`,
+    promptPackBuildFailed: "Prompt Pack could not be built.",
+    promptPackNeedsChatbot: "Prompt Packs can be delivered only to a supported chatbot page.",
+    promptPackMissing: "The Prompt Pack is no longer available. Build it again.",
+    promptPackAttachAction: "Attach to current chat",
+    promptPackInlineAction: "Insert inline",
+    promptPackAttached: (key) => `Attached Prompt Pack to the current chat: ${key}`,
+    promptPackInserted: (key) => `Inserted Prompt Pack text: ${key}`,
+    promptPackAttachUnavailable: "Markdown attachment is unavailable here. Use Insert inline instead.",
+    promptPackDeliveredTitle: "Prompt Pack delivered",
     captureFullTranscript: "Capture full conversation transcript",
     copyText: "Copy Text",
     downloadFile: "Download",
@@ -704,6 +732,20 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     vaultObjectsAttachedToProject: (keys) => `已附加到 Project 源：${formatKeyList(keys, "、")}`,
     vaultObjectsDownloadedForProject: (keys) => `没有找到 Project 源上传入口，已下载这些 NOOS 对象，可手动上传：${formatKeyList(keys, "、")}`,
     vaultObjectsInserted: (keys) => `已写入 NOOS 对象正文：${formatKeyList(keys, "、")}`,
+    promptPackBuildAction: "生成 Prompt Pack",
+    promptPackTaskLabel: "任务或指令（可选）",
+    promptPackTaskPlaceholder: "希望聊天机器人基于这些源做什么？",
+    promptPackBuiltTitle: "Prompt Pack 已生成",
+    promptPackBuilt: (key) => `已生成 Prompt Pack：${key}。请选择如何投递到当前对话。`,
+    promptPackBuildFailed: "Prompt Pack 生成失败。",
+    promptPackNeedsChatbot: "Prompt Pack 只能投递到受支持的聊天机器人页面。",
+    promptPackMissing: "Prompt Pack 已不可用，请重新生成。",
+    promptPackAttachAction: "附加到当前对话",
+    promptPackInlineAction: "写入输入框",
+    promptPackAttached: (key) => `已将 Prompt Pack 附加到当前对话：${key}`,
+    promptPackInserted: (key) => `已将 Prompt Pack 写入输入框：${key}`,
+    promptPackAttachUnavailable: "当前页面无法附加 Markdown 文件，请改用「写入输入框」。",
+    promptPackDeliveredTitle: "Prompt Pack 已投递",
     captureFullTranscript: "同时抓取完整对话 transcript",
     copyText: "复制文本",
     downloadFile: "下载文件",

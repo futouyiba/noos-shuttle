@@ -822,6 +822,30 @@ button:disabled {
   font: 500 12px/1.3 system-ui, sans-serif;
 }
 
+/* #154 slice B: optional task for the Hub-owned Prompt Pack builder. */
+.prompt-pack-task {
+  padding: 10px 14px;
+  border-top: 1px solid rgba(23, 32, 26, 0.08);
+}
+
+.prompt-pack-task label {
+  display: grid;
+  gap: 5px;
+  color: #5c665f;
+  font: 700 11px/1.25 system-ui, sans-serif;
+}
+
+.prompt-pack-task input {
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 9px;
+  border: 1px solid rgba(23, 32, 26, 0.16);
+  border-radius: 6px;
+  background: #ffffff;
+  color: #17201a;
+  font: 500 12px/1.3 system-ui, sans-serif;
+}
+
 .vault-picker-body {
   display: grid;
   grid-template-columns: minmax(150px, 0.35fr) minmax(0, 1fr);

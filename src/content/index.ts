@@ -1,5 +1,6 @@
 import { createCrystalFilename, createOverviewHtmlFilename, createResultFilename, createThreadFilenameFromThread } from "../core/filename";
 import { createContextPack, type ContextPack } from "../core/context-pack";
+import { buildPromptPackSelection, promptPackFilename } from "../core/prompt-pack";
 import { createGenerateCrystalPrompt, createGenerateThreadPrompt } from "../core/prompt-templates";
 import { captureNoosThreads } from "../core/thread-capture";
 import { captureNoosCrystals } from "../core/crystal-capture";
@@ -161,6 +162,18 @@ interface VaultObjectContent {
   content: string;
 }
 
+/**
+ * The pack the Hub just built, held only until the Human explicitly stages it
+ * into the current chat (#154 slice B). This is transient delivery state: the
+ * bytes are the Hub's persisted artifact, never a Shuttle render, and nothing
+ * here survives a reload.
+ */
+interface PendingPromptPack {
+  promptKey: string;
+  lookupKey: string;
+  content: string;
+}
+
 interface ProjectSourceSnapshot {
   title: string;
   detail?: string;
@@ -256,6 +269,7 @@ let shuttlePosition = getStoredPosition();
 let suppressNextFabClick = false;
 let vaultFeedTarget: VaultFeedTarget = "chat";
 let preferredVaultAttachRoot: HTMLElement | null = null;
+let pendingPromptPack: PendingPromptPack | null = null;
 let projectImportAnchor: HTMLElement | null = null;
 const runtimeObservationLedger = new RuntimeObservationLedger();
 let observationRoute = "";
@@ -1147,6 +1161,10 @@ function renderModal(): string {
     const selectedKeys = selectedVaultObjectKeys();
     const targetLabel = vaultTargetLabel(copy);
     const canUseSelection = canUseVaultSelection(selectedKeys);
+    // Prompt Pack delivery is chat-only (the Hub owns the pack; the Shuttle
+    // only stages it), so the builder entry appears only for the chat target.
+    const promptPackTarget = vaultFeedTarget === "chat";
+    const canBuildPromptPack = promptPackTarget && selectedKeys.length > 0;
 
     return `<div class="modal-backdrop" role="presentation">
       <section class="modal modal--wide" role="dialog" aria-modal="true" aria-label="${copy.browseVaultObjects}">
@@ -1174,8 +1192,27 @@ function renderModal(): string {
             ${renderVaultObjectGroup(copy.allVaultObjects, viewState.vaultObjects, selectedKeys)}
           </div>
         </div>
+        ${
+          promptPackTarget
+            ? `<div class="prompt-pack-task">
+                <label>
+                  <span>${escapeHtml(copy.promptPackTaskLabel)}</span>
+                  <input type="text" data-prompt-pack-task placeholder="${escapeAttribute(
+                    copy.promptPackTaskPlaceholder
+                  )}" autocomplete="off" />
+                </label>
+              </div>`
+            : ""
+        }
         <footer class="modal-actions">
           <button type="button" data-action="clear-vault-selection">${copy.clearSelection}</button>
+          ${
+            promptPackTarget
+              ? `<button type="button" data-action="build-prompt-pack" ${canBuildPromptPack ? "" : "disabled"}>${escapeHtml(
+                  copy.promptPackBuildAction
+                )}</button>`
+              : ""
+          }
           <button class="modal-primary-action" type="button" data-action="feed-selected-vault-object" ${canUseSelection ? "" : "disabled"}>${escapeHtml(
             copy.attachSelectedToTarget(selectedKeys.length, targetLabel)
           )}</button>
@@ -1311,6 +1348,7 @@ async function handleAction(action: string, app: HTMLElement, source?: HTMLEleme
 
   if (action === "modal-close") {
     viewState.modal = null;
+    pendingPromptPack = null;
     render(app);
     return;
   }
@@ -1438,6 +1476,21 @@ async function handleAction(action: string, app: HTMLElement, source?: HTMLEleme
 
   if (action === "feed-selected-vault-object") {
     await feedSelectedVaultObject(app);
+    return;
+  }
+
+  if (action === "build-prompt-pack") {
+    await buildPromptPackFromSelection(app);
+    return;
+  }
+
+  if (action === "prompt-pack-attach") {
+    await deliverPendingPromptPack(app, "attach");
+    return;
+  }
+
+  if (action === "prompt-pack-inline") {
+    await deliverPendingPromptPack(app, "inline");
     return;
   }
 
@@ -5783,6 +5836,164 @@ async function feedSelectedVaultObject(app: HTMLElement): Promise<void> {
     kind: "success",
     title: copy.deliverySuccessTitle,
     message: viewState.message
+  };
+  render(app);
+}
+
+interface PromptPackBuildResponse {
+  ok?: boolean;
+  lookup_key?: string;
+  lookupKey?: string;
+  prompt_key?: string;
+  promptKey?: string;
+  errorCode?: string;
+  error_code?: string;
+  message?: string;
+}
+
+/**
+ * #154 slice B: submit the picker selection to the Hub builder, then load the
+ * persisted pack so the Human can stage it. Building is one explicit click;
+ * delivery is a second one (`deliverPendingPromptPack`).
+ */
+async function buildPromptPackFromSelection(app: HTMLElement): Promise<void> {
+  const copy = COPY[viewState.locale];
+  if (getCurrentSurface() !== "chatgpt") {
+    viewState.state = "error";
+    viewState.message = copy.promptPackNeedsChatbot;
+    render(app);
+    return;
+  }
+
+  const selection = buildPromptPackSelection(
+    selectedVaultObjectKeys(),
+    app.querySelector<HTMLInputElement>("[data-prompt-pack-task]")?.value ?? ""
+  );
+  if (!selection.lookupKeys.length) {
+    viewState.state = "error";
+    viewState.message = copy.noVaultObjects;
+    render(app);
+    return;
+  }
+
+  let response: PromptPackBuildResponse;
+  try {
+    response = await sendExtensionMessage<
+      { type: "NOOS_BUILD_PROMPT_PACK"; lookupKeys: string[]; instruction?: string },
+      PromptPackBuildResponse
+    >({
+      type: "NOOS_BUILD_PROMPT_PACK",
+      lookupKeys: selection.lookupKeys,
+      instruction: selection.instruction
+    });
+  } catch (error) {
+    viewState.state = "error";
+    viewState.message = `${copy.promptPackBuildFailed} ${error instanceof Error ? error.message : ""}`.trim();
+    render(app);
+    return;
+  }
+
+  const lookupKey = (response?.lookup_key ?? response?.lookupKey ?? "").trim();
+  if (!response?.ok || !lookupKey) {
+    viewState.state = "error";
+    viewState.message = response?.message || copy.promptPackBuildFailed;
+    render(app);
+    return;
+  }
+
+  // The Hub returns a receipt/key; the pack body is the persisted artifact.
+  // Read it back unchanged — no Shuttle-side re-rendering or re-assembly.
+  const pack = await loadVaultObject(lookupKey, copy);
+  if (!pack.ok || !pack.object) {
+    viewState.state = "error";
+    viewState.message = pack.message ?? copy.promptPackBuildFailed;
+    render(app);
+    return;
+  }
+
+  const promptKey = (response.prompt_key ?? response.promptKey ?? lookupKey).trim() || lookupKey;
+  pendingPromptPack = { promptKey, lookupKey, content: pack.object.content };
+
+  viewState.state = "saved";
+  viewState.message = copy.promptPackBuilt(lookupKey);
+  viewState.modal = {
+    kind: "success",
+    title: copy.promptPackBuiltTitle,
+    message: copy.promptPackBuilt(lookupKey),
+    actions: [
+      { label: copy.promptPackAttachAction, action: "prompt-pack-attach", primary: true },
+      { label: copy.promptPackInlineAction, action: "prompt-pack-inline" }
+    ]
+  };
+  render(app);
+}
+
+/**
+ * Stage the built pack into the current chat on an explicit Human click.
+ * Attachment is the preferred form; when it is unavailable we offer the
+ * inline form instead of silently writing a full pack into the composer.
+ * The delivered bytes are always the Hub's persisted pack, unchanged.
+ */
+async function deliverPendingPromptPack(app: HTMLElement, mode: "attach" | "inline"): Promise<void> {
+  const copy = COPY[viewState.locale];
+  const pending = pendingPromptPack;
+  if (!pending) {
+    viewState.state = "error";
+    viewState.message = copy.promptPackMissing;
+    viewState.modal = null;
+    render(app);
+    return;
+  }
+
+  if (mode === "attach") {
+    const attached = attachMarkdownFilesToChatInput(
+      [{ filename: promptPackFilename(pending.promptKey, pending.lookupKey), content: pending.content }],
+      { root: preferredVaultAttachRoot }
+    );
+    if (!attached) {
+      viewState.state = "warning";
+      viewState.message = copy.promptPackAttachUnavailable;
+      viewState.modal = {
+        kind: "success",
+        title: copy.promptPackBuiltTitle,
+        message: copy.promptPackAttachUnavailable,
+        actions: [
+          { label: copy.promptPackInlineAction, action: "prompt-pack-inline", primary: true },
+          { label: copy.ok, action: "modal-close" }
+        ]
+      };
+      render(app);
+      return;
+    }
+
+    pendingPromptPack = null;
+    viewState.state = "saved";
+    viewState.message = copy.promptPackAttached(pending.lookupKey);
+    openGlobalPanel();
+    viewState.modal = {
+      kind: "success",
+      title: copy.promptPackDeliveredTitle,
+      message: copy.promptPackAttached(pending.lookupKey)
+    };
+    render(app);
+    return;
+  }
+
+  if (!insertIntoChatInput(pending.content)) {
+    viewState.state = "error";
+    viewState.message = copy.inputNotFound;
+    render(app);
+    return;
+  }
+
+  pendingPromptPack = null;
+  viewState.state = "saved";
+  viewState.message = copy.promptPackInserted(pending.lookupKey);
+  openGlobalPanel();
+  viewState.modal = {
+    kind: "success",
+    title: copy.promptPackDeliveredTitle,
+    message: copy.promptPackInserted(pending.lookupKey)
   };
   render(app);
 }

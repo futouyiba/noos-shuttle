@@ -172,6 +172,7 @@ struct PromptPackBuildRequest {
     title: Option<String>,
     #[serde(alias = "task")]
     instruction: Option<String>,
+    #[serde(alias = "idempotencyKey")]
     idempotency_key: Option<String>,
 }
 
@@ -237,6 +238,14 @@ struct HubActionRequest {
     folder_token: Option<String>,
     folder_name: Option<String>,
     force: Option<bool>,
+    /// Prompt Pack build inputs (#154 slice B). Optional here because the same
+    /// request shape serves every browser action.
+    #[serde(default, alias = "keys", alias = "lookupKeys")]
+    lookup_keys: Vec<String>,
+    #[serde(alias = "task")]
+    instruction: Option<String>,
+    #[serde(alias = "idempotencyKey")]
+    idempotency_key: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1675,7 +1684,8 @@ fn handle_local_write_request(mut stream: TcpStream) -> Result<(), String> {
         let request: HubActionRequest =
             serde_json::from_slice(body).map_err(|error| error.to_string())?;
         let response = run_browser_hub_action(request);
-        let status = if response.ok { 200 } else { 400 };
+        let ok = response.get("ok").and_then(Value::as_bool).unwrap_or(false);
+        let status = if ok { 200 } else { 400 };
         return write_json_response(&mut stream, status, &response);
     }
 
@@ -1979,8 +1989,13 @@ fn call_evaluator_upstream(request: &EvaluatorProxyRequest) -> Result<String, Ev
     Ok(content)
 }
 
-fn run_browser_hub_action(request: HubActionRequest) -> HubActionResponse {
-    match request.command.as_str() {
+fn run_browser_hub_action(request: HubActionRequest) -> Value {
+    let command = request.command.clone();
+    let response = match command.as_str() {
+        // #154 slice B: the Shuttle reaches the Hub-owned Prompt Pack builder
+        // through the same action bridge every other browser action uses. The
+        // response is the normal ingest receipt plus `prompt_key`.
+        "promptPack.build" => return build_prompt_pack_action(request),
         "feishu.exportMd" | "feishu.syncMarkdown" => export_feishu_md(request, false),
         "feishu.exportMdAndOrganize" | "feishu.syncMarkdownAndOrganize" => {
             export_feishu_md(request, true)
@@ -1998,6 +2013,36 @@ fn run_browser_hub_action(request: HubActionRequest) -> HubActionResponse {
             None,
             request.wiki_project_path,
         ),
+    };
+    serde_json::to_value(response).unwrap_or_else(|error| {
+        json!({
+            "ok": false,
+            "status": "action_failed",
+            "error_code": "action_failed",
+            "message": error.to_string(),
+        })
+    })
+}
+
+fn build_prompt_pack_action(request: HubActionRequest) -> Value {
+    build_prompt_pack_action_in(&noos_home(), request)
+}
+
+fn build_prompt_pack_action_in(noos_home: &Path, request: HubActionRequest) -> Value {
+    let build = PromptPackBuildRequest {
+        lookup_keys: request.lookup_keys,
+        title: request.title,
+        instruction: request.instruction,
+        idempotency_key: request.idempotency_key,
+    };
+    match build_prompt_pack_in(noos_home, &build) {
+        Ok(receipt) => receipt,
+        Err(message) => json!({
+            "ok": false,
+            "status": "prompt_pack_build_failed",
+            "error_code": "prompt_pack_build_failed",
+            "message": message,
+        }),
     }
 }
 
@@ -10324,6 +10369,79 @@ See [Spec](.assets/feishu_docx_abc123/spec.pdf).
             .unwrap_err()
             .contains("Vault object not found"));
         assert!(!root.join("vault/packs/prompt/active").exists());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn prompt_pack_action_request(body: Value) -> HubActionRequest {
+        serde_json::from_value(body).unwrap()
+    }
+
+    #[test]
+    fn prompt_pack_action_accepts_camel_keys_and_task_alias() {
+        let request = prompt_pack_action_request(json!({
+            "command": "promptPack.build",
+            "lookupKeys": ["key-a", "key-b"],
+            "task": "Do the task."
+        }));
+
+        assert_eq!(
+            request.lookup_keys,
+            vec!["key-a".to_string(), "key-b".to_string()]
+        );
+        assert_eq!(request.instruction.as_deref(), Some("Do the task."));
+    }
+
+    #[test]
+    fn prompt_pack_action_builds_through_browser_bridge_and_returns_receipt() {
+        let root = unique_test_dir("prompt-pack-action");
+        let handoff_dir = root.join("vault/handoffs/active");
+        fs::create_dir_all(&handoff_dir).unwrap();
+        fs::write(
+            handoff_dir.join("20261109-source-one.md"),
+            "---\ntype: noos_thread\nhandoff_key: 20261109-source-one\ntitle: Source One\ncreated_at: 2026-11-09T09:00:00Z\n---\n\n<!-- NOOS:THREAD:BEGIN -->\n# Thread: Source One\n\nbridged source body\n<!-- NOOS:THREAD:END -->\n",
+        )
+        .unwrap();
+
+        let request = prompt_pack_action_request(json!({
+            "command": "promptPack.build",
+            "lookup_keys": ["20261109-source-one"],
+            "title": "Bridged Pack",
+            "instruction": "Summarize it."
+        }));
+        let response = build_prompt_pack_action_in(&root, request);
+
+        assert_eq!(response["ok"], json!(true));
+        assert_eq!(response["object_type"], json!("prompt_pack"));
+        assert!(response["lookup_key"].as_str().is_some());
+        assert_eq!(
+            response["prompt_key"],
+            json!(prompt_pack_stable_key("Bridged Pack", &current_date_key()))
+        );
+        let path = response["path"].as_str().expect("pack path");
+        let content = fs::read_to_string(path).unwrap();
+        assert!(content.contains("bridged source body"));
+        assert!(!content.contains("NOOS:RESULT:BEGIN"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prompt_pack_action_reports_build_failure_as_json() {
+        let root = unique_test_dir("prompt-pack-action-failure");
+        let request = prompt_pack_action_request(json!({
+            "command": "promptPack.build",
+            "lookup_keys": []
+        }));
+        let response = build_prompt_pack_action_in(&root, request);
+
+        assert_eq!(response["ok"], json!(false));
+        assert_eq!(response["status"], json!("prompt_pack_build_failed"));
+        assert_eq!(response["error_code"], json!("prompt_pack_build_failed"));
+        assert!(response["message"]
+            .as_str()
+            .unwrap()
+            .contains("at least one selected Vault object"));
 
         fs::remove_dir_all(root).unwrap();
     }
