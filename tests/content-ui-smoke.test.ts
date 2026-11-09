@@ -1610,6 +1610,84 @@ describe("content script smoke flow", () => {
     await page.close();
   });
 
+  it("shows the Prompt Pack builder only for the chat delivery target", async () => {
+    // Chat target: the builder entry and optional task input are present.
+    const chatPage = await newMockChatPage({ startWithHandoffs: false, withFileInput: true });
+    await clickShuttle(chatPage, ".fab");
+    await waitForShuttleText(chatPage, "从 NOOS 导入");
+    await clickShuttle(chatPage, "[data-action='open-vault-picker']");
+    await waitForShuttleText(chatPage, "搜索 Vault");
+    expect(await shuttleElementCount(chatPage, "[data-action='build-prompt-pack']")).toBe(1);
+    expect(await shuttleElementCount(chatPage, "[data-prompt-pack-task]")).toBe(1);
+    await chatPage.close();
+
+    // Project target: the same picker must not offer Prompt Pack building,
+    // because delivery is chat-only (#154 slice B).
+    const projectPage = await newMockProjectPage();
+    await projectPage.locator(".noos-project-import-button").click();
+    await waitForShuttleText(projectPage, "附加到 Project 源");
+    await clickShuttle(projectPage, "[data-action='open-vault-picker']");
+    await waitForShuttleText(projectPage, "搜索 Vault");
+    expect(await shuttleElementCount(projectPage, "[data-action='build-prompt-pack']")).toBe(0);
+    expect(await shuttleElementCount(projectPage, "[data-prompt-pack-task]")).toBe(0);
+    await projectPage.close();
+  });
+
+  it("writes a built Prompt Pack into the composer only after an explicit inline click", async () => {
+    const page = await newMockChatPage({ startWithHandoffs: false, withFileInput: true });
+    await clickShuttle(page, ".fab");
+    await waitForShuttleText(page, "从 NOOS 导入");
+    await clickShuttle(page, "[data-action='open-vault-picker']");
+    await waitForShuttleText(page, "搜索 Vault");
+    await clickShuttle(page, "[data-action='select-vault-object-20260521-latest-handoff-a1']");
+    await clickShuttle(page, "[data-action='build-prompt-pack']");
+    await waitForShuttleText(page, "已生成 Prompt Pack");
+
+    // Building is one explicit click; delivery must wait for a second one. The
+    // composer and the attachment input stay untouched until then.
+    expect(await page.locator("[role='textbox']").innerText()).toBe("");
+    expect(
+      await page.locator("input[type='file']").evaluate((input) => (input as HTMLInputElement).files?.length ?? 0)
+    ).toBe(0);
+    expect(
+      await page.evaluate(() => (globalThis as unknown as { lastPromptPackBuild?: unknown }).lastPromptPackBuild)
+    ).toMatchObject({ type: "NOOS_BUILD_PROMPT_PACK", lookupKeys: ["20260521-latest-handoff-a1"] });
+
+    await clickShuttle(page, "[data-action='prompt-pack-inline']");
+    await waitForShuttleText(page, "已将 Prompt Pack 写入输入框");
+    expect(await page.locator("[role='textbox']").innerText()).toContain("PACK-BODY-MARKER");
+    await page.close();
+  });
+
+  it("attaches a built Prompt Pack only after an explicit attach click", async () => {
+    const page = await newMockChatPage({ startWithHandoffs: false, withFileInput: true });
+    await clickShuttle(page, ".fab");
+    await waitForShuttleText(page, "从 NOOS 导入");
+    await clickShuttle(page, "[data-action='open-vault-picker']");
+    await waitForShuttleText(page, "搜索 Vault");
+    await clickShuttle(page, "[data-action='select-vault-object-20260521-latest-handoff-a1']");
+    await clickShuttle(page, "[data-action='build-prompt-pack']");
+    await waitForShuttleText(page, "已生成 Prompt Pack");
+
+    expect(await page.locator("[role='textbox']").innerText()).toBe("");
+    expect(
+      await page.locator("input[type='file']").evaluate((input) => (input as HTMLInputElement).files?.length ?? 0)
+    ).toBe(0);
+
+    await clickShuttle(page, "[data-action='prompt-pack-attach']");
+    await waitForShuttleText(page, "已将 Prompt Pack 附加到当前对话");
+    const fileInputState = await page.locator("input[type='file']").evaluate((input) => {
+      const fileInput = input as HTMLInputElement;
+      return {
+        count: fileInput.files?.length ?? 0,
+        names: Array.from(fileInput.files ?? []).map((file) => file.name)
+      };
+    });
+    expect(fileInputState).toEqual({ count: 1, names: ["20261109-prompt-pack-abc.md"] });
+    expect(await page.locator("[role='textbox']").innerText()).toBe("");
+    await page.close();
+  });
+
   it("adds a NOOS import entry near ChatGPT project source areas", async () => {
     const page = await newMockProjectPage();
 
@@ -2339,8 +2417,29 @@ async function newMockChatPage(
             };
           }
 
+          if (message.type === "NOOS_BUILD_PROMPT_PACK") {
+            (globalThis as unknown as { lastPromptPackBuild?: unknown }).lastPromptPackBuild = message;
+            return {
+              ok: true,
+              lookup_key: "20261109-prompt-pack-abc",
+              prompt_key: "20261109-prompt-pack"
+            };
+          }
+
           if (message.type === "NOOS_GET_VAULT_OBJECT") {
             const lookupKey = message.lookupKey ?? "20260521-latest-handoff-a1";
+            if (lookupKey === "20261109-prompt-pack-abc") {
+              return {
+                ok: true,
+                object: {
+                  object_type: "prompt_pack",
+                  lookup_key: lookupKey,
+                  title: "Demo Prompt Pack",
+                  path: `/tmp/noos/prompt-packs/${lookupKey}.md`,
+                  content: "# Demo Prompt Pack\n\nPACK-BODY-MARKER: deliver these sources unchanged."
+                }
+              };
+            }
             const isCrystal = lookupKey.includes("crystal");
             return {
               ok: true,
