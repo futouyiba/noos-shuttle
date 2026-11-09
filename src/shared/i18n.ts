@@ -17,6 +17,9 @@ export interface ShuttleCopy {
   scanCrystal: string;
   sedimentAction: string;
   overviewAction: string;
+  prSweepAction: string;
+  prSweepPrRefPlaceholder: string;
+  prSweepCursorPlaceholder: string;
   downloadImages: string;
   cancel: string;
   bcrSectionTitle: string;
@@ -242,8 +245,17 @@ export interface ShuttleCopy {
   crystalSubmitted: string;
   sedimentSubmitted: string;
   overviewSubmitted: string;
+  prSweepSubmitted: string;
+  prSweepMissingPrRef: string;
+  prSweepMissingCursor: string;
   waitingForCrystal: string;
   waitingForOverview: string;
+  prSweepWaitingForCursor: string;
+  prSweepCursorObserved: (cursor: string) => string;
+  prSweepNoCursorEcho: string;
+  prSweepNoNewComments: string;
+  prSweepCursorError: string;
+  prSweepUncertainNoAdvance: string;
   crystalCaptured: string;
   crystalCapturedWithWarnings: string;
   overviewCaptured: string;
@@ -287,6 +299,9 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     scanCrystal: "Scan Crystal",
     sedimentAction: "Sediment Takeaways",
     overviewAction: "Overview HTML",
+    prSweepAction: "Check PR Comments",
+    prSweepPrRefPlaceholder: "PR ref, e.g. owner/repo#61",
+    prSweepCursorPlaceholder: "Cursor (explicit; not persisted)",
     downloadImages: "Download Reply Images",
     cancel: "Cancel",
     bcrSectionTitle: "Bounded run",
@@ -515,8 +530,17 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     crystalSubmitted: "Crystal prompt sent. Waiting for generation...",
     sedimentSubmitted: "Sediment prompt sent. Waiting for generation...",
     overviewSubmitted: "Overview prompt sent. Waiting for generation...",
+    prSweepSubmitted: "PR comment sweep sent. Waiting for the cursor echo...",
+    prSweepMissingPrRef: "Enter an explicit PR ref. The sweep never guesses.",
+    prSweepMissingCursor: "Enter an explicit cursor. This harness never reads a stored watermark.",
     waitingForCrystal: "Generation appears complete. Collecting the crystal...",
     waitingForOverview: "Generation appears complete. Collecting the overview...",
+    prSweepWaitingForCursor: "Generation appears complete. Reading the cursor echo...",
+    prSweepCursorObserved: cursor => `Observed cursor (not persisted): ${cursor}`,
+    prSweepNoCursorEcho: "No cursor echo observed; nothing was recorded.",
+    prSweepNoNewComments: "No new comments; nothing was recorded.",
+    prSweepCursorError: "Could not observe the sweep cursor.",
+    prSweepUncertainNoAdvance: "Sweep dispatch is uncertain; nothing was recorded.",
     crystalCaptured: "Crystal collected.",
     crystalCapturedWithWarnings: "Crystal collected with validation warnings.",
     overviewCaptured: "Overview HTML collected.",
@@ -549,6 +573,9 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     scanCrystal: "扫描结晶",
     sedimentAction: "沉淀要点",
     overviewAction: "速览 HTML",
+    prSweepAction: "查 PR 评论",
+    prSweepPrRefPlaceholder: "PR 引用，例如 owner/repo#61",
+    prSweepCursorPlaceholder: "水位游标（须显式填写，不持久化）",
     downloadImages: "下载本条回复图",
     cancel: "取消",
     bcrSectionTitle: "有界连续运行",
@@ -776,8 +803,17 @@ export const COPY: Record<ShuttleLocale, ShuttleCopy> = {
     crystalSubmitted: "结晶提示词已发送，正在等待生成...",
     sedimentSubmitted: "沉淀提示词已发送，正在等待生成...",
     overviewSubmitted: "速览提示词已发送，正在等待生成...",
+    prSweepSubmitted: "PR 评论巡检已发送，正在等待水位回传...",
+    prSweepMissingPrRef: "请显式填写 PR 引用；巡检从不猜测。",
+    prSweepMissingCursor: "请显式填写水位游标；本实验形态不读取已存水位。",
     waitingForCrystal: "生成看起来已完成，正在收取结晶...",
     waitingForOverview: "生成看起来已完成，正在收取速览...",
+    prSweepWaitingForCursor: "生成看起来已完成，正在读取水位回传...",
+    prSweepCursorObserved: cursor => `已观测到水位（未持久化）：${cursor}`,
+    prSweepNoCursorEcho: "未观测到水位回传，未记录任何状态。",
+    prSweepNoNewComments: "无新评论，未记录任何状态。",
+    prSweepCursorError: "无法读取巡检水位观测结果。",
+    prSweepUncertainNoAdvance: "巡检投递状态不确定，未记录任何状态。",
     crystalCaptured: "结晶已收取。",
     crystalCapturedWithWarnings: "结晶已收取，但存在校验提醒。",
     overviewCaptured: "速览 HTML 已收取。",
