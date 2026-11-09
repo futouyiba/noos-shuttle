@@ -41,6 +41,7 @@ const KEYED_ATTRIBUTES: ReadonlyArray<{ attribute: string; prefix: string; useVa
   { attribute: "data-outbox-input", prefix: "outbox-compose", useValue: false },
   { attribute: "data-outbox-edit-input", prefix: "outbox-edit", useValue: true },
   { attribute: "data-feishu-category-dialog-input", prefix: "feishu-category", useValue: false },
+  { attribute: "data-prompt-pack-task", prefix: "prompt-pack-task", useValue: false },
   { attribute: "data-action", prefix: "action", useValue: true }
 ];
 

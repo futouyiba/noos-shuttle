@@ -1039,6 +1039,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (isPromptPackBuildMessage(message)) {
+    runBuildPromptPack(message)
+      .then(sendResponse)
+      .catch((error) => {
+        sendResponse({
+          ok: false,
+          status: "hub_unavailable",
+          errorCode: "hub_unavailable",
+          message: error instanceof Error ? error.message : "NOOS Hub Prompt Pack build failed."
+        });
+      });
+    return true;
+  }
+
   if (isWikiTargetMessage(message)) {
     getWikiTarget()
       .then(sendResponse)
@@ -1767,6 +1781,30 @@ interface VaultObjectMessage {
   lookupKey: string;
 }
 
+/**
+ * Selection handed to the Hub-owned Prompt Pack builder (#154 slice B). The
+ * Shuttle never builds a pack itself: it submits the Human's Vault selection
+ * and optional task, and the Hub returns the persisted receipt/key.
+ */
+export interface PromptPackBuildMessage {
+  type: "NOOS_BUILD_PROMPT_PACK";
+  lookupKeys: string[];
+  instruction?: string;
+  title?: string;
+}
+
+export const PROMPT_PACK_BUILD_COMMAND = "promptPack.build";
+
+/** Wire body for the existing `/v1/actions` bridge; kept pure for tests. */
+export function buildPromptPackHubActionBody(message: PromptPackBuildMessage): Record<string, unknown> {
+  return {
+    command: PROMPT_PACK_BUILD_COMMAND,
+    lookup_keys: message.lookupKeys,
+    instruction: message.instruction,
+    title: message.title
+  };
+}
+
 interface WikiTargetMessage {
   type: "NOOS_GET_WIKI_TARGET";
 }
@@ -1905,6 +1943,21 @@ function isVaultObjectMessage(value: unknown): value is VaultObjectMessage {
   return message.type === "NOOS_GET_VAULT_OBJECT" && typeof message.lookupKey === "string";
 }
 
+function isPromptPackBuildMessage(value: unknown): value is PromptPackBuildMessage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const message = value as Partial<PromptPackBuildMessage>;
+  return (
+    message.type === "NOOS_BUILD_PROMPT_PACK" &&
+    Array.isArray(message.lookupKeys) &&
+    message.lookupKeys.every((key) => typeof key === "string") &&
+    (message.instruction === undefined || typeof message.instruction === "string") &&
+    (message.title === undefined || typeof message.title === "string")
+  );
+}
+
 function isWikiTargetMessage(value: unknown): value is WikiTargetMessage {
   if (!value || typeof value !== "object") {
     return false;
@@ -1977,6 +2030,11 @@ async function getVaultBrowseObjects(folder?: string, query?: string): Promise<u
 
 async function getVaultObject(lookupKey: string): Promise<unknown> {
   return getAuthorizedHubJson(`${HUB_VAULT_OBJECT_URL}?key=${encodeURIComponent(lookupKey)}`);
+}
+
+async function runBuildPromptPack(message: PromptPackBuildMessage): Promise<unknown> {
+  const payload = await postAuthorizedHubJson(HUB_ACTION_URL, buildPromptPackHubActionBody(message));
+  return normalizeHubPayload(payload);
 }
 
 async function getWikiTarget(): Promise<unknown> {
@@ -2121,6 +2179,8 @@ function normalizeHubPayload(payload: unknown): unknown {
   return {
     ...value,
     errorCode: value.errorCode ?? value.error_code,
+    lookupKey: value.lookupKey ?? value.lookup_key,
+    promptKey: value.promptKey ?? value.prompt_key,
     projectPath: value.projectPath ?? value.project_path,
     wikiProjectPath: value.wikiProjectPath ?? value.wiki_project_path,
     currentCategoryPath: value.currentCategoryPath ?? value.current_category_path,
